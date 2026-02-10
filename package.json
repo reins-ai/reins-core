@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./errors": "./src/errors.ts",
+    "./result": "./src/result.ts",
+    "./tokens": "./src/tokens/index.ts",
+    "./types": "./src/types/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
