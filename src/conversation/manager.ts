@@ -1,9 +1,12 @@
 import { ConversationError } from "../errors";
+import type { MemoryStore } from "../memory";
 import { err, ok, type Result } from "../result";
 import type { Conversation, Message, MessageRole } from "../types";
+import { CompactionService } from "./compaction";
 import { generateId } from "./id";
 import type { SessionMetadata, SessionNewOptions, SessionRepository } from "./session-repository";
 import type { ConversationStore, ListOptions } from "./store";
+import { TranscriptStore } from "./transcript-store";
 
 export interface CreateOptions {
   title?: string;
@@ -27,11 +30,22 @@ export interface ForkOptions {
 
 export interface StartNewSessionOptions extends SessionNewOptions {}
 
+export interface ConversationManagerCompactionOptions {
+  compactionService: CompactionService;
+  memoryStore: MemoryStore;
+  transcriptStore: TranscriptStore;
+}
+
 export class ConversationManager {
+  private readonly compactionOptions?: ConversationManagerCompactionOptions;
+
   constructor(
     private readonly store: ConversationStore,
     private readonly sessionRepository?: SessionRepository,
-  ) {}
+    compactionOptions?: ConversationManagerCompactionOptions,
+  ) {
+    this.compactionOptions = compactionOptions;
+  }
 
   async create(options: CreateOptions): Promise<Conversation> {
     const now = new Date();
@@ -88,6 +102,12 @@ export class ConversationManager {
     conversation.updatedAt = new Date();
 
     await this.store.save(conversation);
+
+    const compactionResult = await this.runCompactionIfNeeded(conversation);
+    if (!compactionResult.ok) {
+      throw compactionResult.error;
+    }
+
     return nextMessage;
   }
 
@@ -210,5 +230,45 @@ export class ConversationManager {
       metadata: message.metadata ? structuredClone(message.metadata) : undefined,
       toolCalls: message.toolCalls ? structuredClone(message.toolCalls) : undefined,
     }));
+  }
+
+  private async runCompactionIfNeeded(
+    conversation: Conversation,
+  ): Promise<Result<SessionMetadata | null, ConversationError>> {
+    if (!this.sessionRepository || !this.compactionOptions) {
+      return ok(null);
+    }
+
+    const mainSessionResult = await this.sessionRepository.getMain();
+    if (!mainSessionResult.ok) {
+      return mainSessionResult;
+    }
+
+    const session = mainSessionResult.value;
+    const shouldCompactResult = this.compactionOptions.compactionService.shouldCompact(
+      session,
+      conversation,
+    );
+    if (!shouldCompactResult.ok) {
+      return shouldCompactResult;
+    }
+
+    if (!shouldCompactResult.value) {
+      return ok(session);
+    }
+
+    const compactResult = await this.compactionOptions.compactionService.compact(
+      session,
+      conversation,
+      this.compactionOptions.memoryStore,
+      this.compactionOptions.transcriptStore,
+      this.sessionRepository,
+      this.store,
+    );
+    if (!compactResult.ok) {
+      return compactResult;
+    }
+
+    return ok(compactResult.value.session ?? session);
   }
 }

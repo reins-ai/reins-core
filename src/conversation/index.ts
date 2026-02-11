@@ -1,9 +1,12 @@
 export { ConversationManager } from "./manager";
+export { CompactionService } from "./compaction";
 export type {
+  ConversationManagerCompactionOptions,
   CreateOptions,
   ForkOptions,
   HistoryOptions,
 } from "./manager";
+export type { CompactionConfig, CompactionResult, SummaryGenerator } from "./compaction";
 export { InMemoryConversationStore } from "./memory-store";
 export { SessionRepository } from "./session-repository";
 export { TranscriptStore } from "./transcript-store";
