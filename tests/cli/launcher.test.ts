@@ -65,7 +65,7 @@ describe("CLI launcher routing", () => {
   });
 
   it("routes positional unknown input to one-shot stub", async () => {
-    const output: string[] = [];
+    const oneshotCalls: Array<{ query: string; options: unknown }> = [];
     let launchCalls = 0;
 
     const code = await runCli(["what", "time", "is", "it"], {
@@ -74,16 +74,21 @@ describe("CLI launcher routing", () => {
         launchCalls += 1;
         return 0;
       },
-      writeStdout: (text) => {
-        output.push(text);
+      runOneshot: async (query, options) => {
+        oneshotCalls.push({ query, options });
+        return 0;
       },
       writeStderr: () => {},
     });
 
     expect(code).toBe(0);
     expect(launchCalls).toBe(0);
-    expect(output.join("")).toContain("one-shot mode is coming soon");
-    expect(output.join("")).toContain("Query: what time is it");
+    expect(oneshotCalls).toEqual([
+      {
+        query: "what time is it",
+        options: {},
+      },
+    ]);
   });
 
   it("falls back to TUI launch for unknown flag", async () => {
