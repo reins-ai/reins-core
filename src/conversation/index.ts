@@ -6,6 +6,7 @@ export type {
 } from "./manager";
 export { InMemoryConversationStore } from "./memory-store";
 export { SessionRepository } from "./session-repository";
+export { TranscriptStore } from "./transcript-store";
 export { generateId } from "./id";
 export type {
   SessionCreateOptions,
@@ -14,4 +15,6 @@ export type {
   SessionRepositoryOptions,
   SessionStatus,
 } from "./session-repository";
+export type { TranscriptEntry, TranscriptMessageRole } from "./transcript-types";
+export type { TranscriptStoreOptions } from "./transcript-store";
 export type { ConversationStore, ListOptions } from "./store";
