@@ -20,6 +20,8 @@ export * from "./security/keychain-fallback";
 export * from "./security/keychain-provider";
 export * from "./security/machine-auth";
 export * from "./security/security-error";
+export * from "./sync/account-sync";
+export * from "./sync/types";
 export * from "./streaming";
 export * from "./tokens";
 export * from "./tools";
