@@ -1,6 +1,7 @@
 export * from "./context";
 export * from "./daemon/runtime";
 export * from "./daemon/service-installer";
+export * from "./daemon/paths";
 export * from "./daemon/types";
 export * from "./errors";
 export * from "./memory";
