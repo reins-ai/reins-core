@@ -79,7 +79,7 @@ export type OAuthProviderType = "anthropic" | "openai" | "google" | "glm" | "kim
 export interface OAuthProviderDefinition {
   id: OAuthProviderType | string;
   metadata: ProviderMetadata;
-  authModes: AuthMode[];
+  authModes: readonly AuthMode[];
   register?(config: OAuthConfig, context?: OAuthRegisterContext): Promise<AuthorizationResult>;
   authorize?(config: OAuthConfig, context?: OAuthRegisterContext): Promise<AuthorizationResult>;
   exchange?(code: string, config: OAuthConfig, context?: OAuthExchangeContext): Promise<OAuthTokens>;
