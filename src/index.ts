@@ -3,6 +3,8 @@ export * from "./conversation";
 export * from "./cron/scheduler";
 export * from "./cron/store";
 export * from "./cron/policy";
+export * from "./cron/rate-limit";
+export * from "./cron/executor";
 export * from "./cron/types";
 export * from "./daemon/runtime";
 export * from "./daemon/service-installer";
