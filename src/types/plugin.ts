@@ -1,4 +1,5 @@
 import type { Tool } from "./tool";
+import type { PluginDataAccess } from "../plugins/api";
 
 export interface PluginManifest {
   name: string;
@@ -8,6 +9,10 @@ export interface PluginManifest {
   permissions: PluginPermission[];
   entryPoint: string;
   dependencies?: Record<string, string>;
+  homepage?: string;
+  repository?: string;
+  license?: string;
+  minReinsVersion?: string;
 }
 
 export type PluginPermission =
@@ -20,11 +25,15 @@ export type PluginPermission =
   | "read_reminders"
   | "write_reminders"
   | "network_access"
-  | "file_access";
+  | "file_access"
+  | "schedule_cron"
+  | "admin_cron";
 
 export interface PluginContext {
   registerTool(tool: Tool): void;
   on(event: PluginEvent, handler: PluginEventHandler): void;
+  off(event: PluginEvent, handler: PluginEventHandler): void;
+  data: PluginDataAccess;
   config: PluginConfigAPI;
   log: PluginLogger;
 }
