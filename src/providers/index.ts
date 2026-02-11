@@ -1,4 +1,5 @@
 export * from "./byok";
+export * from "./auth-service";
 export * from "./credentials";
 export * from "./local";
 export * from "./mock";

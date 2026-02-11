@@ -2,10 +2,22 @@ import type { Message } from "./conversation";
 import type { StreamEvent } from "./streaming";
 import type { ToolCall, ToolDefinition } from "./tool";
 
+export type ProviderType = "gateway" | "byok" | "oauth" | "local";
+
 export interface ProviderConfig {
   id: string;
   name: string;
-  type: "gateway" | "byok" | "oauth" | "local";
+  type: ProviderType;
+  baseUrl?: string;
+  capabilities?: ProviderCapabilities;
+}
+
+export type ProviderAuthMode = "api_key" | "oauth";
+
+export interface ProviderCapabilities {
+  authModes: ProviderAuthMode[];
+  requiresAuth: boolean;
+  envVars?: string[];
   baseUrl?: string;
 }
 
@@ -22,6 +34,7 @@ export type ModelCapability = "chat" | "streaming" | "tool_use" | "vision" | "au
 
 export interface Provider {
   readonly config: ProviderConfig;
+  readonly capabilities?: ProviderCapabilities;
   chat(request: ChatRequest): Promise<ChatResponse>;
   stream(request: ChatRequest): AsyncIterable<StreamEvent>;
   listModels(): Promise<Model[]>;
