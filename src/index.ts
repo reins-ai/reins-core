@@ -1,4 +1,5 @@
 export * from "./context";
+export * from "./conversation";
 export * from "./daemon/runtime";
 export * from "./daemon/service-installer";
 export * from "./daemon/paths";
