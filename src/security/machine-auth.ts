@@ -34,6 +34,13 @@ export interface MachineAuthServiceOptions {
   onAuditSignal?: (signal: MachineAuthAuditSignal) => void;
 }
 
+export interface DaemonHandshakeResult {
+  authenticated: boolean;
+  daemonVersion: string;
+  contractVersion: string;
+  capabilities: string[];
+}
+
 export class MachineAuthService {
   private readonly provider: KeychainProvider;
   private readonly serviceName: string;
@@ -141,6 +148,27 @@ export class MachineAuthService {
     }
 
     return ok(storedResult.value);
+  }
+
+  public async handshake(
+    token: string,
+    daemonInfo: {
+      version: string;
+      contractVersion: string;
+      capabilities: string[];
+    },
+  ): Promise<Result<DaemonHandshakeResult, SecurityError>> {
+    const validation = await this.validate(token);
+    if (!validation.ok) {
+      return validation;
+    }
+
+    return ok({
+      authenticated: validation.value,
+      daemonVersion: daemonInfo.version,
+      contractVersion: daemonInfo.contractVersion,
+      capabilities: [...daemonInfo.capabilities],
+    });
   }
 
   private isTokenFormatValid(token: string): boolean {

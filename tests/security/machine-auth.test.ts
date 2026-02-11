@@ -144,6 +144,53 @@ describe("MachineAuthService", () => {
       expect(result.error).toBeInstanceOf(SecurityError);
     }
   });
+
+  it("returns authenticated handshake when token is valid", async () => {
+    const service = new MachineAuthService({ provider: new InMemoryKeychainProvider() });
+    const bootstrapped = await service.bootstrap();
+    expect(bootstrapped.ok).toBe(true);
+
+    if (!bootstrapped.ok) {
+      return;
+    }
+
+    const result = await service.handshake(bootstrapped.value, {
+      version: "1.2.3",
+      contractVersion: "1.0.0",
+      capabilities: ["health", "status", "machine-auth"],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        authenticated: true,
+        daemonVersion: "1.2.3",
+        contractVersion: "1.0.0",
+        capabilities: ["health", "status", "machine-auth"],
+      },
+    });
+  });
+
+  it("returns unauthenticated handshake when token is invalid", async () => {
+    const service = new MachineAuthService({ provider: new InMemoryKeychainProvider() });
+    await service.bootstrap();
+
+    const result = await service.handshake("rm_deadbeef", {
+      version: "1.2.3",
+      contractVersion: "1.0.0",
+      capabilities: ["health"],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        authenticated: false,
+        daemonVersion: "1.2.3",
+        contractVersion: "1.0.0",
+        capabilities: ["health"],
+      },
+    });
+  });
 });
 
 describe("EncryptedFileKeychainProvider", () => {
