@@ -115,6 +115,8 @@ export interface PlatformServiceAdapter {
   platform: DaemonPlatform;
   generateConfig(definition: ServiceDefinition): Result<GeneratedServiceConfig, DaemonError>;
   install(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<Result<void, DaemonError>>;
+  start(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<Result<void, DaemonError>>;
+  stop(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<Result<void, DaemonError>>;
   uninstall(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<Result<void, DaemonError>>;
   status(
     definition: ServiceDefinition,
