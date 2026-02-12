@@ -56,3 +56,26 @@ export interface CredentialStoreState {
   records: Record<string, CredentialRecord>;
   envelope: CredentialSyncEnvelope;
 }
+
+export interface ApiKeyCredentialPayload {
+  encryptedKey: string;
+  iv: string;
+  maskedKey: string;
+  usageCount: number;
+  isValid: boolean;
+  lastUsedAt?: string;
+}
+
+export interface OAuthCredentialPayload {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: string;
+  scope: string;
+  tokenType: string;
+}
+
+export interface CredentialUpdateInput {
+  id: string;
+  payload: unknown;
+  metadata?: Record<string, string>;
+}

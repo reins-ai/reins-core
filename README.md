@@ -1,62 +1,66 @@
-# Reins
+# @reins/core
 
-Open personal assistant platform for terminal, desktop, and mobile.
+Shared TypeScript core for the Reins platform.
+
+`@reins/core` contains the reusable assistant runtime used by TUI, Desktop, Mobile, and supporting services.
+
+## What This Repo Provides
+
+- Conversation management and persistence abstractions
+- Provider interfaces and routing primitives
+- Streaming event model
+- Tool registry/executor and built-in tools
+- Plugin lifecycle, permissions, installer, and sandbox runtime
+- Voice, persona, context-window, and memory modules
 
 ## Architecture Overview
 
-Reins is split into seven repositories so each platform and service can evolve independently while sharing a single TypeScript core.
+```text
+src/
+  conversation/  -> Conversation manager + stores
+  providers/     -> Provider registry/router + provider families
+  tools/         -> Tool contracts + executor + built-in tools
+  plugins/       -> Manifest/lifecycle/permissions/sandbox/loader
+  streaming/     -> Stream response primitives
+  memory/        -> Memory store contracts + implementations
+  persona/       -> Persona and prompt assembly
+  context/       -> Context-window management
+  types/         -> Shared platform contracts
+tests/
+  unit + integration + cross-platform + e2e + security suites
+```
 
-| Repository | Package | Responsibility |
-|------------|---------|----------------|
-| [reins-core](https://github.com/hffmnnj/reins-core) | `@reins/core` | Shared conversation harness, provider abstractions, memory, and plugin APIs |
-| [reins-tui](https://github.com/hffmnnj/reins-tui) | `@reins/tui` | Terminal interface powered by OpenTUI and Bun |
-| [reins-desktop](https://github.com/hffmnnj/reins-desktop) | `@reins/desktop` | Desktop client powered by Tauri v2 |
-| [reins-mobile](https://github.com/hffmnnj/reins-mobile) | `@reins/mobile` | React Native client for iOS and Android |
-| [reins-gateway](https://github.com/hffmnnj/reins-gateway) | `@reins/gateway` | Model gateway, API key abstraction, metering, and billing |
-| [reins-backend](https://github.com/hffmnnj/reins-backend) | `@reins/backend` | Convex backend services and app data APIs |
-| [reins-sdk](https://github.com/hffmnnj/reins-sdk) | `@reins/sdk` | Third-party plugin SDK |
-
-## Stack Summary
-
-- Runtime: Bun
-- Language: TypeScript (strict mode)
-- Backend: Convex
-- Authentication: Clerk (Organizations)
-- TUI: OpenTUI
-- Desktop: Tauri v2
-- Mobile: React Native
-- Design system: shared tokens + headless UI logic
-
-## Quick Start
-
-1. Clone all repositories into the same parent directory.
-2. In `reins-core`, install dependencies and run checks:
+## Setup
 
 ```bash
 bun install
-bun run typecheck
-bun test
 ```
 
-3. Link `@reins/core` locally:
+## Scripts
+
+- `bun run typecheck` - TypeScript checks
+- `bun test` - Full test suite
+- `bun run build` - TypeScript build output
+
+## Development Workflow
+
+Local linking for downstream repos:
 
 ```bash
+# in this repo
 bun link
-```
 
-4. In any downstream repo (for example `reins-tui`), link the local core package and run typecheck:
-
-```bash
+# in downstream repo
 bun link @reins/core
-bun run typecheck
 ```
 
-## Repository Links
+## Test Commands
 
-- https://github.com/hffmnnj/reins-core
-- https://github.com/hffmnnj/reins-tui
-- https://github.com/hffmnnj/reins-desktop
-- https://github.com/hffmnnj/reins-mobile
-- https://github.com/hffmnnj/reins-gateway
-- https://github.com/hffmnnj/reins-backend
-- https://github.com/hffmnnj/reins-sdk
+- Full suite: `bun test`
+- Typecheck: `bun run typecheck`
+
+## Related Docs
+
+- Root docs: `../README.md`
+- Core API: `../docs/api/core.md`
+- Plugin guide: `../docs/plugin-guide.md`

@@ -101,6 +101,10 @@ class LaunchdUserAdapter implements PlatformServiceAdapter {
   }
 
   async install(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+    return this.start(definition, runner);
+  }
+
+  async start(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
     const filePath = join(homedir(), "Library", "LaunchAgents", `${definition.serviceName}.plist`);
     const uid = String(process.getuid?.() ?? 0);
     const bootstrap = await runner.run("launchctl", ["bootstrap", `gui/${uid}`, filePath]);
@@ -116,7 +120,7 @@ class LaunchdUserAdapter implements PlatformServiceAdapter {
     return ok(undefined);
   }
 
-  async uninstall(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+  async stop(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
     const uid = String(process.getuid?.() ?? 0);
     const result = await runner.run("launchctl", ["bootout", `gui/${uid}/${definition.serviceName}`]);
     if (!result.ok) {
@@ -124,6 +128,10 @@ class LaunchdUserAdapter implements PlatformServiceAdapter {
     }
 
     return ok(undefined);
+  }
+
+  async uninstall(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+    return this.stop(definition, runner);
   }
 
   async status(
@@ -177,6 +185,24 @@ class SystemdUserAdapter implements PlatformServiceAdapter {
     const enable = await runner.run("systemctl", ["--user", "enable", "--now", `${definition.serviceName}.service`]);
     if (!enable.ok) {
       return enable;
+    }
+
+    return ok(undefined);
+  }
+
+  async start(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+    const start = await runner.run("systemctl", ["--user", "start", `${definition.serviceName}.service`]);
+    if (!start.ok) {
+      return start;
+    }
+
+    return ok(undefined);
+  }
+
+  async stop(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+    const stop = await runner.run("systemctl", ["--user", "stop", `${definition.serviceName}.service`]);
+    if (!stop.ok) {
+      return stop;
     }
 
     return ok(undefined);
@@ -259,8 +285,26 @@ class WindowsUserServiceAdapter implements PlatformServiceAdapter {
     return ok(undefined);
   }
 
-  async uninstall(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+  async start(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+    const start = await runner.run("sc.exe", ["start", definition.serviceName]);
+    if (!start.ok) {
+      return start;
+    }
+
+    return ok(undefined);
+  }
+
+  async stop(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
     const stop = await runner.run("sc.exe", ["stop", definition.serviceName]);
+    if (!stop.ok) {
+      return stop;
+    }
+
+    return ok(undefined);
+  }
+
+  async uninstall(definition: ServiceDefinition, runner: PlatformCommandRunner): Promise<DaemonResult<void>> {
+    const stop = await this.stop(definition, runner);
     if (!stop.ok) {
       return stop;
     }
@@ -363,6 +407,42 @@ export class ServiceInstaller {
     }
 
     return ok(configResult.value);
+  }
+
+  /**
+   * Starts an installed per-user service.
+   */
+  async start(definition: ServiceDefinition): Promise<DaemonResult<void>> {
+    const adapterResult = this.resolveAdapter();
+    if (!adapterResult.ok) {
+      return adapterResult;
+    }
+
+    return adapterResult.value.start(definition, this.runner);
+  }
+
+  /**
+   * Stops a running per-user service.
+   */
+  async stop(definition: ServiceDefinition): Promise<DaemonResult<void>> {
+    const adapterResult = this.resolveAdapter();
+    if (!adapterResult.ok) {
+      return adapterResult;
+    }
+
+    return adapterResult.value.stop(definition, this.runner);
+  }
+
+  /**
+   * Restarts a per-user service.
+   */
+  async restart(definition: ServiceDefinition): Promise<DaemonResult<void>> {
+    const stopResult = await this.stop(definition);
+    if (!stopResult.ok) {
+      return stopResult;
+    }
+
+    return this.start(definition);
   }
 
   /**

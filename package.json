@@ -3,12 +3,25 @@
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "reins": "./src/cli/index.ts"
+  },
   "exports": {
     ".": "./src/index.ts",
+    "./conversation": "./src/conversation/index.ts",
+    "./context": "./src/context/index.ts",
     "./errors": "./src/errors.ts",
+    "./memory": "./src/memory/index.ts",
+    "./persona": "./src/persona/index.ts",
+    "./plugins": "./src/plugins/index.ts",
+    "./providers": "./src/providers/index.ts",
     "./result": "./src/result.ts",
+    "./streaming": "./src/streaming/index.ts",
     "./tokens": "./src/tokens/index.ts",
-    "./types": "./src/types/index.ts"
+    "./tools": "./src/tools/index.ts",
+    "./types": "./src/types/index.ts",
+    "./utils": "./src/utils/index.ts",
+    "./voice": "./src/voice/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

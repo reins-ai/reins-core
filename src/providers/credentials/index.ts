@@ -1,5 +1,6 @@
 export { EncryptedCredentialStore } from "./store";
 export type {
+  ApiKeyCredentialPayload,
   CredentialFilePayload,
   CredentialRecord,
   CredentialRecordInput,
@@ -7,5 +8,7 @@ export type {
   CredentialStoreState,
   CredentialSyncEnvelope,
   CredentialType,
+  CredentialUpdateInput,
   EncryptedCredentialPayload,
+  OAuthCredentialPayload,
 } from "./types";

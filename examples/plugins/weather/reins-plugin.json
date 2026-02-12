@@ -1,0 +1,9 @@
+{
+  "name": "weather",
+  "version": "1.0.0",
+  "description": "Get current weather and forecasts for any location",
+  "author": "Reins Team",
+  "permissions": ["network_access"],
+  "entryPoint": "src/index.ts",
+  "license": "MIT"
+}

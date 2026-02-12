@@ -8,6 +8,7 @@ export type {
 } from "./manager";
 export type { CompactionConfig, CompactionResult, SummaryGenerator } from "./compaction";
 export { InMemoryConversationStore } from "./memory-store";
+export { SQLiteConversationStore } from "./sqlite-store";
 export { SessionRepository } from "./session-repository";
 export { TranscriptStore } from "./transcript-store";
 export { generateId } from "./id";
@@ -20,4 +21,5 @@ export type {
 } from "./session-repository";
 export type { TranscriptEntry, TranscriptMessageRole } from "./transcript-types";
 export type { TranscriptStoreOptions } from "./transcript-store";
-export type { ConversationStore, ListOptions } from "./store";
+export type { SQLiteConversationStoreOptions } from "./sqlite-store";
+export type { ConversationStore, ConversationStoreResult, ListOptions } from "./store";

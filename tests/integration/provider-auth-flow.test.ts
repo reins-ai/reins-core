@@ -133,6 +133,7 @@ describe("integration/provider-auth-flow", () => {
         requiresAuth: false,
         authModes: [],
         configured: true,
+        connectionState: "ready",
         credentialType: undefined,
         updatedAt: undefined,
         envVars: undefined,

@@ -17,6 +17,7 @@ export type ProviderAuthMode = "api_key" | "oauth";
 export interface ProviderCapabilities {
   authModes: ProviderAuthMode[];
   requiresAuth: boolean;
+  userConfigurable?: boolean;
   envVars?: string[];
   baseUrl?: string;
 }

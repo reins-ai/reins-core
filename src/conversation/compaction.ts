@@ -159,7 +159,10 @@ export class CompactionService {
         updatedAt: new Date(),
       };
 
-      await conversationStore.save(compactedConversation);
+      const saveResult = await conversationStore.save(compactedConversation);
+      if (!saveResult.ok) {
+        return saveResult;
+      }
 
       const finalizedSessionResult = await sessionRepository.update(session.id, {
         status: "active",

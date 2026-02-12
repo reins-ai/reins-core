@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -11,6 +13,7 @@ import type {
   CredentialRecordQuery,
   CredentialStoreState,
   CredentialSyncEnvelope,
+  CredentialUpdateInput,
   EncryptedCredentialPayload,
 } from "./types";
 
@@ -18,6 +21,91 @@ const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const DERIVATION_ITERATIONS = 100_000;
 const STATE_VERSION = 1;
+const CREDENTIAL_SECRET_FILE_NAME = "encryption.secret";
+
+export const CREDENTIAL_ENCRYPTION_SECRET_ENV = "REINS_CREDENTIAL_ENCRYPTION_SECRET";
+
+export interface CredentialEncryptionSecretOptions {
+  env?: NodeJS.ProcessEnv;
+  nodeEnv?: string;
+  filePath?: string;
+}
+
+export function getCredentialEncryptionSecretFilePath(): string {
+  return join(getDataRoot(), "credentials", CREDENTIAL_SECRET_FILE_NAME);
+}
+
+export function resolveCredentialEncryptionSecret(options: CredentialEncryptionSecretOptions = {}): string {
+  const env = options.env ?? process.env;
+  const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
+
+  const envSecret = env[CREDENTIAL_ENCRYPTION_SECRET_ENV];
+  if (envSecret !== undefined) {
+    const normalized = envSecret.trim();
+    if (normalized.length === 0) {
+      throw new AuthError(
+        `${CREDENTIAL_ENCRYPTION_SECRET_ENV} is set but empty. Provide a non-empty secret for credential encryption.`,
+      );
+    }
+
+    return normalized;
+  }
+
+  const secretPath = options.filePath ?? getCredentialEncryptionSecretFilePath();
+  if (existsSync(secretPath)) {
+    try {
+      const persistedSecret = readFileSync(secretPath, "utf8").trim();
+      if (persistedSecret.length === 0) {
+        throw new AuthError(
+          `Credential encryption secret file is empty: ${secretPath}. Remove it and restart to regenerate, or provide ${CREDENTIAL_ENCRYPTION_SECRET_ENV}.`,
+        );
+      }
+
+      return persistedSecret;
+    } catch (error) {
+      throw new AuthError(
+        `Unable to read credential encryption secret file: ${secretPath}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+  }
+
+  const generatedSecret = randomBytes(32).toString("base64");
+  const secretDirectory = dirname(secretPath);
+
+  try {
+    mkdirSync(secretDirectory, { recursive: true, mode: DIRECTORY_MODE });
+    if (process.platform !== "win32") {
+      chmodSync(secretDirectory, DIRECTORY_MODE);
+    }
+
+    writeFileSync(secretPath, generatedSecret, { encoding: "utf8", mode: FILE_MODE, flag: "wx" });
+    if (process.platform !== "win32") {
+      chmodSync(secretPath, FILE_MODE);
+    }
+
+    return generatedSecret;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      const existingSecret = readFileSync(secretPath, "utf8").trim();
+      if (existingSecret.length > 0) {
+        return existingSecret;
+      }
+    }
+
+    if (nodeEnv === "production") {
+      throw new AuthError(
+        `Credential encryption secret is missing and could not be initialized in production. Provide ${CREDENTIAL_ENCRYPTION_SECRET_ENV} or ensure ${secretPath} is writable.`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+
+    throw new AuthError(
+      `Unable to initialize credential encryption secret at ${secretPath}.`,
+      error instanceof Error ? error : undefined,
+    );
+  }
+}
 
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
@@ -412,6 +500,59 @@ export class EncryptedCredentialStore {
     }
 
     return ok(true);
+  }
+
+  public async update(input: CredentialUpdateInput): Promise<Result<CredentialRecord, AuthError>> {
+    const recordId = input.id.trim();
+    if (recordId.length === 0) {
+      return err(new AuthError("Credential id is required for update"));
+    }
+
+    const stateResult = await this.loadState();
+    if (!stateResult.ok) {
+      return stateResult;
+    }
+
+    const existing = stateResult.value.records[recordId];
+    if (!existing) {
+      return err(new AuthError("Credential record not found for update"));
+    }
+
+    if (existing.revokedAt !== undefined) {
+      return err(new AuthError("Cannot update a revoked credential"));
+    }
+
+    const encryptedPayloadResult = await this.encryptPayload(input.payload);
+    if (!encryptedPayloadResult.ok) {
+      return encryptedPayloadResult;
+    }
+
+    const now = Date.now();
+    const updatedRecord: CredentialRecord = {
+      ...existing,
+      metadata: input.metadata ? copyMetadata(input.metadata) : existing.metadata,
+      encryptedPayload: encryptedPayloadResult.value,
+      updatedAt: now,
+      sync: {
+        version: STATE_VERSION,
+        checksum: "",
+        updatedAt: now,
+        syncedAt: existing.sync.syncedAt,
+      },
+    };
+
+    stateResult.value.records[recordId] = updatedRecord;
+    const saveResult = await this.saveState(stateResult.value);
+    if (!saveResult.ok) {
+      return saveResult;
+    }
+
+    const persisted = saveResult.value.records[recordId];
+    if (!persisted) {
+      return err(new AuthError("Credential record update failed"));
+    }
+
+    return ok(cloneRecord(persisted));
   }
 
   public async decryptPayload<T>(record: CredentialRecord): Promise<Result<T, AuthError>> {
