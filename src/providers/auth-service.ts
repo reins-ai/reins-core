@@ -2,7 +2,19 @@ import { AuthError } from "../errors";
 import { err, ok, type Result } from "../result";
 import type { ProviderAuthMode as AuthMode, ProviderConfig, ProviderType } from "../types/provider";
 import type { CredentialRecord, CredentialType, EncryptedCredentialStore } from "./credentials";
+import { OAuthProviderRegistry } from "./oauth/provider";
 import type { OAuthTokens } from "./oauth";
+import type {
+  ApiKeyAuthStrategy,
+  ApiKeyCredentialInput,
+  AuthStrategyContext,
+  AuthorizationResult,
+  OAuthCallbackContext,
+  OAuthInitiateContext,
+  OAuthRefreshContext,
+  OAuthStrategy,
+  OAuthStoreContext,
+} from "./oauth/types";
 import type { ProviderRegistry } from "./registry";
 
 const REINS_GATEWAY_PROVIDER_ID = "reins-gateway";
@@ -13,6 +25,47 @@ interface SerializedOAuthTokens {
   expiresAt: string;
   scope: string;
   tokenType: string;
+}
+
+function toSerializedOAuthTokensPayload(value: unknown): SerializedOAuthTokens | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const payload = value as Record<string, unknown>;
+  const accessToken = payload.accessToken;
+  const refreshToken = payload.refreshToken;
+  const expiresAt = payload.expiresAt;
+  const scope = payload.scope;
+  const tokenType = payload.tokenType;
+
+  if (
+    typeof accessToken !== "string" ||
+    (refreshToken !== undefined && typeof refreshToken !== "string") ||
+    typeof expiresAt !== "string" ||
+    typeof scope !== "string" ||
+    typeof tokenType !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    accessToken,
+    refreshToken,
+    expiresAt,
+    scope,
+    tokenType,
+  };
+}
+
+function toOAuthTokens(value: SerializedOAuthTokens): OAuthTokens {
+  return {
+    accessToken: value.accessToken,
+    refreshToken: value.refreshToken,
+    expiresAt: new Date(value.expiresAt),
+    scope: value.scope,
+    tokenType: value.tokenType,
+  };
 }
 
 type SupportedCredentialType = Extract<CredentialType, "api_key" | "oauth">;
@@ -36,6 +89,7 @@ export interface AuthService {
   revokeProvider(provider: string): Promise<Result<void, AuthError>>;
   requiresAuth(provider: string): boolean;
   getAuthMethods(provider: string): AuthMode[];
+  handleCommand(payload: ProviderAuthCommandPayload): Promise<Result<ProviderAuthCommandResult, AuthError>>;
 }
 
 export type ProviderAuthSurface = "cli" | "tui" | "desktop";
@@ -76,6 +130,22 @@ export type ProviderAuthCommandPayload =
   | GetProviderAuthPayload
   | ListProviderAuthPayload
   | RevokeProviderAuthPayload;
+
+export interface ProviderAuthGuidance {
+  provider: string;
+  action: "reauth" | "configure" | "retry";
+  message: string;
+  supportedModes: AuthMode[];
+}
+
+export interface ProviderAuthCommandResult {
+  action: "configure" | "get" | "list" | "revoke";
+  provider?: string;
+  source: ProviderAuthSurface;
+  credential?: CredentialRecord | null;
+  providers?: ProviderAuthStatus[];
+  guidance?: ProviderAuthGuidance;
+}
 
 function normalizeProviderId(provider: string): string {
   return provider.trim().toLowerCase();
@@ -167,15 +237,196 @@ function validateApiKey(provider: string, key: string): Result<string, AuthError
 export interface ProviderAuthServiceOptions {
   store: EncryptedCredentialStore;
   registry: ProviderRegistry;
+  oauthProviderRegistry?: OAuthProviderRegistry;
+  apiKeyStrategies?: Record<string, ApiKeyAuthStrategy>;
+  oauthStrategies?: Record<string, OAuthStrategy>;
+}
+
+class CredentialStoreApiKeyStrategy implements ApiKeyAuthStrategy {
+  public readonly mode = "api_key" as const;
+
+  constructor(
+    private readonly credentialStore: EncryptedCredentialStore,
+    private readonly keyValidator: (provider: string, key: string) => Result<string, AuthError>,
+  ) {}
+
+  public validate(input: ApiKeyCredentialInput): Result<string, AuthError> {
+    return this.keyValidator(input.provider, input.key);
+  }
+
+  public async store(input: ApiKeyCredentialInput): Promise<Result<void, AuthError>> {
+    const result = await this.credentialStore.set({
+      id: `auth_${input.provider}_api_key`,
+      provider: input.provider,
+      type: "api_key",
+      accountId: "default",
+      metadata: normalizeMetadata(input.metadata),
+      payload: {
+        key: input.key,
+      },
+    });
+
+    if (!result.ok) {
+      return err(new AuthError(`Unable to set API key for provider ${input.provider}`, result.error));
+    }
+
+    return ok(undefined);
+  }
+
+  public async retrieve(context: AuthStrategyContext): Promise<Result<{ key: string; metadata?: Record<string, string>; updatedAt: number; } | null, AuthError>> {
+    const result = await this.credentialStore.get({
+      id: `auth_${context.provider}_api_key`,
+      provider: context.provider,
+      type: "api_key",
+      accountId: "default",
+    });
+    if (!result.ok) {
+      return err(new AuthError(`Unable to load API key credential for provider ${context.provider}`, result.error));
+    }
+
+    if (!result.value) {
+      return ok(null);
+    }
+
+    const payloadResult = await this.credentialStore.decryptPayload<unknown>(result.value);
+    if (!payloadResult.ok) {
+      return err(new AuthError(`Unable to read API key credential for provider ${context.provider}`, payloadResult.error));
+    }
+
+    const payload = payloadResult.value;
+    if (typeof payload !== "object" || payload === null || typeof (payload as Record<string, unknown>).key !== "string") {
+      return err(new AuthError(`Stored API key credential is invalid for provider ${context.provider}`));
+    }
+
+    return ok({
+      key: (payload as Record<string, string>).key,
+      metadata: result.value.metadata,
+      updatedAt: result.value.updatedAt,
+    });
+  }
+
+  public async revoke(context: AuthStrategyContext): Promise<Result<void, AuthError>> {
+    const result = await this.credentialStore.revoke(`auth_${context.provider}_api_key`);
+    if (!result.ok) {
+      return err(new AuthError(`Unable to revoke API key for provider ${context.provider}`, result.error));
+    }
+
+    return ok(undefined);
+  }
+}
+
+class CredentialStoreOAuthStrategy implements OAuthStrategy {
+  public readonly mode = "oauth" as const;
+
+  constructor(
+    private readonly credentialStore: EncryptedCredentialStore,
+    private readonly oauthProviders: OAuthProviderRegistry,
+  ) {}
+
+  public async initiate(context: OAuthInitiateContext): Promise<Result<AuthorizationResult, AuthError>> {
+    const strategyResult = this.oauthProviders.resolveStrategy(context.provider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
+    return strategyResult.value.initiate(context);
+  }
+
+  public async handleCallback(context: OAuthCallbackContext): Promise<Result<OAuthTokens, AuthError>> {
+    const strategyResult = this.oauthProviders.resolveStrategy(context.provider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
+    return strategyResult.value.handleCallback(context);
+  }
+
+  public async refresh(context: OAuthRefreshContext): Promise<Result<OAuthTokens, AuthError>> {
+    const strategyResult = this.oauthProviders.resolveStrategy(context.provider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
+    return strategyResult.value.refresh(context);
+  }
+
+  public async storeTokens(context: OAuthStoreContext): Promise<Result<void, AuthError>> {
+    const result = await this.credentialStore.set({
+      id: `auth_${context.provider}_oauth`,
+      provider: context.provider,
+      type: "oauth",
+      accountId: "default",
+      payload: toSerializedOAuthTokens(context.tokens),
+    });
+
+    if (!result.ok) {
+      return err(new AuthError(`Unable to set OAuth tokens for provider ${context.provider}`, result.error));
+    }
+
+    return ok(undefined);
+  }
+
+  public async retrieveTokens(context: AuthStrategyContext): Promise<Result<OAuthTokens | null, AuthError>> {
+    const result = await this.credentialStore.get({
+      id: `auth_${context.provider}_oauth`,
+      provider: context.provider,
+      type: "oauth",
+      accountId: "default",
+    });
+
+    if (!result.ok) {
+      return err(new AuthError(`Unable to get OAuth credential for provider ${context.provider}`, result.error));
+    }
+
+    if (!result.value) {
+      return ok(null);
+    }
+
+    const payloadResult = await this.credentialStore.decryptPayload<unknown>(result.value);
+    if (!payloadResult.ok) {
+      return err(new AuthError(`Unable to read OAuth credential for provider ${context.provider}`, payloadResult.error));
+    }
+
+    const serialized = toSerializedOAuthTokensPayload(payloadResult.value);
+    if (!serialized) {
+      return err(new AuthError(`Stored OAuth credential is invalid for provider ${context.provider}`));
+    }
+
+    return ok(toOAuthTokens(serialized));
+  }
+
+  public async revoke(context: AuthStrategyContext): Promise<Result<void, AuthError>> {
+    const result = await this.credentialStore.revoke(`auth_${context.provider}_oauth`);
+    if (!result.ok) {
+      return err(new AuthError(`Unable to revoke OAuth credential for provider ${context.provider}`, result.error));
+    }
+
+    return ok(undefined);
+  }
 }
 
 export class ProviderAuthService implements AuthService {
   private readonly store: EncryptedCredentialStore;
   private readonly registry: ProviderRegistry;
+  private readonly apiKeyStrategies: Map<string, ApiKeyAuthStrategy>;
+  private readonly oauthStrategies: Map<string, OAuthStrategy>;
+  private readonly defaultApiKeyStrategy: ApiKeyAuthStrategy;
+  private readonly defaultOAuthStrategy: OAuthStrategy;
 
   constructor(options: ProviderAuthServiceOptions) {
     this.store = options.store;
     this.registry = options.registry;
+    this.defaultApiKeyStrategy = new CredentialStoreApiKeyStrategy(this.store, validateApiKey);
+    this.defaultOAuthStrategy = new CredentialStoreOAuthStrategy(
+      this.store,
+      options.oauthProviderRegistry ?? new OAuthProviderRegistry(),
+    );
+    this.apiKeyStrategies = new Map(
+      Object.entries(options.apiKeyStrategies ?? {}).map(([provider, strategy]) => [normalizeProviderId(provider), strategy]),
+    );
+    this.oauthStrategies = new Map(
+      Object.entries(options.oauthStrategies ?? {}).map(([provider, strategy]) => [normalizeProviderId(provider), strategy]),
+    );
   }
 
   public async setApiKey(
@@ -189,7 +440,16 @@ export class ProviderAuthService implements AuthService {
     }
 
     const normalizedProvider = providerResult.value;
-    const keyResult = validateApiKey(normalizedProvider, key);
+    const strategyResult = this.resolveApiKeyStrategy(normalizedProvider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
+    const keyResult = strategyResult.value.validate({
+      provider: normalizedProvider,
+      key,
+      metadata,
+    });
     if (!keyResult.ok) {
       return keyResult;
     }
@@ -198,22 +458,11 @@ export class ProviderAuthService implements AuthService {
       return err(new AuthError(`Provider ${normalizedProvider} does not support api_key authentication`));
     }
 
-    const result = await this.store.set({
-      id: `auth_${normalizedProvider}_api_key`,
+    return strategyResult.value.store({
       provider: normalizedProvider,
-      type: "api_key",
-      accountId: "default",
-      metadata: normalizeMetadata(metadata),
-      payload: {
-        key: keyResult.value,
-      },
+      key: keyResult.value,
+      metadata,
     });
-
-    if (!result.ok) {
-      return err(new AuthError(`Unable to set API key for provider ${normalizedProvider}`, result.error));
-    }
-
-    return ok(undefined);
   }
 
   public async setOAuthTokens(provider: string, tokens: OAuthTokens): Promise<Result<void, AuthError>> {
@@ -223,23 +472,19 @@ export class ProviderAuthService implements AuthService {
     }
 
     const normalizedProvider = providerResult.value;
+    const strategyResult = this.resolveOAuthStrategy(normalizedProvider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
     if (!this.getAuthMethods(normalizedProvider).includes("oauth")) {
       return err(new AuthError(`Provider ${normalizedProvider} does not support oauth authentication`));
     }
 
-    const result = await this.store.set({
-      id: `auth_${normalizedProvider}_oauth`,
+    return strategyResult.value.storeTokens({
       provider: normalizedProvider,
-      type: "oauth",
-      accountId: "default",
-      payload: toSerializedOAuthTokens(tokens),
+      tokens,
     });
-
-    if (!result.ok) {
-      return err(new AuthError(`Unable to set OAuth tokens for provider ${normalizedProvider}`, result.error));
-    }
-
-    return ok(undefined);
   }
 
   public async getCredential(provider: string): Promise<Result<CredentialRecord | null, AuthError>> {
@@ -318,23 +563,111 @@ export class ProviderAuthService implements AuthService {
     }
 
     const normalizedProvider = providerResult.value;
-    const recordsResult = await this.store.list({
-      provider: normalizedProvider,
-      includeRevoked: false,
-    });
+    const authModes = this.getAuthMethods(normalizedProvider);
+    if (authModes.includes("api_key")) {
+      const apiKeyStrategy = this.resolveApiKeyStrategy(normalizedProvider);
+      if (!apiKeyStrategy.ok) {
+        return apiKeyStrategy;
+      }
 
-    if (!recordsResult.ok) {
-      return err(new AuthError(`Unable to list credentials for provider ${normalizedProvider}`, recordsResult.error));
+      const revokeResult = await apiKeyStrategy.value.revoke({ provider: normalizedProvider });
+      if (!revokeResult.ok) {
+        return revokeResult;
+      }
     }
 
-    for (const record of recordsResult.value) {
-      const revokeResult = await this.store.revoke(record.id);
+    if (authModes.includes("oauth")) {
+      const oauthStrategy = this.resolveOAuthStrategy(normalizedProvider);
+      if (!oauthStrategy.ok) {
+        return oauthStrategy;
+      }
+
+      const revokeResult = await oauthStrategy.value.revoke({ provider: normalizedProvider });
       if (!revokeResult.ok) {
-        return err(new AuthError(`Unable to revoke credentials for provider ${normalizedProvider}`, revokeResult.error));
+        return revokeResult;
       }
     }
 
     return ok(undefined);
+  }
+
+  public async handleCommand(payload: ProviderAuthCommandPayload): Promise<Result<ProviderAuthCommandResult, AuthError>> {
+    if ("action" in payload && payload.action === "list") {
+      const listResult = await this.listProviders();
+      if (!listResult.ok) {
+        return listResult;
+      }
+
+      return ok({
+        action: "list",
+        source: payload.source,
+        providers: listResult.value,
+      });
+    }
+
+    const providerResult = validateProviderId(payload.provider);
+    if (!providerResult.ok) {
+      return providerResult;
+    }
+
+    const provider = providerResult.value;
+    const source = payload.source;
+
+    if ("action" in payload && payload.action === "get") {
+      const credentialResult = await this.getCredential(provider);
+      if (!credentialResult.ok) {
+        return credentialResult;
+      }
+
+      const guidance = this.buildGuidance(provider, credentialResult.value, source);
+      return ok({
+        action: "get",
+        provider,
+        source,
+        credential: credentialResult.value,
+        guidance,
+      });
+    }
+
+    if ("action" in payload && payload.action === "revoke") {
+      const revokeResult = await this.revokeProvider(provider);
+      if (!revokeResult.ok) {
+        return revokeResult;
+      }
+
+      return ok({
+        action: "revoke",
+        provider,
+        source,
+      });
+    }
+
+    const configureResult =
+      payload.mode === "api_key"
+        ? await this.setApiKey(provider, payload.key, payload.metadata)
+        : await this.setOAuthTokens(provider, payload.tokens);
+
+    if (!configureResult.ok) {
+      return err(
+        new AuthError(
+          `Authentication setup failed for provider ${provider}. ${configureResult.error.message}`,
+          configureResult.error,
+        ),
+      );
+    }
+
+    const credentialResult = await this.getCredential(provider);
+    if (!credentialResult.ok) {
+      return credentialResult;
+    }
+
+    return ok({
+      action: "configure",
+      provider,
+      source,
+      credential: credentialResult.value,
+      guidance: this.buildGuidance(provider, credentialResult.value, source),
+    });
   }
 
   public requiresAuth(provider: string): boolean {
@@ -365,5 +698,43 @@ export class ProviderAuthService implements AuthService {
     }
 
     return authModesFromProviderType(normalizeProviderType(registered.config.type));
+  }
+
+  private resolveApiKeyStrategy(provider: string): Result<ApiKeyAuthStrategy, AuthError> {
+    if (!this.getAuthMethods(provider).includes("api_key")) {
+      return err(new AuthError(`Provider ${provider} does not support api_key authentication`));
+    }
+
+    return ok(this.apiKeyStrategies.get(provider) ?? this.defaultApiKeyStrategy);
+  }
+
+  private resolveOAuthStrategy(provider: string): Result<OAuthStrategy, AuthError> {
+    if (!this.getAuthMethods(provider).includes("oauth")) {
+      return err(new AuthError(`Provider ${provider} does not support oauth authentication`));
+    }
+
+    return ok(this.oauthStrategies.get(provider) ?? this.defaultOAuthStrategy);
+  }
+
+  private buildGuidance(
+    provider: string,
+    credential: CredentialRecord | null,
+    source: ProviderAuthSurface,
+  ): ProviderAuthGuidance | undefined {
+    const supportedModes = this.getAuthMethods(provider);
+    if (!this.requiresAuth(provider)) {
+      return undefined;
+    }
+
+    if (!credential) {
+      return {
+        provider,
+        action: "configure",
+        message: `Provider ${provider} requires authentication. Configure ${supportedModes.join(" or ")} from ${source}.`,
+        supportedModes,
+      };
+    }
+
+    return undefined;
   }
 }
