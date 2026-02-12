@@ -1,23 +1,25 @@
+import { ok } from "../result";
 import type { Conversation, ConversationSummary } from "../types";
 import type { ConversationStore, ListOptions } from "./store";
 
 export class InMemoryConversationStore implements ConversationStore {
   private readonly conversations = new Map<string, Conversation>();
 
-  async save(conversation: Conversation): Promise<void> {
+  async save(conversation: Conversation) {
     this.conversations.set(conversation.id, structuredClone(conversation));
+    return ok(undefined);
   }
 
-  async load(id: string): Promise<Conversation | null> {
+  async load(id: string) {
     const conversation = this.conversations.get(id);
     if (!conversation) {
-      return null;
+      return ok(null);
     }
 
-    return structuredClone(conversation);
+    return ok(structuredClone(conversation));
   }
 
-  async list(options?: ListOptions): Promise<ConversationSummary[]> {
+  async list(options?: ListOptions) {
     const orderBy = options?.orderBy ?? "updated";
     const offset = Math.max(0, options?.offset ?? 0);
     const limit = options?.limit;
@@ -41,7 +43,7 @@ export class InMemoryConversationStore implements ConversationStore {
         ? filtered.slice(offset, offset + Math.max(0, limit))
         : filtered.slice(offset);
 
-    return paginated.map((conversation) => {
+    const summaries = paginated.map((conversation) => {
       const lastMessage = conversation.messages[conversation.messages.length - 1];
 
       return {
@@ -53,23 +55,26 @@ export class InMemoryConversationStore implements ConversationStore {
         createdAt: conversation.createdAt,
       } satisfies ConversationSummary;
     });
+
+    return ok(summaries);
   }
 
-  async delete(id: string): Promise<boolean> {
-    return this.conversations.delete(id);
+  async delete(id: string) {
+    return ok(this.conversations.delete(id));
   }
 
-  async exists(id: string): Promise<boolean> {
-    return this.conversations.has(id);
+  async exists(id: string) {
+    return ok(this.conversations.has(id));
   }
 
-  async updateTitle(id: string, title: string): Promise<void> {
+  async updateTitle(id: string, title: string) {
     const conversation = this.conversations.get(id);
     if (!conversation) {
-      return;
+      return ok(undefined);
     }
 
     conversation.title = title;
     conversation.updatedAt = new Date();
+    return ok(undefined);
   }
 }

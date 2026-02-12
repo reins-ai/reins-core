@@ -26,18 +26,30 @@ describe("InMemoryConversationStore", () => {
     const store = new InMemoryConversationStore();
     const conversation = createConversation({ id: "conv-basic" });
 
-    await store.save(conversation);
+    const saveResult = await store.save(conversation);
+    expect(saveResult.ok).toBe(true);
 
-    expect(await store.exists("conv-basic")).toBe(true);
-    expect(await store.exists("missing")).toBe(false);
+    const existsResult = await store.exists("conv-basic");
+    expect(existsResult.ok).toBe(true);
+    expect(existsResult.ok && existsResult.value).toBe(true);
+    const missingResult = await store.exists("missing");
+    expect(missingResult.ok).toBe(true);
+    expect(missingResult.ok && missingResult.value).toBe(false);
 
     const loaded = await store.load("conv-basic");
-    expect(loaded).not.toBeNull();
-    expect(loaded?.id).toBe("conv-basic");
+    expect(loaded.ok).toBe(true);
+    expect(loaded.ok && loaded.value).not.toBeNull();
+    expect(loaded.ok && loaded.value?.id).toBe("conv-basic");
 
-    expect(await store.delete("conv-basic")).toBe(true);
-    expect(await store.delete("conv-basic")).toBe(false);
-    expect(await store.load("conv-basic")).toBeNull();
+    const deleted = await store.delete("conv-basic");
+    expect(deleted.ok).toBe(true);
+    expect(deleted.ok && deleted.value).toBe(true);
+    const deletedAgain = await store.delete("conv-basic");
+    expect(deletedAgain.ok).toBe(true);
+    expect(deletedAgain.ok && deletedAgain.value).toBe(false);
+    const missing = await store.load("conv-basic");
+    expect(missing.ok).toBe(true);
+    expect(missing.ok && missing.value).toBeNull();
   });
 
   test("deep-clones on save and load", async () => {
@@ -55,23 +67,26 @@ describe("InMemoryConversationStore", () => {
       ],
     });
 
-    await store.save(original);
+    const saveResult = await store.save(original);
+    expect(saveResult.ok).toBe(true);
 
     original.title = "mutated-after-save";
     original.messages[0]!.content = "changed";
 
     const loaded = await store.load("conv-clone");
-    expect(loaded).not.toBeNull();
-    expect(loaded?.title).toBe("Conversation 1");
-    expect(loaded?.messages[0]?.content).toBe("hello");
+    expect(loaded.ok).toBe(true);
+    expect(loaded.ok && loaded.value).not.toBeNull();
+    expect(loaded.ok && loaded.value?.title).toBe("Conversation 1");
+    expect(loaded.ok && loaded.value?.messages[0]?.content).toBe("hello");
 
-    if (!loaded) {
+    if (!loaded.ok || !loaded.value) {
       throw new Error("Expected conversation to load");
     }
 
-    loaded.messages[0]!.content = "mutated-loaded";
+    loaded.value.messages[0]!.content = "mutated-loaded";
     const loadedAgain = await store.load("conv-clone");
-    expect(loadedAgain?.messages[0]?.content).toBe("hello");
+    expect(loadedAgain.ok).toBe(true);
+    expect(loadedAgain.ok && loadedAgain.value?.messages[0]?.content).toBe("hello");
   });
 
   test("lists with workspace filtering and pagination", async () => {
@@ -103,11 +118,13 @@ describe("InMemoryConversationStore", () => {
     );
 
     const ws1 = await store.list({ workspaceId: "ws-1" });
-    expect(ws1.map((item) => item.id)).toEqual(["conv-b", "conv-a"]);
+    expect(ws1.ok).toBe(true);
+    expect(ws1.ok && ws1.value.map((item) => item.id)).toEqual(["conv-b", "conv-a"]);
 
     const paged = await store.list({ workspaceId: "ws-1", offset: 1, limit: 1 });
-    expect(paged).toHaveLength(1);
-    expect(paged[0]?.id).toBe("conv-a");
+    expect(paged.ok).toBe(true);
+    expect(paged.ok && paged.value).toHaveLength(1);
+    expect(paged.ok && paged.value[0]?.id).toBe("conv-a");
   });
 
   test("supports list ordering by created and updated", async () => {
@@ -129,9 +146,11 @@ describe("InMemoryConversationStore", () => {
     );
 
     const byUpdated = await store.list({ orderBy: "updated" });
-    expect(byUpdated.map((item) => item.id)).toEqual(["conv-1", "conv-2"]);
+    expect(byUpdated.ok).toBe(true);
+    expect(byUpdated.ok && byUpdated.value.map((item) => item.id)).toEqual(["conv-1", "conv-2"]);
 
     const byCreated = await store.list({ orderBy: "created" });
-    expect(byCreated.map((item) => item.id)).toEqual(["conv-2", "conv-1"]);
+    expect(byCreated.ok).toBe(true);
+    expect(byCreated.ok && byCreated.value.map((item) => item.id)).toEqual(["conv-2", "conv-1"]);
   });
 });

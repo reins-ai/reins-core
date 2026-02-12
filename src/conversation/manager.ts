@@ -72,12 +72,21 @@ export class ConversationManager {
       updatedAt: now,
     };
 
-    await this.store.save(conversation);
+    const saveResult = await this.store.save(conversation);
+    if (!saveResult.ok) {
+      throw saveResult.error;
+    }
+
     return conversation;
   }
 
   async load(id: string): Promise<Conversation> {
-    const conversation = await this.store.load(id);
+    const loadResult = await this.store.load(id);
+    if (!loadResult.ok) {
+      throw loadResult.error;
+    }
+
+    const conversation = loadResult.value;
 
     if (!conversation) {
       throw new ConversationError(`Conversation not found: ${id}`);
@@ -101,7 +110,10 @@ export class ConversationManager {
     conversation.messages.push(nextMessage);
     conversation.updatedAt = new Date();
 
-    await this.store.save(conversation);
+    const saveResult = await this.store.save(conversation);
+    if (!saveResult.ok) {
+      throw saveResult.error;
+    }
 
     const compactionResult = await this.runCompactionIfNeeded(conversation);
     if (!compactionResult.ok) {
@@ -134,11 +146,21 @@ export class ConversationManager {
   }
 
   async list(options?: ListOptions) {
-    return this.store.list(options);
+    const listResult = await this.store.list(options);
+    if (!listResult.ok) {
+      throw listResult.error;
+    }
+
+    return listResult.value;
   }
 
   async delete(id: string): Promise<boolean> {
-    return this.store.delete(id);
+    const deleteResult = await this.store.delete(id);
+    if (!deleteResult.ok) {
+      throw deleteResult.error;
+    }
+
+    return deleteResult.value;
   }
 
   async fork(conversationId: string, options?: ForkOptions): Promise<Conversation> {
@@ -159,7 +181,11 @@ export class ConversationManager {
       metadata: source.metadata ? structuredClone(source.metadata) : undefined,
     };
 
-    await this.store.save(conversation);
+    const saveResult = await this.store.save(conversation);
+    if (!saveResult.ok) {
+      throw saveResult.error;
+    }
+
     return conversation;
   }
 
@@ -169,12 +195,19 @@ export class ConversationManager {
       throw new ConversationError("Conversation title cannot be empty");
     }
 
-    const exists = await this.store.exists(id);
-    if (!exists) {
+    const existsResult = await this.store.exists(id);
+    if (!existsResult.ok) {
+      throw existsResult.error;
+    }
+
+    if (!existsResult.value) {
       throw new ConversationError(`Conversation not found: ${id}`);
     }
 
-    await this.store.updateTitle(id, normalized);
+    const updateResult = await this.store.updateTitle(id, normalized);
+    if (!updateResult.ok) {
+      throw updateResult.error;
+    }
   }
 
   async resumeMain(): Promise<Result<SessionMetadata, ConversationError>> {

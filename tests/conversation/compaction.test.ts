@@ -174,7 +174,10 @@ async function createHarness() {
     ],
   };
 
-  await conversationStore.save(conversation);
+  const saveResult = await conversationStore.save(conversation);
+  if (!saveResult.ok) {
+    throw saveResult.error;
+  }
 
   return {
     conversation,
@@ -289,15 +292,15 @@ describe("CompactionService", () => {
     }
 
     const reloadedConversation = await conversationStore.load(conversation.id);
-    expect(reloadedConversation).not.toBeNull();
-    if (!reloadedConversation) {
+    expect(reloadedConversation.ok).toBe(true);
+    if (!reloadedConversation.ok || !reloadedConversation.value) {
       return;
     }
 
-    expect(reloadedConversation.messages).toHaveLength(3);
-    expect(reloadedConversation.messages[0]?.content).toContain("Conversation summary");
-    expect(reloadedConversation.messages[1]?.id).toBe("msg_5");
-    expect(reloadedConversation.messages[2]?.id).toBe("msg_6");
+    expect(reloadedConversation.value.messages).toHaveLength(3);
+    expect(reloadedConversation.value.messages[0]?.content).toContain("Conversation summary");
+    expect(reloadedConversation.value.messages[1]?.id).toBe("msg_5");
+    expect(reloadedConversation.value.messages[2]?.id).toBe("msg_6");
 
     const updatedSessionResult = await sessionRepository.get(session.id);
     expect(updatedSessionResult.ok).toBe(true);
