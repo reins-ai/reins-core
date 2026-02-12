@@ -8,8 +8,9 @@ import { AuthError } from "../../src/errors";
 import { err, ok } from "../../src/result";
 import { ProviderAuthService } from "../../src/providers/auth-service";
 import { EncryptedCredentialStore } from "../../src/providers/credentials/store";
+import { CredentialBackedOAuthTokenStore } from "../../src/providers/oauth/token-store";
 import { ProviderRegistry } from "../../src/providers/registry";
-import type { ApiKeyAuthStrategy, OAuthStrategy } from "../../src/providers/oauth/types";
+import type { ApiKeyAuthStrategy, OAuthStrategy, OAuthTokens } from "../../src/providers/oauth/types";
 import { authMiddleware } from "../../../reins-gateway/src/middleware/auth";
 
 const workspaceRoot = join(import.meta.dir, "..", "..", "..");
@@ -196,6 +197,85 @@ describe("security/auth-patterns", () => {
       expect(result.value.guidance?.supportedModes).toEqual(["api_key", "oauth"]);
     } finally {
       await fixture.cleanup();
+    }
+  });
+
+  it("persists OAuth credentials without plaintext leakage", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "reins-security-oauth-"));
+    const filePath = join(tempDirectory, "credentials.enc.json");
+
+    const store = new EncryptedCredentialStore({
+      encryptionSecret: "security-auth-patterns-secret",
+      filePath,
+    });
+    const tokenStore = new CredentialBackedOAuthTokenStore(store);
+
+    const tokens: OAuthTokens = {
+      accessToken: "oauth-access-sensitive-value",
+      refreshToken: "oauth-refresh-sensitive-value",
+      expiresAt: new Date(Date.now() + 60_000),
+      tokenType: "Bearer",
+      scope: "default",
+    };
+
+    try {
+      await tokenStore.save("anthropic", tokens);
+      const rawFile = await readFile(filePath, "utf8");
+
+      expect(rawFile.includes(tokens.accessToken)).toBe(false);
+      expect(rawFile.includes(tokens.refreshToken)).toBe(false);
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("rotates OAuth tokens safely without leaving stale plaintext traces", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "reins-security-oauth-rotate-"));
+    const filePath = join(tempDirectory, "credentials.enc.json");
+
+    const store = new EncryptedCredentialStore({
+      encryptionSecret: "security-auth-patterns-secret",
+      filePath,
+    });
+    const tokenStore = new CredentialBackedOAuthTokenStore(store);
+
+    const initialTokens: OAuthTokens = {
+      accessToken: "oauth-initial-access",
+      refreshToken: "oauth-initial-refresh",
+      expiresAt: new Date(Date.now() + 60_000),
+      tokenType: "Bearer",
+      scope: "default",
+    };
+
+    const rotatedTokens: OAuthTokens = {
+      accessToken: "oauth-rotated-access",
+      refreshToken: "oauth-rotated-refresh",
+      expiresAt: new Date(Date.now() + 120_000),
+      tokenType: "Bearer",
+      scope: "default",
+    };
+
+    try {
+      await tokenStore.save("anthropic", initialTokens);
+      const updateResult = await tokenStore.updateTokens("anthropic", rotatedTokens);
+      expect(updateResult.ok).toBe(true);
+
+      const loaded = await tokenStore.load("anthropic");
+      expect(loaded).not.toBeNull();
+      if (!loaded) {
+        return;
+      }
+
+      expect(loaded.accessToken).toBe(rotatedTokens.accessToken);
+      expect(loaded.refreshToken).toBe(rotatedTokens.refreshToken);
+
+      const rawFile = await readFile(filePath, "utf8");
+      expect(rawFile.includes(initialTokens.accessToken)).toBe(false);
+      expect(rawFile.includes(initialTokens.refreshToken)).toBe(false);
+      expect(rawFile.includes(rotatedTokens.accessToken)).toBe(false);
+      expect(rawFile.includes(rotatedTokens.refreshToken)).toBe(false);
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
     }
   });
 });

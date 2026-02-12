@@ -477,7 +477,7 @@ describe("e2e/byok-journey", () => {
       }
     });
 
-    it("shows Anthropic as configured in provider listing after successful BYOK setup", async () => {
+    it("shows Anthropic as configured in provider listing and keeps Fireworks hidden", async () => {
       const fixture = await createTestFixture(async () => {
         return new Response(JSON.stringify({ data: [] }), { status: 200 });
       });
@@ -512,9 +512,15 @@ describe("e2e/byok-journey", () => {
         expect(afterResult.ok).toBe(true);
         if (!afterResult.ok) return;
 
-        const anthropicAfter = afterResult.value.providers?.find((p) => p.provider === "anthropic");
+        const listedProviders = afterResult.value.providers ?? [];
+        const anthropicAfter = listedProviders.find((p) => p.provider === "anthropic");
         expect(anthropicAfter?.configured).toBe(true);
         expect(anthropicAfter?.credentialType).toBe("api_key");
+
+        const userConfigurableProviderIds = fixture.registry
+          .getUserConfigurableProviders()
+          .map((provider) => provider.config.id);
+        expect(userConfigurableProviderIds).not.toContain("fireworks");
       } finally {
         await fixture.cleanup();
       }
