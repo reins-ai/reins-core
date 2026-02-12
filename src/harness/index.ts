@@ -1,3 +1,4 @@
+export * from "./agent-loop";
 export * from "./doom-loop-guard";
 export * from "./event-bus";
 export * from "./events";
