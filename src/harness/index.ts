@@ -1,4 +1,5 @@
 export * from "./agent-loop";
+export * from "./context-budget";
 export * from "./doom-loop-guard";
 export * from "./event-bus";
 export * from "./events";
