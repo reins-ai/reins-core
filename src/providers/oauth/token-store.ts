@@ -145,6 +145,24 @@ export interface OAuthTokenStore {
   load(provider: OAuthProviderType): Promise<OAuthTokens | null>;
   delete(provider: OAuthProviderType): Promise<boolean>;
   getStatus(provider: OAuthProviderType): Promise<OAuthConnectionStatus>;
+  updateTokens?(provider: OAuthProviderType, tokens: OAuthTokens): Promise<Result<void, AuthError>>;
+}
+
+export async function persistOAuthTokens(
+  store: OAuthTokenStore,
+  provider: OAuthProviderType,
+  tokens: OAuthTokens,
+): Promise<void> {
+  if (typeof store.updateTokens === "function") {
+    const updateResult = await store.updateTokens(provider, tokens);
+    if (!updateResult.ok) {
+      throw updateResult.error;
+    }
+
+    return;
+  }
+
+  await store.save(provider, tokens);
 }
 
 export class InMemoryOAuthTokenStore implements OAuthTokenStore {

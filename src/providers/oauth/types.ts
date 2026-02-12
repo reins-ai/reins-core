@@ -51,6 +51,7 @@ export interface OAuthRegisterContext {
 }
 
 export interface OAuthExchangeContext {
+  state?: string;
   codeVerifier?: string;
   redirectUri?: string;
 }
@@ -84,6 +85,7 @@ export interface OAuthInitiateContext extends AuthStrategyContext {
 
 export interface OAuthCallbackContext extends AuthStrategyContext {
   code: string;
+  state?: string;
   exchange?: OAuthExchangeContext;
 }
 

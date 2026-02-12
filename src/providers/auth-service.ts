@@ -19,6 +19,7 @@ import type {
 import type { ProviderRegistry } from "./registry";
 
 const REINS_GATEWAY_PROVIDER_ID = "reins-gateway";
+const OAUTH_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
 interface SerializedOAuthTokens {
   accessToken: string;
@@ -85,6 +86,9 @@ export interface ProviderAuthStatus {
 export interface AuthService {
   setApiKey(provider: string, key: string, metadata?: Record<string, string>): Promise<Result<void, AuthError>>;
   setOAuthTokens(provider: string, tokens: OAuthTokens): Promise<Result<void, AuthError>>;
+  initiateOAuth(provider: string, context?: Omit<OAuthInitiateContext, "provider">): Promise<Result<AuthorizationResult, AuthError>>;
+  completeOAuthCallback(provider: string, context: Omit<OAuthCallbackContext, "provider">): Promise<Result<OAuthTokens, AuthError>>;
+  getOAuthAccessToken(provider: string): Promise<Result<string, AuthError>>;
   getCredential(provider: string): Promise<Result<CredentialRecord | null, AuthError>>;
   listProviders(): Promise<Result<ProviderAuthStatus[], AuthError>>;
   revokeProvider(provider: string): Promise<Result<void, AuthError>>;
@@ -124,13 +128,30 @@ export interface RevokeProviderAuthPayload extends ProviderAuthCommandBase {
   action: "revoke";
 }
 
+export interface InitiateOAuthAuthPayload extends ProviderAuthCommandBase {
+  action: "oauth_initiate";
+  state?: string;
+  codeVerifier?: string;
+  redirectUri?: string;
+}
+
+export interface CompleteOAuthAuthPayload extends ProviderAuthCommandBase {
+  action: "oauth_callback";
+  code: string;
+  state?: string;
+  codeVerifier?: string;
+  redirectUri?: string;
+}
+
 export type ProviderAuthConfigurePayload = ConfigureApiKeyAuthPayload | ConfigureOAuthAuthPayload;
 
 export type ProviderAuthCommandPayload =
   | ProviderAuthConfigurePayload
   | GetProviderAuthPayload
   | ListProviderAuthPayload
-  | RevokeProviderAuthPayload;
+  | RevokeProviderAuthPayload
+  | InitiateOAuthAuthPayload
+  | CompleteOAuthAuthPayload;
 
 export interface ProviderAuthGuidance {
   provider: string;
@@ -140,12 +161,14 @@ export interface ProviderAuthGuidance {
 }
 
 export interface ProviderAuthCommandResult {
-  action: "configure" | "get" | "list" | "revoke";
+  action: "configure" | "get" | "list" | "revoke" | "oauth_initiate" | "oauth_callback";
   provider?: string;
   source: ProviderAuthSurface;
   credential?: CredentialRecord | null;
   providers?: ProviderAuthStatus[];
   guidance?: ProviderAuthGuidance;
+  authorization?: AuthorizationResult;
+  tokens?: OAuthTokens;
 }
 
 interface EndpointValidatable {
@@ -241,6 +264,10 @@ function validateApiKey(provider: string, key: string): Result<string, AuthError
   }
 
   return ok(trimmed);
+}
+
+function isOAuthTokenExpired(tokens: OAuthTokens): boolean {
+  return Date.now() >= tokens.expiresAt.getTime() - OAUTH_REFRESH_BUFFER_MS;
 }
 
 export interface ProviderAuthServiceOptions {
@@ -504,6 +531,127 @@ export class ProviderAuthService implements AuthService {
     });
   }
 
+  public async initiateOAuth(
+    provider: string,
+    context: Omit<OAuthInitiateContext, "provider"> = {},
+  ): Promise<Result<AuthorizationResult, AuthError>> {
+    const providerResult = validateProviderId(provider);
+    if (!providerResult.ok) {
+      return providerResult;
+    }
+
+    const normalizedProvider = providerResult.value;
+    const strategyResult = this.resolveOAuthStrategy(normalizedProvider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
+    return strategyResult.value.initiate({
+      provider: normalizedProvider,
+      register: context.register,
+    });
+  }
+
+  public async completeOAuthCallback(
+    provider: string,
+    context: Omit<OAuthCallbackContext, "provider">,
+  ): Promise<Result<OAuthTokens, AuthError>> {
+    const providerResult = validateProviderId(provider);
+    if (!providerResult.ok) {
+      return providerResult;
+    }
+
+    const normalizedProvider = providerResult.value;
+    const strategyResult = this.resolveOAuthStrategy(normalizedProvider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
+    const callbackResult = await strategyResult.value.handleCallback({
+      provider: normalizedProvider,
+      code: context.code,
+      state: context.state,
+      exchange: context.exchange,
+    });
+
+    if (!callbackResult.ok) {
+      return callbackResult;
+    }
+
+    const persistResult = await strategyResult.value.storeTokens({
+      provider: normalizedProvider,
+      tokens: callbackResult.value,
+    });
+    if (!persistResult.ok) {
+      return persistResult;
+    }
+
+    return callbackResult;
+  }
+
+  public async getOAuthAccessToken(provider: string): Promise<Result<string, AuthError>> {
+    const providerResult = validateProviderId(provider);
+    if (!providerResult.ok) {
+      return providerResult;
+    }
+
+    const normalizedProvider = providerResult.value;
+    const strategyResult = this.resolveOAuthStrategy(normalizedProvider);
+    if (!strategyResult.ok) {
+      return strategyResult;
+    }
+
+    const strategy = strategyResult.value;
+    const tokensResult = await strategy.retrieveTokens({ provider: normalizedProvider });
+    if (!tokensResult.ok) {
+      return tokensResult;
+    }
+
+    const tokens = tokensResult.value;
+    if (!tokens) {
+      return err(
+        new AuthError(
+          `No OAuth credentials configured for provider ${normalizedProvider}. Start browser sign-in to continue.`,
+        ),
+      );
+    }
+
+    if (!isOAuthTokenExpired(tokens)) {
+      return ok(tokens.accessToken);
+    }
+
+    if (!tokens.refreshToken) {
+      return err(
+        new AuthError(
+          `OAuth session for ${normalizedProvider} expired and cannot refresh. Re-authenticate from the connect flow.`,
+        ),
+      );
+    }
+
+    const refreshResult = await strategy.refresh({
+      provider: normalizedProvider,
+      refreshToken: tokens.refreshToken,
+    });
+    if (!refreshResult.ok) {
+      return err(
+        new AuthError(
+          `OAuth refresh failed for ${normalizedProvider}. Re-authenticate from the connect flow and retry.`,
+          refreshResult.error,
+        ),
+      );
+    }
+
+    const persistResult = await strategy.storeTokens({
+      provider: normalizedProvider,
+      tokens: refreshResult.value,
+    });
+    if (!persistResult.ok) {
+      return persistResult;
+    }
+
+    return ok(refreshResult.value.accessToken);
+  }
+
   public async getCredential(provider: string): Promise<Result<CredentialRecord | null, AuthError>> {
     const providerResult = validateProviderId(provider);
     if (!providerResult.ok) {
@@ -629,6 +777,76 @@ export class ProviderAuthService implements AuthService {
 
     const provider = providerResult.value;
     const source = payload.source;
+
+    if ("action" in payload && payload.action === "oauth_initiate") {
+      const initiateResult = await this.initiateOAuth(provider, {
+        register: {
+          state: payload.state,
+          codeVerifier: payload.codeVerifier,
+          redirectUri: payload.redirectUri,
+        },
+      });
+      if (!initiateResult.ok) {
+        return ok({
+          action: "oauth_initiate",
+          provider,
+          source,
+          guidance: {
+            provider,
+            action: "retry",
+            message: initiateResult.error.message,
+            supportedModes: this.getAuthMethods(provider),
+          },
+        });
+      }
+
+      return ok({
+        action: "oauth_initiate",
+        provider,
+        source,
+        authorization: initiateResult.value,
+      });
+    }
+
+    if ("action" in payload && payload.action === "oauth_callback") {
+      const callbackResult = await this.completeOAuthCallback(provider, {
+        code: payload.code,
+        state: payload.state,
+        exchange: {
+          codeVerifier: payload.codeVerifier,
+          redirectUri: payload.redirectUri,
+          state: payload.state,
+        },
+      });
+
+      if (!callbackResult.ok) {
+        return ok({
+          action: "oauth_callback",
+          provider,
+          source,
+          guidance: {
+            provider,
+            action: "reauth",
+            message: callbackResult.error.message,
+            supportedModes: this.getAuthMethods(provider),
+          },
+        });
+      }
+
+      const credentialResult = await this.getCredential(provider);
+      if (!credentialResult.ok) {
+        return credentialResult;
+      }
+
+      return ok({
+        action: "oauth_callback",
+        provider,
+        source,
+        credential: credentialResult.value,
+        tokens: callbackResult.value,
+        guidance: this.buildGuidance(provider, credentialResult.value, source),
+      });
+    }
 
     if ("action" in payload && payload.action === "get") {
       const credentialResult = await this.getCredential(provider);

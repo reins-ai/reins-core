@@ -1,4 +1,5 @@
 import { AuthError } from "../../errors";
+import { createHash } from "node:crypto";
 import type { OAuthConfig, OAuthTokens } from "./types";
 
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
@@ -24,6 +25,25 @@ export interface OAuthExchangeCodeOptions {
 
 export interface OAuthRefreshOptions {
   scope?: string;
+}
+
+export interface OAuthPkcePair {
+  verifier: string;
+  challenge: string;
+  method: "S256";
+}
+
+export interface OAuthCallbackParameters {
+  code: string;
+  state: string;
+}
+
+function base64UrlEncode(value: Uint8Array): string {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -72,6 +92,58 @@ function toOAuthTokenResponse(value: unknown): OAuthTokenResponse {
 
 export class OAuthFlowHandler {
   constructor(private readonly config: OAuthConfig) {}
+
+  public generatePkcePair(): OAuthPkcePair {
+    const verifierBytes = crypto.getRandomValues(new Uint8Array(32));
+    const verifier = base64UrlEncode(verifierBytes);
+    const challenge = OAuthFlowHandler.computePkceChallenge(verifier);
+
+    return {
+      verifier,
+      challenge,
+      method: "S256",
+    };
+  }
+
+  public static computePkceChallenge(verifier: string): string {
+    const digest = createHash("sha256").update(verifier).digest();
+    return base64UrlEncode(digest);
+  }
+
+  public parseCallbackParameters(
+    input: string | URL | URLSearchParams,
+    expectedState?: string,
+  ): OAuthCallbackParameters {
+    const params =
+      input instanceof URLSearchParams
+        ? input
+        : input instanceof URL
+          ? input.searchParams
+          : new URL(input).searchParams;
+
+    const error = params.get("error");
+    if (error) {
+      const description = params.get("error_description") ?? "OAuth authorization failed";
+      throw new AuthError(`OAuth callback returned error: ${error}. ${description}`);
+    }
+
+    const code = params.get("code")?.trim() ?? "";
+    const state = params.get("state")?.trim() ?? "";
+
+    if (!code) {
+      throw new AuthError("OAuth callback is missing authorization code");
+    }
+
+    if (!state) {
+      throw new AuthError("OAuth callback is missing state parameter");
+    }
+
+    if (expectedState && state !== expectedState) {
+      throw new AuthError("OAuth callback state mismatch. Restart sign-in and try again.");
+    }
+
+    return { code, state };
+  }
 
   public getAuthorizationUrl(state: string, options: OAuthAuthorizationUrlOptions = {}): string {
     const url = new URL(this.config.authorizationUrl);

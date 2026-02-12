@@ -1,4 +1,6 @@
 import { ProviderError } from "../../errors";
+import { AuthError } from "../../errors";
+import { err, ok, type Result } from "../../result";
 import { StreamTransformer } from "../../streaming";
 import { generateId } from "../../conversation/id";
 import type { StreamEvent } from "../../types/streaming";
@@ -17,11 +19,17 @@ import type {
   AuthorizationResult,
   OAuthConfig,
   OAuthExchangeContext,
+  OAuthCallbackContext,
   OAuthProviderDefinition,
+  OAuthStrategy,
   OAuthTokens,
+  OAuthInitiateContext,
+  OAuthRefreshContext,
+  OAuthStoreContext,
+  AuthStrategyContext,
   ProviderMetadata,
 } from "./types";
-import type { OAuthTokenStore } from "./token-store";
+import { persistOAuthTokens, type OAuthTokenStore } from "./token-store";
 
 interface AnthropicMessage {
   role: "user" | "assistant";
@@ -35,6 +43,15 @@ interface AnthropicOAuthProviderOptions {
   providerConfig?: Partial<ProviderConfig>;
   flow?: OAuthFlowHandler;
 }
+
+interface PendingOAuthSession {
+  state: string;
+  codeVerifier: string;
+  redirectUri?: string;
+  createdAt: number;
+}
+
+const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -166,9 +183,13 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
 
   public readonly metadata: ProviderMetadata;
 
+  public readonly strategy: OAuthStrategy;
+
   public readonly config: ProviderConfig;
 
   private readonly baseUrl: string;
+
+  private pendingSession: PendingOAuthSession | null = null;
 
   constructor(options: AnthropicOAuthProviderOptions) {
     super(options.oauthConfig, options.tokenStore, options.flow ?? new OAuthFlowHandler(options.oauthConfig));
@@ -193,15 +214,192 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       type: "oauth",
       baseUrl: this.baseUrl,
     };
+
+    this.strategy = {
+      mode: "oauth",
+      initiate: (context) => this.initiate(context),
+      handleCallback: (context) => this.handleCallback(context),
+      refresh: (context) => this.refreshWithResult(context),
+      storeTokens: (context) => this.storeTokensWithResult(context),
+      retrieveTokens: (context) => this.retrieveTokensWithResult(context),
+      revoke: (context) => this.revokeWithResult(context),
+    };
+  }
+
+  public async initiate(context: OAuthInitiateContext): Promise<Result<AuthorizationResult, AuthError>> {
+    if (context.provider !== this.providerType) {
+      return err(new AuthError(`OAuth strategy for ${this.providerType} cannot initiate flow for ${context.provider}`));
+    }
+
+    const state = context.register?.state ?? crypto.randomUUID().replace(/-/g, "");
+    const pkce = this.flow.generatePkcePair();
+    const codeVerifier = context.register?.codeVerifier ?? pkce.verifier;
+    const redirectUri = context.register?.redirectUri ?? this.oauthConfig.redirectUri;
+    const authorizationUrl = this.flow.getAuthorizationUrl(state, {
+      codeChallenge: OAuthFlowHandler.computePkceChallenge(codeVerifier),
+      codeChallengeMethod: pkce.method,
+    });
+
+    this.pendingSession = {
+      state,
+      codeVerifier,
+      redirectUri,
+      createdAt: Date.now(),
+    };
+
+    return ok({
+      type: "authorization_code",
+      authorizationUrl,
+      state,
+      codeVerifier: this.pendingSession.codeVerifier,
+    });
+  }
+
+  public async handleCallback(context: OAuthCallbackContext): Promise<Result<OAuthTokens, AuthError>> {
+    if (context.provider !== this.providerType) {
+      return err(new AuthError(`OAuth strategy for ${this.providerType} cannot handle callback for ${context.provider}`));
+    }
+
+    const pendingSession = this.pendingSession;
+    if (!pendingSession) {
+      try {
+        const tokens = await this.flow.exchangeCode(context.code.trim(), {
+          codeVerifier: context.exchange?.codeVerifier,
+          redirectUri: context.exchange?.redirectUri,
+        });
+        await persistOAuthTokens(this.tokenStore, this.providerType, tokens);
+        return ok(tokens);
+      } catch (error) {
+        return err(
+          new AuthError(
+            "No active Anthropic OAuth session. Start sign-in again from the connect flow.",
+            error instanceof Error ? error : undefined,
+          ),
+        );
+      }
+    }
+
+    if (Date.now() - pendingSession.createdAt > OAUTH_SESSION_TTL_MS) {
+      this.pendingSession = null;
+      return err(new AuthError("Anthropic OAuth session expired. Start sign-in again."));
+    }
+
+    const callbackState = context.state?.trim() ?? "";
+    if (callbackState.length === 0 || callbackState !== pendingSession.state) {
+      return err(
+        new AuthError("OAuth state validation failed. Restart sign-in and retry to prevent CSRF risks."),
+      );
+    }
+
+    const code = context.code.trim();
+    if (code.length === 0) {
+      return err(new AuthError("OAuth callback code is required for provider anthropic"));
+    }
+
+    try {
+      const tokens = await this.flow.exchangeCode(code, {
+        codeVerifier: context.exchange?.codeVerifier ?? pendingSession.codeVerifier,
+        redirectUri: context.exchange?.redirectUri ?? pendingSession.redirectUri,
+      });
+      await persistOAuthTokens(this.tokenStore, this.providerType, tokens);
+      this.pendingSession = null;
+      return ok(tokens);
+    } catch (error) {
+      return err(
+        new AuthError(
+          "Anthropic OAuth token exchange failed. Complete browser login again and retry.",
+          error instanceof Error ? error : undefined,
+        ),
+      );
+    }
+  }
+
+  public async refreshWithResult(context: OAuthRefreshContext): Promise<Result<OAuthTokens, AuthError>> {
+    if (context.provider !== this.providerType) {
+      return err(new AuthError(`OAuth strategy for ${this.providerType} cannot refresh tokens for ${context.provider}`));
+    }
+
+    const refreshToken = context.refreshToken.trim();
+    if (refreshToken.length === 0) {
+      return err(new AuthError("Refresh token is required for provider anthropic"));
+    }
+
+    try {
+      const tokens = await this.flow.refreshTokens(refreshToken);
+      await persistOAuthTokens(this.tokenStore, this.providerType, tokens);
+      return ok(tokens);
+    } catch (error) {
+      return err(
+        new AuthError(
+          "Anthropic OAuth refresh failed. Re-authenticate from the connect flow to continue.",
+          error instanceof Error ? error : undefined,
+        ),
+      );
+    }
+  }
+
+  public async storeTokensWithResult(context: OAuthStoreContext): Promise<Result<void, AuthError>> {
+    if (context.provider !== this.providerType) {
+      return err(new AuthError(`OAuth strategy for ${this.providerType} cannot store tokens for ${context.provider}`));
+    }
+
+    try {
+      await persistOAuthTokens(this.tokenStore, this.providerType, context.tokens);
+      return ok(undefined);
+    } catch (error) {
+      return err(
+        new AuthError(
+          "Unable to persist Anthropic OAuth tokens securely.",
+          error instanceof Error ? error : undefined,
+        ),
+      );
+    }
+  }
+
+  public async retrieveTokensWithResult(context: AuthStrategyContext): Promise<Result<OAuthTokens | null, AuthError>> {
+    if (context.provider !== this.providerType) {
+      return err(new AuthError(`OAuth strategy for ${this.providerType} cannot load tokens for ${context.provider}`));
+    }
+
+    try {
+      const tokens = await this.tokenStore.load(this.providerType);
+      return ok(tokens);
+    } catch (error) {
+      return err(
+        new AuthError(
+          "Unable to load Anthropic OAuth tokens from credential storage.",
+          error instanceof Error ? error : undefined,
+        ),
+      );
+    }
+  }
+
+  public async revokeWithResult(context: AuthStrategyContext): Promise<Result<void, AuthError>> {
+    if (context.provider !== this.providerType) {
+      return err(new AuthError(`OAuth strategy for ${this.providerType} cannot revoke tokens for ${context.provider}`));
+    }
+
+    try {
+      await this.tokenStore.delete(this.providerType);
+      this.pendingSession = null;
+      return ok(undefined);
+    } catch (error) {
+      return err(
+        new AuthError(
+          "Unable to revoke Anthropic OAuth tokens.",
+          error instanceof Error ? error : undefined,
+        ),
+      );
+    }
   }
 
   public async register(_config: OAuthConfig): Promise<AuthorizationResult> {
-    const state = crypto.randomUUID().replace(/-/g, "");
-    return {
-      type: "authorization_code",
-      authorizationUrl: this.flow.getAuthorizationUrl(state),
-      state,
-    };
+    const initiateResult = await this.initiate({ provider: this.providerType });
+    if (!initiateResult.ok) {
+      throw initiateResult.error;
+    }
+
+    return initiateResult.value;
   }
 
   public async authorize(config: OAuthConfig): Promise<AuthorizationResult> {
@@ -209,9 +407,17 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   }
 
   public async exchange(code: string, _config: OAuthConfig, context?: OAuthExchangeContext): Promise<OAuthTokens> {
-    const tokens = await this.flow.exchangeCode(code, { redirectUri: context?.redirectUri });
-    await this.tokenStore.save(this.providerType, tokens);
-    return tokens;
+    const callbackResult = await this.handleCallback({
+      provider: this.providerType,
+      code,
+      state: context?.state,
+      exchange: context,
+    });
+    if (!callbackResult.ok) {
+      throw callbackResult.error;
+    }
+
+    return callbackResult.value;
   }
 
   public async refresh(
@@ -219,13 +425,23 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     _config: OAuthConfig,
     _context?: OAuthExchangeContext,
   ): Promise<OAuthTokens> {
-    const tokens = await this.flow.refreshTokens(refreshToken);
-    await this.tokenStore.save(this.providerType, tokens);
-    return tokens;
+    const refreshResult = await this.refreshWithResult({
+      provider: this.providerType,
+      refreshToken,
+      exchange: _context,
+    });
+    if (!refreshResult.ok) {
+      throw refreshResult.error;
+    }
+
+    return refreshResult.value;
   }
 
   public async revoke(_token: string, _config: OAuthConfig): Promise<void> {
-    await this.disconnect();
+    const revokeResult = await this.revokeWithResult({ provider: this.providerType });
+    if (!revokeResult.ok) {
+      throw revokeResult.error;
+    }
   }
 
   public async chat(request: ChatRequest): Promise<ChatResponse> {
