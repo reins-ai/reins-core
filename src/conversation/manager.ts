@@ -17,6 +17,20 @@ export interface CreateOptions {
   systemPrompt?: string;
 }
 
+export interface SendMessageOptions {
+  conversationId?: string;
+  content: string;
+  model?: string;
+  provider?: string;
+}
+
+export interface SendMessageResult {
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+  timestamp: Date;
+}
+
 export interface HistoryOptions {
   limit?: number;
   before?: Date;
@@ -231,6 +245,56 @@ export class ConversationManager {
     }
 
     return ok(result.value);
+  }
+
+  /**
+   * Persist a user message and create a placeholder assistant message.
+   * If no conversationId is provided, a new conversation is created first.
+   * Returns IDs and timestamp immediately — no provider invocation happens here.
+   */
+  async sendMessage(options: SendMessageOptions): Promise<SendMessageResult> {
+    const model = options.model ?? "claude-sonnet-4-20250514";
+    const provider = options.provider ?? "anthropic";
+    const now = new Date();
+
+    // Resolve or create conversation
+    let conversationId: string;
+    if (options.conversationId) {
+      // Verify the conversation exists (throws ConversationError if not found)
+      await this.load(options.conversationId);
+      conversationId = options.conversationId;
+    } else {
+      const conversation = await this.create({
+        title: options.content.trim().slice(0, 50) || "New Conversation",
+        model,
+        provider,
+      });
+      conversationId = conversation.id;
+    }
+
+    // Persist user message
+    const userMessage = await this.addMessage(conversationId, {
+      role: "user",
+      content: options.content,
+    });
+
+    // Create placeholder assistant message (empty content, pending completion)
+    const assistantMessage = await this.addMessage(conversationId, {
+      role: "assistant",
+      content: "",
+      metadata: {
+        provider,
+        model,
+        status: "pending",
+      },
+    });
+
+    return {
+      conversationId,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      timestamp: now,
+    };
   }
 
   generateTitle(conversation: Conversation): string {

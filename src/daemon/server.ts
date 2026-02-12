@@ -345,6 +345,11 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleAuthRequest(url, method, request, corsHeaders);
       }
 
+      // Message ingest endpoint — canonical (/api/messages) and compatibility (/messages)
+      if (this.matchMessageRoute(url.pathname) && method === "POST") {
+        return this.handlePostMessage(request, corsHeaders);
+      }
+
       // Conversation CRUD endpoints — canonical (/api/conversations) and compatibility (/conversations)
       const conversationRoute = this.matchConversationRoute(url.pathname);
       if (conversationRoute) {
@@ -558,6 +563,101 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     return null;
+  }
+
+  /**
+   * Match message routes for both canonical (/api/messages) and
+   * compatibility (/messages) paths.
+   */
+  private matchMessageRoute(pathname: string): boolean {
+    return pathname === MESSAGE_ROUTE.canonical || pathname === MESSAGE_ROUTE.compatibility;
+  }
+
+  /**
+   * POST /api/messages — accept user content, persist immediately, and return
+   * stream identifiers for asynchronous provider completion.
+   *
+   * Validates:
+   * - `content` is a non-empty string (required)
+   * - `role` is absent or "user" (assistant/system roles are rejected)
+   * - `conversationId`, if provided, references an existing conversation
+   *
+   * On success, persists the user message and a placeholder assistant message
+   * before returning IDs. No provider invocation happens here.
+   */
+  private async handlePostMessage(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.conversationManager) {
+      return Response.json(
+        { error: "Conversation services are not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    // Parse request body
+    let body: unknown;
+    try {
+      const text = await request.text();
+      if (text.length === 0) {
+        return Response.json(
+          { error: "Request body is required" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      body = JSON.parse(text);
+    } catch {
+      return Response.json(
+        { error: "Invalid JSON in request body" },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    // Validate payload shape
+    if (!isPostMessagePayload(body)) {
+      return Response.json(
+        { error: "Invalid request: content is required and must be a non-empty string" },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const payload = body as DaemonPostMessageRequestDto;
+
+    // Guard against assistant/system roles — only user messages are accepted
+    if (payload.role && payload.role !== "user") {
+      return Response.json(
+        { error: `Role "${payload.role}" is not allowed; only user messages can be submitted` },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    try {
+      const result = await this.conversationManager.sendMessage({
+        conversationId: payload.conversationId,
+        content: payload.content,
+        model: payload.model,
+        provider: payload.provider,
+      });
+
+      const response: DaemonPostMessageResponseDto = {
+        conversationId: result.conversationId,
+        messageId: result.userMessageId,
+        assistantMessageId: result.assistantMessageId,
+        timestamp: result.timestamp.toISOString(),
+        userMessageId: result.userMessageId,
+      };
+
+      log("info", "Message ingested", {
+        conversationId: result.conversationId,
+        userMessageId: result.userMessageId,
+        assistantMessageId: result.assistantMessageId,
+      });
+
+      return Response.json(response, { status: 201, headers: corsHeaders });
+    } catch (error) {
+      return this.mapConversationErrorToResponse(error, corsHeaders);
+    }
   }
 
   /**
