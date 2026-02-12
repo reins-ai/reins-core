@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { getLogsDir, ServiceInstaller } from "../../index";
 import type { ServiceDefinition } from "../../daemon/types";
 
@@ -152,7 +153,8 @@ function createServiceDefinition(deps: ServiceCommandDeps): ServiceDefinition {
   const displayName = deps.serviceDefinition.displayName ?? "Reins Daemon";
   const description = deps.serviceDefinition.description ?? "Reins background service";
   const command = deps.serviceDefinition.command ?? process.execPath;
-  const args = deps.serviceDefinition.args ?? ["run", "daemon"];
+  // Point to daemon entry point in reins-core/src/daemon/index.ts
+  const args = deps.serviceDefinition.args ?? [join(deps.workingDirectory, "src", "daemon", "index.ts")];
   const env = deps.serviceDefinition.env ?? {
     NODE_ENV: process.env.NODE_ENV ?? "production",
   };
