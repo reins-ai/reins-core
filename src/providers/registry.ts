@@ -1,6 +1,11 @@
 import { ProviderError } from "../errors";
 import type { Provider, ProviderAuthMode, ProviderCapabilities } from "../types";
 
+export interface ProviderCapabilityEntry {
+  providerId: string;
+  capabilities: ProviderCapabilities;
+}
+
 function normalizeProviderId(providerId: string): string {
   return providerId.trim().toLowerCase();
 }
@@ -13,6 +18,7 @@ function cloneCapabilities(capabilities: ProviderCapabilities): ProviderCapabili
   return {
     authModes: [...capabilities.authModes],
     requiresAuth: capabilities.requiresAuth,
+    userConfigurable: capabilities.userConfigurable ?? true,
     envVars: capabilities.envVars ? [...capabilities.envVars] : undefined,
     baseUrl: capabilities.baseUrl,
   };
@@ -24,12 +30,14 @@ function inferCapabilities(provider: Provider): ProviderCapabilities {
       return {
         authModes: [],
         requiresAuth: false,
+        userConfigurable: true,
         baseUrl: provider.config.baseUrl,
       };
     case "oauth":
       return {
         authModes: ["oauth"],
         requiresAuth: true,
+        userConfigurable: true,
         baseUrl: provider.config.baseUrl,
       };
     case "gateway":
@@ -37,12 +45,14 @@ function inferCapabilities(provider: Provider): ProviderCapabilities {
       return {
         authModes: ["api_key"],
         requiresAuth: true,
+        userConfigurable: true,
         baseUrl: provider.config.baseUrl,
       };
     default:
       return {
         authModes: ["api_key"],
         requiresAuth: true,
+        userConfigurable: true,
         baseUrl: provider.config.baseUrl,
       };
   }
@@ -52,51 +62,67 @@ const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   anthropic: {
     authModes: ["api_key", "oauth"],
     requiresAuth: true,
+    userConfigurable: true,
     envVars: ["ANTHROPIC_API_KEY"],
     baseUrl: "https://api.anthropic.com",
   },
   openai: {
     authModes: ["api_key", "oauth"],
     requiresAuth: true,
+    userConfigurable: true,
     envVars: ["OPENAI_API_KEY"],
     baseUrl: "https://api.openai.com",
   },
   google: {
     authModes: ["api_key", "oauth"],
     requiresAuth: true,
+    userConfigurable: true,
     envVars: ["GOOGLE_API_KEY"],
     baseUrl: "https://generativelanguage.googleapis.com",
   },
   glm: {
     authModes: ["api_key", "oauth"],
     requiresAuth: true,
+    userConfigurable: true,
   },
   kimi: {
     authModes: ["api_key", "oauth"],
     requiresAuth: true,
+    userConfigurable: true,
   },
   minimax: {
     authModes: ["api_key", "oauth"],
     requiresAuth: true,
+    userConfigurable: true,
   },
   "reins-gateway": {
     authModes: ["api_key"],
     requiresAuth: true,
+    userConfigurable: true,
     envVars: ["REINS_GATEWAY_API_KEY"],
+  },
+  fireworks: {
+    authModes: ["api_key"],
+    requiresAuth: true,
+    userConfigurable: false,
+    baseUrl: "https://api.fireworks.ai/inference/v1",
   },
   ollama: {
     authModes: [],
     requiresAuth: false,
+    userConfigurable: true,
     baseUrl: "http://localhost:11434",
   },
   vllm: {
     authModes: [],
     requiresAuth: false,
+    userConfigurable: true,
     baseUrl: "http://localhost:8000",
   },
   lmstudio: {
     authModes: [],
     requiresAuth: false,
+    userConfigurable: true,
     baseUrl: "http://localhost:1234",
   },
 };
@@ -169,6 +195,7 @@ export class ProviderRegistry {
     this.capabilities.set(normalizedProviderId, {
       authModes: normalizeAuthModes(capabilities.authModes),
       requiresAuth: capabilities.requiresAuth,
+      userConfigurable: capabilities.userConfigurable ?? true,
       envVars: capabilities.envVars ? [...capabilities.envVars] : undefined,
       baseUrl: capabilities.baseUrl,
     });
@@ -183,10 +210,21 @@ export class ProviderRegistry {
     return cloneCapabilities(capabilities);
   }
 
-  listCapabilities(): Array<{ providerId: string; capabilities: ProviderCapabilities }> {
+  listCapabilities(): ProviderCapabilityEntry[] {
     return Array.from(this.capabilities.entries()).map(([providerId, capabilities]) => ({
       providerId,
       capabilities: cloneCapabilities(capabilities),
     }));
+  }
+
+  listUserConfigurableCapabilities(): ProviderCapabilityEntry[] {
+    return this.listCapabilities().filter((entry) => entry.capabilities.userConfigurable !== false);
+  }
+
+  getUserConfigurableProviders(): Provider[] {
+    return this.list().filter((provider) => {
+      const capabilities = this.getCapabilities(provider.config.id);
+      return capabilities?.userConfigurable !== false;
+    });
   }
 }

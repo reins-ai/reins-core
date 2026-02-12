@@ -77,16 +77,19 @@ describe("ProviderRegistry", () => {
     expect(registry.getCapabilities("ollama")).toEqual({
       authModes: [],
       requiresAuth: false,
+      userConfigurable: true,
       baseUrl: "http://localhost:11434",
     });
     expect(registry.getCapabilities("vllm")).toEqual({
       authModes: [],
       requiresAuth: false,
+      userConfigurable: true,
       baseUrl: "http://localhost:8000",
     });
     expect(registry.getCapabilities("lmstudio")).toEqual({
       authModes: [],
       requiresAuth: false,
+      userConfigurable: true,
       baseUrl: "http://localhost:1234",
     });
   });
@@ -104,6 +107,7 @@ describe("ProviderRegistry", () => {
     expect(registry.getCapabilities("custom-gateway")).toEqual({
       authModes: ["api_key"],
       requiresAuth: true,
+      userConfigurable: true,
       envVars: ["CUSTOM_GATEWAY_KEY"],
       baseUrl: "https://gateway.example.com",
     });
@@ -127,8 +131,33 @@ describe("ProviderRegistry", () => {
     expect(registry.getCapabilities("provider-with-capabilities")).toEqual({
       authModes: ["api_key", "oauth"],
       requiresAuth: true,
+      userConfigurable: true,
       envVars: ["PROVIDER_KEY"],
       baseUrl: undefined,
     });
+  });
+
+  it("returns user-configurable capability metadata without fireworks", () => {
+    const registry = new ProviderRegistry();
+
+    const userConfigurableProviderIds = registry
+      .listUserConfigurableCapabilities()
+      .map((entry) => entry.providerId);
+
+    expect(userConfigurableProviderIds).toContain("anthropic");
+    expect(userConfigurableProviderIds).not.toContain("fireworks");
+  });
+
+  it("filters non-user-configurable providers from provider instance listings", () => {
+    const registry = new ProviderRegistry();
+    const fireworks = new MockProvider({ config: { id: "fireworks", type: "gateway" } });
+    const anthropic = new MockProvider({ config: { id: "anthropic", type: "oauth" } });
+
+    registry.register(fireworks);
+    registry.register(anthropic);
+
+    const listedProviderIds = registry.getUserConfigurableProviders().map((provider) => provider.config.id);
+
+    expect(listedProviderIds).toEqual(["anthropic"]);
   });
 });
