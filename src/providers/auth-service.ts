@@ -15,6 +15,7 @@ import type {
   OAuthStrategy,
   OAuthStoreContext,
 } from "./oauth/types";
+
 import type { ProviderRegistry } from "./registry";
 
 const REINS_GATEWAY_PROVIDER_ID = "reins-gateway";
@@ -145,6 +146,14 @@ export interface ProviderAuthCommandResult {
   credential?: CredentialRecord | null;
   providers?: ProviderAuthStatus[];
   guidance?: ProviderAuthGuidance;
+}
+
+interface EndpointValidatable {
+  validateWithEndpoint(key: string): Promise<Result<void, AuthError>>;
+}
+
+function hasEndpointValidation(strategy: ApiKeyAuthStrategy): strategy is ApiKeyAuthStrategy & EndpointValidatable {
+  return typeof (strategy as unknown as EndpointValidatable).validateWithEndpoint === "function";
 }
 
 function normalizeProviderId(provider: string): string {
@@ -458,7 +467,15 @@ export class ProviderAuthService implements AuthService {
       return err(new AuthError(`Provider ${normalizedProvider} does not support api_key authentication`));
     }
 
-    return strategyResult.value.store({
+    const strategy = strategyResult.value;
+    if (hasEndpointValidation(strategy)) {
+      const endpointResult = await strategy.validateWithEndpoint(keyResult.value);
+      if (!endpointResult.ok) {
+        return endpointResult;
+      }
+    }
+
+    return strategy.store({
       provider: normalizedProvider,
       key: keyResult.value,
       metadata,
@@ -648,12 +665,18 @@ export class ProviderAuthService implements AuthService {
         : await this.setOAuthTokens(provider, payload.tokens);
 
     if (!configureResult.ok) {
-      return err(
-        new AuthError(
-          `Authentication setup failed for provider ${provider}. ${configureResult.error.message}`,
-          configureResult.error,
-        ),
-      );
+      const supportedModes = this.getAuthMethods(provider);
+      return ok({
+        action: "configure",
+        provider,
+        source,
+        guidance: {
+          provider,
+          action: "retry",
+          message: configureResult.error.message,
+          supportedModes,
+        },
+      });
     }
 
     const credentialResult = await this.getCredential(provider);
@@ -731,6 +754,15 @@ export class ProviderAuthService implements AuthService {
         provider,
         action: "configure",
         message: `Provider ${provider} requires authentication. Configure ${supportedModes.join(" or ")} from ${source}.`,
+        supportedModes,
+      };
+    }
+
+    if (credential.revokedAt !== undefined) {
+      return {
+        provider,
+        action: "reauth",
+        message: `Credentials for ${provider} have been revoked. Reconfigure ${supportedModes.join(" or ")} from ${source}.`,
         supportedModes,
       };
     }

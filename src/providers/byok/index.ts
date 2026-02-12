@@ -1,4 +1,5 @@
 export { BYOKAnthropicProvider } from "./anthropic";
+export { AnthropicApiKeyStrategy } from "./anthropic-auth-strategy";
 export { KeyEncryption } from "./crypto";
 export { BYOKProviderFactory } from "./factory";
 export { BYOKGoogleProvider } from "./google";
