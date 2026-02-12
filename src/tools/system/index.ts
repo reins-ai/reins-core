@@ -8,3 +8,4 @@ export * from "./write";
 export * from "./edit";
 export * from "./glob";
 export * from "./grep";
+export * from "./ls";
