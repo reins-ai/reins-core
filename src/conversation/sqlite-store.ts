@@ -44,6 +44,7 @@ interface ConversationSummaryRow {
   id: string;
   title: string;
   model: string;
+  provider: string;
   created_at: string;
   updated_at: string;
   message_count: number;
@@ -312,6 +313,7 @@ export class SQLiteConversationStore implements ConversationStore {
               c.id,
               c.title,
               c.model,
+              c.provider,
               c.created_at,
               c.updated_at,
               COUNT(m.id) AS message_count,
@@ -331,9 +333,11 @@ export class SQLiteConversationStore implements ConversationStore {
           id: row.id,
           title: row.title,
           model: row.model,
+          provider: row.provider,
           messageCount: row.message_count,
           lastMessageAt: new Date(row.last_message_at),
           createdAt: new Date(row.created_at),
+          updatedAt: new Date(row.updated_at),
         })),
       );
     } catch (cause) {

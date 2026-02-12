@@ -50,9 +50,11 @@ export class InMemoryConversationStore implements ConversationStore {
         id: conversation.id,
         title: conversation.title,
         model: conversation.model,
+        provider: conversation.provider,
         messageCount: conversation.messages.length,
         lastMessageAt: lastMessage?.createdAt ?? conversation.updatedAt,
         createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
       } satisfies ConversationSummary;
     });
 

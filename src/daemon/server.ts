@@ -13,8 +13,15 @@ import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
 import { ProviderRegistry } from "../providers/registry";
 import { ModelRouter } from "../providers/router";
+import { ConversationError } from "../errors";
 import { err, ok, type Result } from "../result";
+import type { Conversation } from "../types";
 import type {
+  DaemonConversationRecordDto,
+  DaemonConversationSummaryDto,
+  DaemonCreateConversationRequestDto,
+  DaemonMessageRecordDto,
+  DaemonMessageRole,
   DaemonPostMessageRequestDto,
   DaemonPostMessageResponseDto,
   DaemonStreamSubscribeRequestDto,
@@ -295,7 +302,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     // CORS headers for local development
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     };
 
@@ -336,6 +343,12 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Provider auth endpoints
       if (url.pathname.startsWith("/api/providers/auth/")) {
         return this.handleAuthRequest(url, method, request, corsHeaders);
+      }
+
+      // Conversation CRUD endpoints — canonical (/api/conversations) and compatibility (/conversations)
+      const conversationRoute = this.matchConversationRoute(url.pathname);
+      if (conversationRoute) {
+        return this.handleConversationRequest(conversationRoute, method, request, corsHeaders);
       }
 
       log("warn", `Not found: ${method} ${url.pathname}`);
@@ -522,6 +535,235 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     log("warn", `Auth endpoint not found: ${method} ${path}`);
     return new Response("Not Found", { status: 404, headers: corsHeaders });
+  }
+
+  /**
+   * Match conversation routes for both canonical (/api/conversations) and
+   * compatibility (/conversations) paths. Returns null if no match.
+   */
+  private matchConversationRoute(pathname: string): { type: "list" } | { type: "detail"; id: string } | null {
+    // Canonical: /api/conversations or /api/conversations/:id
+    if (pathname === "/api/conversations" || pathname === "/conversations") {
+      return { type: "list" };
+    }
+
+    const canonicalMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
+    if (canonicalMatch) {
+      return { type: "detail", id: decodeURIComponent(canonicalMatch[1]) };
+    }
+
+    const compatMatch = pathname.match(/^\/conversations\/([^/]+)$/);
+    if (compatMatch) {
+      return { type: "detail", id: decodeURIComponent(compatMatch[1]) };
+    }
+
+    return null;
+  }
+
+  /**
+   * Handle conversation CRUD requests.
+   * Routes: POST (create), GET (list/get), DELETE (remove).
+   * Maps ConversationManager errors to appropriate HTTP status codes.
+   */
+  private async handleConversationRequest(
+    route: { type: "list" } | { type: "detail"; id: string },
+    method: string,
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    // All conversation endpoints require an active conversation manager
+    if (!this.conversationManager) {
+      return Response.json(
+        { error: "Conversation services are not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    try {
+      if (route.type === "list") {
+        if (method === "POST") {
+          return this.handleCreateConversation(request, corsHeaders);
+        }
+        if (method === "GET") {
+          return this.handleListConversations(corsHeaders);
+        }
+        return Response.json(
+          { error: `Method ${method} not allowed on conversations collection` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      // route.type === "detail"
+      if (method === "GET") {
+        return this.handleGetConversation(route.id, corsHeaders);
+      }
+      if (method === "DELETE") {
+        return this.handleDeleteConversation(route.id, corsHeaders);
+      }
+      return Response.json(
+        { error: `Method ${method} not allowed on conversation resource` },
+        { status: 405, headers: corsHeaders },
+      );
+    } catch (error) {
+      // Map ConversationError "not found" messages to 404, everything else to 500
+      return this.mapConversationErrorToResponse(error, corsHeaders);
+    }
+  }
+
+  /**
+   * POST /api/conversations — create a new conversation.
+   * Accepts optional title, model, and provider in the request body.
+   * Returns the full conversation record as a canonical DTO.
+   */
+  private async handleCreateConversation(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    let body: DaemonCreateConversationRequestDto = {};
+    try {
+      const text = await request.text();
+      if (text.length > 0) {
+        body = JSON.parse(text) as DaemonCreateConversationRequestDto;
+      }
+    } catch {
+      return Response.json(
+        { error: "Invalid JSON in request body" },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const conversation = await this.conversationManager!.create({
+      title: body.title,
+      model: body.model ?? "claude-sonnet-4-20250514",
+      provider: body.provider ?? "anthropic",
+    });
+
+    log("info", "Conversation created", { conversationId: conversation.id });
+    return Response.json(
+      this.conversationToRecordDto(conversation),
+      { status: 201, headers: corsHeaders },
+    );
+  }
+
+  /**
+   * GET /api/conversations — list conversation summaries.
+   * Returns metadata for each conversation: id, title, model, provider,
+   * messageCount, createdAt, updatedAt.
+   */
+  private async handleListConversations(
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const summaries = await this.conversationManager!.list();
+
+    const dtos: DaemonConversationSummaryDto[] = summaries.map((summary) => ({
+      id: summary.id,
+      title: summary.title,
+      model: summary.model,
+      provider: summary.provider,
+      messageCount: summary.messageCount,
+      createdAt: summary.createdAt.toISOString(),
+      updatedAt: (summary.updatedAt ?? summary.createdAt).toISOString(),
+    }));
+
+    return Response.json(dtos, { headers: corsHeaders });
+  }
+
+  /**
+   * GET /api/conversations/:id — get a conversation with full ordered message history.
+   * Returns 404 if the conversation does not exist.
+   */
+  private async handleGetConversation(
+    conversationId: string,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const conversation = await this.conversationManager!.load(conversationId);
+    return Response.json(
+      this.conversationToRecordDto(conversation),
+      { headers: corsHeaders },
+    );
+  }
+
+  /**
+   * DELETE /api/conversations/:id — delete a conversation and its messages.
+   * SQLite FK CASCADE handles child message deletion atomically.
+   * Returns 204 on success, 404 if the conversation does not exist.
+   */
+  private async handleDeleteConversation(
+    conversationId: string,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const deleted = await this.conversationManager!.delete(conversationId);
+
+    if (!deleted) {
+      // Conversation did not exist — return 404 for explicit feedback
+      return Response.json(
+        { error: `Conversation not found: ${conversationId}` },
+        { status: 404, headers: corsHeaders },
+      );
+    }
+
+    log("info", "Conversation deleted", { conversationId });
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  /**
+   * Map a domain Conversation to the canonical wire DTO.
+   * Messages are ordered by createdAt (ascending) as stored.
+   */
+  private conversationToRecordDto(conversation: Conversation): DaemonConversationRecordDto {
+    const messages: DaemonMessageRecordDto[] = conversation.messages.map((message) => {
+      const metadata = message.metadata as Record<string, unknown> | undefined;
+      return {
+        id: message.id,
+        role: message.role as DaemonMessageRole,
+        content: message.content,
+        createdAt: message.createdAt.toISOString(),
+        provider: typeof metadata?.provider === "string" ? metadata.provider : undefined,
+        model: typeof metadata?.model === "string" ? metadata.model : undefined,
+      };
+    });
+
+    return {
+      id: conversation.id,
+      title: conversation.title,
+      model: conversation.model,
+      provider: conversation.provider,
+      messageCount: conversation.messages.length,
+      createdAt: conversation.createdAt.toISOString(),
+      updatedAt: conversation.updatedAt.toISOString(),
+      messages,
+    };
+  }
+
+  /**
+   * Map conversation-layer errors to HTTP responses.
+   * ConversationError with "not found" in the message → 404.
+   * All other errors → 500 with a safe error message.
+   */
+  private mapConversationErrorToResponse(
+    error: unknown,
+    corsHeaders: Record<string, string>,
+  ): Response {
+    if (error instanceof ConversationError) {
+      // ConversationManager.load throws with "Conversation not found: <id>"
+      const isNotFound = error.message.toLowerCase().includes("not found");
+      const status = isNotFound ? 404 : 500;
+      log(isNotFound ? "warn" : "error", "Conversation operation failed", {
+        error: error.message,
+        status,
+      });
+      return Response.json(
+        { error: error.message },
+        { status, headers: corsHeaders },
+      );
+    }
+
+    const message = error instanceof Error ? error.message : "Internal server error";
+    log("error", "Unexpected conversation error", { error: message });
+    return Response.json(
+      { error: message },
+      { status: 500, headers: corsHeaders },
+    );
   }
 
   /**

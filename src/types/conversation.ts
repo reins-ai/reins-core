@@ -30,9 +30,11 @@ export interface ConversationSummary {
   id: string;
   title: string;
   model: string;
+  provider?: string;
   messageCount: number;
   lastMessageAt: Date;
   createdAt: Date;
+  updatedAt?: Date;
 }
 
 export type DaemonMessageRole = Extract<MessageRole, "system" | "user" | "assistant">;
