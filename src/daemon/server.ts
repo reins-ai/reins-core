@@ -5,38 +5,129 @@
 
 import { ProviderAuthService } from "../providers/auth-service";
 import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strategy";
-import { EncryptedCredentialStore } from "../providers/credentials/store";
+import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
 import { AnthropicOAuthProvider } from "../providers/oauth/anthropic";
 import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
 import { ProviderRegistry } from "../providers/registry";
+import { ModelRouter } from "../providers/router";
 import { err, ok, type Result } from "../result";
+import type {
+  DaemonPostMessageRequestDto,
+  DaemonPostMessageResponseDto,
+  DaemonStreamSubscribeRequestDto,
+} from "../types/conversation";
 import type { DaemonError, DaemonManagedService } from "./types";
 
 const DEFAULT_PORT = 7433;
 const DEFAULT_HOST = "localhost";
-const DEFAULT_ENCRYPTION_SECRET = "reins-daemon-default-secret"; // TODO: Use machine-specific secret
 
-// Anthropic OAuth configuration
+// Anthropic OAuth configuration (matches claude.ai OAuth flow)
 const ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const ANTHROPIC_OAUTH_CONFIG = {
   clientId: ANTHROPIC_CLIENT_ID,
-  authorizationUrl: "https://console.anthropic.com/oauth/authorize",
+  authorizationUrl: "https://claude.ai/oauth/authorize",
   tokenUrl: "https://console.anthropic.com/v1/oauth/token",
-  scopes: ["user:inference"],
-  redirectUri: "http://localhost:7433/oauth/callback",
+  scopes: ["org:create_api_key", "user:profile", "user:inference"],
+  redirectUri: "https://console.anthropic.com/oauth/code/callback",
 };
+
+interface DefaultServices {
+  authService: ProviderAuthService;
+  modelRouter: ModelRouter;
+}
 
 interface ServerOptions {
   port?: number;
   host?: string;
   authService?: ProviderAuthService;
+  modelRouter?: ModelRouter;
 }
 
 interface HealthResponse {
   status: "ok";
   timestamp: string;
   version: string;
+  contractVersion: string;
+  discovery: {
+    capabilities: string[];
+    routes: {
+      message: {
+        canonical: string;
+        compatibility: string;
+      };
+      conversations: {
+        canonical: string;
+        compatibility: string;
+      };
+      websocket: string;
+    };
+  };
+}
+
+const CONTRACT_VERSION = "2026-02-w1";
+const MESSAGE_ROUTE = {
+  canonical: "/api/messages",
+  compatibility: "/messages",
+} as const;
+
+const CONVERSATIONS_ROUTE = {
+  canonical: "/api/conversations",
+  compatibility: "/conversations",
+} as const;
+
+const WEBSOCKET_ROUTE = "/ws";
+
+export const DAEMON_CONTRACT_COMPATIBILITY_NOTES = [
+  "HTTP compatibility aliases remain active while TUI transport migrates from /messages and /conversations to /api-prefixed paths.",
+  "POST /api/messages canonical acknowledgement includes messageId and timestamp; userMessageId remains accepted as compatibility alias.",
+  "stream.subscribe payload shape remains { type, conversationId, assistantMessageId } for both daemon and TUI transports.",
+] as const;
+
+export function normalizePostMessageResponse(
+  response: DaemonPostMessageResponseDto,
+): DaemonPostMessageResponseDto {
+  return {
+    ...response,
+    userMessageId: response.userMessageId ?? response.messageId,
+  };
+}
+
+export function isStreamSubscribePayload(payload: unknown): payload is DaemonStreamSubscribeRequestDto {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const request = payload as Partial<DaemonStreamSubscribeRequestDto>;
+  return (
+    request.type === "stream.subscribe" &&
+    typeof request.conversationId === "string" &&
+    typeof request.assistantMessageId === "string"
+  );
+}
+
+export function isPostMessagePayload(payload: unknown): payload is DaemonPostMessageRequestDto {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const request = payload as Partial<DaemonPostMessageRequestDto>;
+  if (typeof request.content !== "string" || request.content.trim().length === 0) {
+    return false;
+  }
+
+  if (typeof request.conversationId !== "undefined" && typeof request.conversationId !== "string") {
+    return false;
+  }
+
+  if (typeof request.role !== "undefined") {
+    const allowedRoles = new Set(["system", "user", "assistant"]);
+    if (!allowedRoles.has(request.role)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function log(level: "info" | "warn" | "error", message: string, data?: Record<string, unknown>): void {
@@ -55,11 +146,13 @@ function log(level: "info" | "warn" | "error", message: string, data?: Record<st
 }
 
 /**
- * Build a fully wired ProviderAuthService with Anthropic BYOK and OAuth registered.
+ * Build a fully wired ProviderAuthService with Anthropic BYOK and OAuth registered,
+ * plus a ModelRouter for listing available models.
  */
-function createDefaultAuthService(): ProviderAuthService {
+function createDefaultServices(): DefaultServices {
+  const encryptionSecret = resolveCredentialEncryptionSecret();
   const store = new EncryptedCredentialStore({
-    encryptionSecret: DEFAULT_ENCRYPTION_SECRET,
+    encryptionSecret,
   });
   const registry = new ProviderRegistry();
 
@@ -72,15 +165,22 @@ function createDefaultAuthService(): ProviderAuthService {
   });
   oauthRegistry.register(anthropicOAuth);
 
+  // Register Anthropic OAuth provider in the ProviderRegistry for model listing
+  registry.register(anthropicOAuth);
+
   // Register Anthropic BYOK strategy
   const anthropicByok = new AnthropicApiKeyStrategy({ store });
 
-  return new ProviderAuthService({
+  const authService = new ProviderAuthService({
     store,
     registry,
     oauthProviderRegistry: oauthRegistry,
     apiKeyStrategies: { anthropic: anthropicByok },
   });
+
+  const modelRouter = new ModelRouter(registry, authService);
+
+  return { authService, modelRouter };
 }
 
 /**
@@ -92,11 +192,20 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly port: number;
   private readonly host: string;
   private readonly authService: ProviderAuthService;
+  private readonly modelRouter: ModelRouter;
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
-    this.authService = options.authService ?? createDefaultAuthService();
+
+    if (options.authService) {
+      this.authService = options.authService;
+      this.modelRouter = options.modelRouter ?? new ModelRouter(new ProviderRegistry());
+    } else {
+      const services = createDefaultServices();
+      this.authService = services.authService;
+      this.modelRouter = services.modelRouter;
+    }
   }
 
   async start(): Promise<Result<void, DaemonError>> {
@@ -169,8 +278,28 @@ export class DaemonHttpServer implements DaemonManagedService {
           status: "ok",
           timestamp: new Date().toISOString(),
           version: "0.1.0",
+          contractVersion: CONTRACT_VERSION,
+          discovery: {
+            capabilities: [
+              "providers.auth",
+              "providers.models",
+              "conversations.crud",
+              "messages.send",
+              "stream.subscribe",
+            ],
+            routes: {
+              message: MESSAGE_ROUTE,
+              conversations: CONVERSATIONS_ROUTE,
+              websocket: WEBSOCKET_ROUTE,
+            },
+          },
         };
         return Response.json(health, { headers: corsHeaders });
+      }
+
+      // Models endpoint
+      if (url.pathname === "/api/models" && method === "GET") {
+        return this.handleModelsRequest(corsHeaders);
       }
 
       // Provider auth endpoints
@@ -190,6 +319,23 @@ export class DaemonHttpServer implements DaemonManagedService {
         { error: error instanceof Error ? error.message : "Internal server error" },
         { status: 500, headers: corsHeaders }
       );
+    }
+  }
+
+  private async handleModelsRequest(corsHeaders: Record<string, string>): Promise<Response> {
+    try {
+      const models = await this.modelRouter.listAllModels();
+      const response = models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        provider: model.provider,
+      }));
+      return Response.json({ models: response }, { headers: corsHeaders });
+    } catch (error) {
+      log("error", "listModels failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json({ models: [] }, { headers: corsHeaders });
     }
   }
 
@@ -291,7 +437,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       const { code, state } = body;
       log("info", "OAuth callback received", { providerId, hasCode: !!code, hasState: !!state });
 
-      if (!providerId || !code || !state) {
+      if (!providerId || !code) {
         return Response.json(
           { error: "Missing required OAuth callback parameters" },
           { status: 400, headers: corsHeaders }
@@ -304,6 +450,30 @@ export class DaemonHttpServer implements DaemonManagedService {
         return Response.json({ success: true }, { headers: corsHeaders });
       }
       log("error", "OAuth callback failed", { providerId, error: result.error.message });
+      return Response.json({ error: result.error.message }, { status: 400, headers: corsHeaders });
+    }
+
+    // POST /api/providers/auth/oauth/exchange — exchange pasted auth code for tokens
+    if (path === "/api/providers/auth/oauth/exchange" && method === "POST") {
+      const body = await request.json();
+      const providerId = body.providerId ?? body.provider;
+      const code = body.code;
+      log("info", "OAuth code exchange request", { providerId, hasCode: !!code });
+
+      if (!providerId || !code) {
+        return Response.json(
+          { error: "Missing providerId or code" },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+
+      // The code from Anthropic's callback page may be "code#state"
+      const result = await this.authService.completeOAuthCallback(providerId, { code, state: undefined });
+      if (result.ok) {
+        log("info", "OAuth code exchange completed", { providerId });
+        return Response.json({ success: true, provider: providerId }, { headers: corsHeaders });
+      }
+      log("error", "OAuth code exchange failed", { providerId, error: result.error.message });
       return Response.json({ error: result.error.message }, { status: 400, headers: corsHeaders });
     }
 
