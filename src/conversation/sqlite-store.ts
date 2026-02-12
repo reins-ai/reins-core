@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 
 import { ConversationError } from "../errors";
 import { err, ok } from "../result";
-import type { Conversation, ConversationSummary, Message, MessageRole } from "../types";
+import { serializeContent, type Conversation, type ConversationSummary, type Message, type MessageRole } from "../types";
 import type { ConversationStore, ConversationStoreResult, ListOptions } from "./store";
 
 const CURRENT_SCHEMA_VERSION = 1;
@@ -165,7 +165,7 @@ export class SQLiteConversationStore implements ConversationStore {
           message.id,
           conversation.id,
           message.role,
-          message.content,
+          serializeContent(message.content),
           provider,
           model,
           message.toolCalls ? JSON.stringify(message.toolCalls) : null,

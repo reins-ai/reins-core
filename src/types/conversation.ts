@@ -3,10 +3,71 @@ import type { Result } from "../result";
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
+export interface TextBlock {
+  type: "text";
+  text: string;
+}
+
+export interface ToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolResultBlock {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
+
+/**
+ * Extract plain text from message content.
+ * Returns the string directly for string content, or concatenates
+ * all text blocks for ContentBlock[] content.
+ */
+export function getTextContent(content: string | ContentBlock[]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content
+    .filter((block): block is TextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+}
+
+/**
+ * Serialize message content for storage or transport.
+ * Returns the string directly for string content, or JSON-stringifies
+ * ContentBlock[] content.
+ */
+export function serializeContent(content: string | ContentBlock[]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return JSON.stringify(content);
+}
+
+/**
+ * Check if message content contains tool blocks.
+ */
+export function hasToolBlocks(content: string | ContentBlock[]): boolean {
+  if (typeof content === "string") {
+    return false;
+  }
+
+  return content.some((block) => block.type === "tool_use" || block.type === "tool_result");
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
-  content: string;
+  content: string | ContentBlock[];
   toolCalls?: ToolCall[];
   toolResultId?: string;
   createdAt: Date;

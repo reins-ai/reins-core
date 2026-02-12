@@ -1,6 +1,6 @@
 import { estimateConversationTokens, estimateTokens } from "../../context/tokenizer";
 import { ProviderError } from "../../errors";
-import type { Message } from "../../types/conversation";
+import { getTextContent, type Message } from "../../types/conversation";
 import type { StreamEvent } from "../../types/streaming";
 import type {
   ChatRequest,
@@ -88,7 +88,7 @@ function safeNumber(value: unknown): number | undefined {
 export function convertMessages(messages: Message[]): OllamaMessage[] {
   return messages.map((message) => ({
     role: mapRole(message.role),
-    content: message.content,
+    content: getTextContent(message.content),
   }));
 }
 

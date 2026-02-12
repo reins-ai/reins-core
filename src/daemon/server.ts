@@ -15,7 +15,7 @@ import { ProviderRegistry } from "../providers/registry";
 import { ModelRouter } from "../providers/router";
 import { AuthError, ConversationError, ProviderError } from "../errors";
 import { err, ok, type Result } from "../result";
-import type { Conversation, Message } from "../types";
+import { getTextContent, serializeContent, type Conversation, type Message } from "../types";
 import type {
   DaemonConversationServiceError,
   DaemonConversationRecordDto,
@@ -29,6 +29,7 @@ import type {
 } from "../types/conversation";
 import type { DaemonError, DaemonManagedService } from "./types";
 import { WsStreamRegistry, type StreamRegistrySocketData } from "./ws-stream-registry";
+import type { ToolDefinition } from "../types";
 
 /**
  * Stream lifecycle event emitted over WebSocket during provider generation.
@@ -184,6 +185,7 @@ interface ServerOptions {
   authService?: ProviderAuthService;
   modelRouter?: ModelRouter;
   conversation?: ConversationServiceOptions;
+  toolDefinitions?: ToolDefinition[];
 }
 
 interface ProviderExecutionContext {
@@ -472,11 +474,13 @@ export class DaemonHttpServer implements DaemonManagedService {
   private ownedSqliteStore: SQLiteConversationStore | null = null;
   private readonly conversationOptions: ConversationServiceOptions;
   private readonly streamRegistry = new StreamRegistry();
+  private readonly toolDefinitions: ToolDefinition[];
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
     this.conversationOptions = options.conversation ?? {};
+    this.toolDefinitions = options.toolDefinitions ?? [];
 
     if (options.authService) {
       this.authService = options.authService;
@@ -1178,6 +1182,7 @@ export class DaemonHttpServer implements DaemonManagedService {
         model: routeResult.value.model.id,
         messages: anthropicContext.messages,
         systemPrompt: anthropicContext.systemPrompt,
+        tools: this.toolDefinitions.length > 0 ? this.toolDefinitions : undefined,
       })) {
         if (!didEmitStart) {
           didEmitStart = true;
@@ -1269,7 +1274,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     for (const message of orderedMessages) {
       if (message.role === "system") {
-        const systemText = message.content.trim();
+        const systemText = getTextContent(message.content).trim();
         if (systemText.length > 0) {
           systemParts.push(systemText);
         }
@@ -1664,7 +1669,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       return {
         id: message.id,
         role: message.role as DaemonMessageRole,
-        content: message.content,
+        content: serializeContent(message.content),
         createdAt: message.createdAt.toISOString(),
         provider: typeof metadata?.provider === "string" ? metadata.provider : undefined,
         model: typeof metadata?.model === "string" ? metadata.model : undefined,

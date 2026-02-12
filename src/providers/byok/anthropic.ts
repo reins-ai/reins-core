@@ -1,5 +1,6 @@
 import { ProviderError } from "../../errors";
 import { generateId } from "../../conversation/id";
+import { getTextContent } from "../../types/conversation";
 import { StreamTransformer } from "../../streaming";
 import type { StreamEvent } from "../../types/streaming";
 import type {
@@ -109,7 +110,7 @@ function mapMessages(request: ChatRequest): AnthropicMessage[] {
     )
     .map((message) => ({
       role: message.role,
-      content: message.content,
+      content: getTextContent(message.content),
     }));
 }
 

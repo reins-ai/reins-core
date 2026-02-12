@@ -2,7 +2,7 @@ import { estimateConversationTokens, estimateTokens } from "../context/tokenizer
 import { ConversationError } from "../errors";
 import type { MemoryEntry, MemoryStore } from "../memory";
 import { ok, type Result } from "../result";
-import type { Conversation, Message } from "../types";
+import { getTextContent, type Conversation, type Message } from "../types";
 import type { SessionMetadata, SessionRepository } from "./session-repository";
 import type { ConversationStore } from "./store";
 import { TranscriptStore } from "./transcript-store";
@@ -199,11 +199,12 @@ export class CompactionService {
     const memories: Array<Omit<MemoryEntry, "id" | "createdAt" | "updatedAt">> = [];
 
     for (const message of messages) {
-      if ((message.role !== "user" && message.role !== "assistant") || !message.content.trim()) {
+      const textContent = getTextContent(message.content);
+      if ((message.role !== "user" && message.role !== "assistant") || !textContent.trim()) {
         continue;
       }
 
-      const content = message.content.trim();
+      const content = textContent.trim();
       const normalized = content.toLowerCase();
       const isPreference = /\b(prefer|likes?|favorite|always|never)\b/u.test(normalized);
       const isFact = /\b(decide|decision|must|should|will|important|remember)\b/u.test(normalized);
@@ -239,7 +240,7 @@ export class CompactionService {
     const lines: string[] = [];
     for (const message of messages) {
       const role = message.role.toUpperCase();
-      const normalized = message.content.replace(/\s+/gu, " ").trim();
+      const normalized = getTextContent(message.content).replace(/\s+/gu, " ").trim();
       if (!normalized) {
         continue;
       }

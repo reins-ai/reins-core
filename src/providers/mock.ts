@@ -1,4 +1,5 @@
 import { ProviderError } from "../errors";
+import { getTextContent } from "../types/conversation";
 import type { StreamEvent } from "../types/streaming";
 import type {
   ChatRequest,
@@ -140,7 +141,7 @@ export class MockProvider implements Provider {
   private calculateUsage(request: ChatRequest, content: string): TokenUsage {
     const inputTokenEstimate = this.estimateTokens([
       request.systemPrompt ?? "",
-      ...request.messages.map((message) => message.content),
+      ...request.messages.map((message) => getTextContent(message.content)),
     ]);
     const outputTokenEstimate = this.estimateTokens([content]);
 

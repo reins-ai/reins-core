@@ -1,7 +1,14 @@
 import { ConversationError } from "../errors";
 import type { MemoryStore } from "../memory";
 import { err, ok, type Result } from "../result";
-import type { Conversation, Message, MessageRole } from "../types";
+import type {
+  ContentBlock,
+  Conversation,
+  Message,
+  MessageRole,
+  ToolResultBlock,
+  ToolUseBlock,
+} from "../types";
 import { CompactionService } from "./compaction";
 import { generateId } from "./id";
 import type { SessionMetadata, SessionNewOptions, SessionRepository } from "./session-repository";
@@ -34,7 +41,7 @@ export interface SendMessageResult {
 export interface CompleteAssistantMessageOptions {
   conversationId: string;
   assistantMessageId: string;
-  content: string;
+  content: string | ContentBlock[];
   provider: string;
   model: string;
   finishReason?: string;
@@ -158,6 +165,44 @@ export class ConversationManager {
     }
 
     return nextMessage;
+  }
+
+  async addToolUseMessage(
+    conversationId: string,
+    toolUseBlocks: ToolUseBlock[],
+    textPrefix?: string,
+  ): Promise<Message> {
+    const blocks: ContentBlock[] = [];
+
+    if (textPrefix) {
+      blocks.push({ type: "text", text: textPrefix });
+    }
+
+    blocks.push(...toolUseBlocks);
+
+    return this.addMessage(conversationId, {
+      role: "assistant",
+      content: blocks,
+    });
+  }
+
+  async addToolResult(
+    conversationId: string,
+    toolUseId: string,
+    content: string,
+    isError?: boolean,
+  ): Promise<Message> {
+    const resultBlock: ToolResultBlock = {
+      type: "tool_result",
+      tool_use_id: toolUseId,
+      content,
+      ...(isError ? { is_error: true } : {}),
+    };
+
+    return this.addMessage(conversationId, {
+      role: "user",
+      content: [resultBlock],
+    });
   }
 
   async getHistory(conversationId: string, options?: HistoryOptions): Promise<Message[]> {
@@ -389,7 +434,19 @@ export class ConversationManager {
       return "New Conversation";
     }
 
-    return firstUserMessage.content.trim().slice(0, 50) || "New Conversation";
+    const text = this.extractTextContent(firstUserMessage.content);
+    return text.trim().slice(0, 50) || "New Conversation";
+  }
+
+  private extractTextContent(content: string | ContentBlock[]): string {
+    if (typeof content === "string") {
+      return content;
+    }
+
+    return content
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text)
+      .join("");
   }
 
   private copyMessagesForFork(source: Conversation, options?: ForkOptions): Message[] {

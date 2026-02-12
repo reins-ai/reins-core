@@ -3,6 +3,7 @@ import { AuthError } from "../../errors";
 import { err, ok, type Result } from "../../result";
 import { StreamTransformer } from "../../streaming";
 import { generateId } from "../../conversation/id";
+import { getTextContent } from "../../types/conversation";
 import type { StreamEvent } from "../../types/streaming";
 import type {
   ChatRequest,
@@ -12,7 +13,7 @@ import type {
   ProviderConfig,
   TokenUsage,
 } from "../../types/provider";
-import type { ToolCall } from "../../types/tool";
+import type { ToolCall, ToolDefinition } from "../../types/tool";
 import { OAuthFlowHandler } from "./flow";
 import { OAuthProvider } from "./provider";
 import type {
@@ -162,6 +163,24 @@ function resolveAnthropicApiModelId(model: string): string {
   return model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
 }
 
+/**
+ * Maps internal ToolDefinition[] to Anthropic API tool format.
+ * See: https://docs.anthropic.com/en/docs/build-with-claude/tool-use
+ */
+function mapTools(
+  tools: ToolDefinition[] | undefined,
+): { name: string; description: string; input_schema: ToolDefinition["parameters"] }[] | undefined {
+  if (!tools || tools.length === 0) {
+    return undefined;
+  }
+
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.parameters,
+  }));
+}
+
 function mapMessages(request: ChatRequest): AnthropicMessage[] {
   return request.messages
     .filter(
@@ -170,7 +189,7 @@ function mapMessages(request: ChatRequest): AnthropicMessage[] {
     )
     .map((message) => ({
       role: message.role,
-      content: message.content,
+      content: getTextContent(message.content),
     }));
 }
 
@@ -493,6 +512,7 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
         messages: mapMessages(request),
         max_tokens: request.maxTokens ?? 1024,
         temperature: request.temperature,
+        ...(mapTools(request.tools) ? { tools: mapTools(request.tools) } : {}),
       }),
     });
 
@@ -535,6 +555,7 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
         max_tokens: request.maxTokens ?? 1024,
         temperature: request.temperature,
         stream: true,
+        ...(mapTools(request.tools) ? { tools: mapTools(request.tools) } : {}),
       }),
     });
 

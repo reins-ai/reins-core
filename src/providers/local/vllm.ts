@@ -1,7 +1,7 @@
 import { estimateConversationTokens, estimateTokens } from "../../context/tokenizer";
 import { ProviderError } from "../../errors";
 import { StreamTransformer } from "../../streaming/transformer";
-import type { Message } from "../../types/conversation";
+import { getTextContent, type Message } from "../../types/conversation";
 import type { StreamEvent } from "../../types/streaming";
 import type {
   ChatRequest,
@@ -387,7 +387,7 @@ export class VLLMProvider implements Provider {
       const role = toOpenAIMessageRole(message.role);
       return {
         role,
-        content: message.content,
+        content: getTextContent(message.content),
         tool_call_id: role === "tool" ? message.toolResultId : undefined,
       };
     });
