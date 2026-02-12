@@ -775,7 +775,7 @@ describe("e2e/credential-state-and-reauth", () => {
     });
   });
 
-  describe("provider listing includes connection state", () => {
+   describe("provider listing includes connection state", () => {
     it("lists providers with correct connection states", async () => {
       const fixture = await createAuthFixture({
         fetchFn: async () =>
@@ -807,6 +807,424 @@ describe("e2e/credential-state-and-reauth", () => {
         expect(anthropicAfter?.configured).toBe(true);
       } finally {
         await fixture.cleanup();
+      }
+    });
+  });
+
+  describe("handleCommand credential-state signaling", () => {
+    it("returns reauth guidance via handleCommand get when OAuth tokens are expired", async () => {
+      const expiredTokens: OAuthTokens = {
+        accessToken: "expired-cmd-token",
+        refreshToken: "expired-cmd-refresh",
+        expiresAt: new Date(Date.now() - 3600 * 1000),
+        scope: "openid",
+        tokenType: "Bearer",
+      };
+
+      const fixture = await createAuthFixture();
+      try {
+        await fixture.service.setOAuthTokens("anthropic", expiredTokens);
+
+        const result = await fixture.service.handleCommand({
+          action: "get",
+          provider: "anthropic",
+          source: "tui",
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+
+        expect(result.value.action).toBe("get");
+        expect(result.value.credential).not.toBeNull();
+        expect(result.value.credential!.type).toBe("oauth");
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+
+    it("returns configure guidance via handleCommand get after revocation", async () => {
+      const fixture = await createAuthFixture({
+        fetchFn: async () =>
+          new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      });
+      try {
+        await fixture.service.setApiKey("anthropic", "sk-ant-api03-cmd-revoke-test");
+        await fixture.service.revokeProvider("anthropic");
+
+        const result = await fixture.service.handleCommand({
+          action: "get",
+          provider: "anthropic",
+          source: "cli",
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+
+        expect(result.value.action).toBe("get");
+        expect(result.value.guidance).toBeDefined();
+        expect(result.value.guidance!.action).toBe("configure");
+        expect(result.value.guidance!.message).toContain("requires authentication");
+        expect(result.value.guidance!.supportedModes).toContain("api_key");
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+
+    it("returns provider list with mixed connection states via handleCommand", async () => {
+      const fixture = await createAuthFixture({
+        fetchFn: async () =>
+          new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      });
+      try {
+        // Register a local provider (no auth needed)
+        const localProvider = new MockProvider({
+          config: { id: "ollama", name: "Ollama", type: "local" },
+        });
+        fixture.registry.register(localProvider);
+
+        // Configure Anthropic BYOK
+        await fixture.service.setApiKey("anthropic", "sk-ant-api03-mixed-state-key");
+
+        // Register another BYOK provider without configuring it
+        const unconfiguredProvider = new MockProvider({
+          config: { id: "openai", name: "OpenAI", type: "byok" },
+        });
+        fixture.registry.register(unconfiguredProvider);
+
+        const result = await fixture.service.handleCommand({
+          action: "list",
+          source: "tui",
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+
+        const providers = result.value.providers ?? [];
+
+        const anthropic = providers.find((p) => p.provider === "anthropic");
+        expect(anthropic?.connectionState).toBe("ready");
+        expect(anthropic?.configured).toBe(true);
+
+        const ollama = providers.find((p) => p.provider === "ollama");
+        expect(ollama?.connectionState).toBe("ready");
+        expect(ollama?.requiresAuth).toBe(false);
+
+        const openai = providers.find((p) => p.provider === "openai");
+        expect(openai?.connectionState).toBe("requires_auth");
+        expect(openai?.configured).toBe(false);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+
+    it("returns retry guidance when configuring with empty provider id", async () => {
+      const fixture = await createAuthFixture();
+      try {
+        const result = await fixture.service.handleCommand({
+          mode: "api_key",
+          provider: "  ",
+          source: "tui",
+          key: "sk-ant-api03-some-key",
+        });
+
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+
+        expect(result.error.message).toContain("Provider is required");
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
+
+  describe("credential persistence across restart", () => {
+    it("BYOK auth status survives service restart with same credential store", async () => {
+      const tempDirectory = await mkdtemp(join(tmpdir(), "reins-restart-byok-"));
+      const filePath = join(tempDirectory, "credentials.enc.json");
+      const encryptionSecret = "restart-test-secret";
+
+      try {
+        // Session 1: Configure Anthropic BYOK
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const anthropicStrategy = new AnthropicApiKeyStrategy({
+            store,
+            fetchFn: async () =>
+              new Response(JSON.stringify({ data: [] }), { status: 200 }),
+          });
+          const service = new ProviderAuthService({
+            store,
+            registry,
+            apiKeyStrategies: { anthropic: anthropicStrategy },
+          });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+            models: [{
+              id: "claude-3-5-sonnet-latest",
+              name: "Claude 3.5 Sonnet",
+              provider: "anthropic",
+              contextWindow: 200_000,
+              capabilities: ["chat", "streaming", "tool_use"],
+            }],
+          });
+          registry.register(anthropicProvider);
+
+          await service.setApiKey("anthropic", "sk-ant-api03-restart-persist-key");
+
+          const status = await service.getProviderAuthStatus("anthropic");
+          expect(status.ok).toBe(true);
+          if (!status.ok) return;
+          expect(status.value.connectionState).toBe("ready");
+          expect(status.value.configured).toBe(true);
+        }
+
+        // Session 2: New service instance, same file — verify state persists
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const anthropicStrategy = new AnthropicApiKeyStrategy({
+            store,
+            fetchFn: async () =>
+              new Response(JSON.stringify({ data: [] }), { status: 200 }),
+          });
+          const service = new ProviderAuthService({
+            store,
+            registry,
+            apiKeyStrategies: { anthropic: anthropicStrategy },
+          });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+            models: [{
+              id: "claude-3-5-sonnet-latest",
+              name: "Claude 3.5 Sonnet",
+              provider: "anthropic",
+              contextWindow: 200_000,
+              capabilities: ["chat", "streaming", "tool_use"],
+            }],
+          });
+          registry.register(anthropicProvider);
+
+          // Auth status should still be ready
+          const status = await service.getProviderAuthStatus("anthropic");
+          expect(status.ok).toBe(true);
+          if (!status.ok) return;
+          expect(status.value.connectionState).toBe("ready");
+          expect(status.value.configured).toBe(true);
+          expect(status.value.credentialType).toBe("api_key");
+
+          // Conversation should still be allowed
+          const check = await service.checkConversationReady("anthropic");
+          expect(check.ok).toBe(true);
+          if (!check.ok) return;
+          expect(check.value.allowed).toBe(true);
+
+          // Key should be retrievable
+          const keyResult = await anthropicStrategy.retrieve({ provider: "anthropic" });
+          expect(keyResult.ok).toBe(true);
+          if (!keyResult.ok) return;
+          expect(keyResult.value).not.toBeNull();
+          expect(keyResult.value!.key).toBe("sk-ant-api03-restart-persist-key");
+        }
+      } finally {
+        await rm(tempDirectory, { recursive: true, force: true });
+      }
+    });
+
+    it("OAuth auth status and expiry survive service restart", async () => {
+      const tempDirectory = await mkdtemp(join(tmpdir(), "reins-restart-oauth-"));
+      const filePath = join(tempDirectory, "credentials.enc.json");
+      const encryptionSecret = "restart-oauth-secret";
+      const futureExpiry = new Date(Date.now() + 3600 * 1000);
+
+      try {
+        // Session 1: Store OAuth tokens
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const service = new ProviderAuthService({ store, registry });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+          });
+          registry.register(anthropicProvider);
+
+          await service.setOAuthTokens("anthropic", {
+            accessToken: "restart-oauth-access",
+            refreshToken: "restart-oauth-refresh",
+            expiresAt: futureExpiry,
+            scope: "openid",
+            tokenType: "Bearer",
+          });
+
+          const status = await service.getProviderAuthStatus("anthropic");
+          expect(status.ok).toBe(true);
+          if (!status.ok) return;
+          expect(status.value.connectionState).toBe("ready");
+          expect(status.value.credentialType).toBe("oauth");
+        }
+
+        // Session 2: New service instance — verify OAuth state persists
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const service = new ProviderAuthService({ store, registry });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+          });
+          registry.register(anthropicProvider);
+
+          const status = await service.getProviderAuthStatus("anthropic");
+          expect(status.ok).toBe(true);
+          if (!status.ok) return;
+          expect(status.value.connectionState).toBe("ready");
+          expect(status.value.configured).toBe(true);
+          expect(status.value.credentialType).toBe("oauth");
+          expect(status.value.expiresAt).toBeDefined();
+          expect(status.value.expiresAt!).toBeGreaterThan(Date.now());
+
+          // Conversation should be allowed
+          const check = await service.checkConversationReady("anthropic");
+          expect(check.ok).toBe(true);
+          if (!check.ok) return;
+          expect(check.value.allowed).toBe(true);
+        }
+      } finally {
+        await rm(tempDirectory, { recursive: true, force: true });
+      }
+    });
+
+    it("revoked credential state persists across restart", async () => {
+      const tempDirectory = await mkdtemp(join(tmpdir(), "reins-restart-revoke-"));
+      const filePath = join(tempDirectory, "credentials.enc.json");
+      const encryptionSecret = "restart-revoke-secret";
+
+      try {
+        // Session 1: Configure then revoke
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const anthropicStrategy = new AnthropicApiKeyStrategy({
+            store,
+            fetchFn: async () =>
+              new Response(JSON.stringify({ data: [] }), { status: 200 }),
+          });
+          const service = new ProviderAuthService({
+            store,
+            registry,
+            apiKeyStrategies: { anthropic: anthropicStrategy },
+          });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+          });
+          registry.register(anthropicProvider);
+
+          await service.setApiKey("anthropic", "sk-ant-api03-restart-revoke-key");
+          await service.revokeProvider("anthropic");
+
+          const status = await service.getProviderAuthStatus("anthropic");
+          expect(status.ok).toBe(true);
+          if (!status.ok) return;
+          expect(status.value.connectionState).toBe("requires_auth");
+        }
+
+        // Session 2: Verify revoked state persists
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const service = new ProviderAuthService({ store, registry });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+          });
+          registry.register(anthropicProvider);
+
+          const status = await service.getProviderAuthStatus("anthropic");
+          expect(status.ok).toBe(true);
+          if (!status.ok) return;
+          expect(status.value.connectionState).toBe("requires_auth");
+          expect(status.value.configured).toBe(false);
+
+          // Conversation should be blocked
+          const check = await service.checkConversationReady("anthropic");
+          expect(check.ok).toBe(true);
+          if (!check.ok) return;
+          expect(check.value.allowed).toBe(false);
+          expect(check.value.guidance!.action).toBe("configure");
+        }
+      } finally {
+        await rm(tempDirectory, { recursive: true, force: true });
+      }
+    });
+
+    it("expired OAuth tokens detected as requires_reauth after restart", async () => {
+      const tempDirectory = await mkdtemp(join(tmpdir(), "reins-restart-expired-"));
+      const filePath = join(tempDirectory, "credentials.enc.json");
+      const encryptionSecret = "restart-expired-secret";
+
+      try {
+        // Session 1: Store already-expired OAuth tokens
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const service = new ProviderAuthService({ store, registry });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+          });
+          registry.register(anthropicProvider);
+
+          await service.setOAuthTokens("anthropic", {
+            accessToken: "restart-expired-access",
+            refreshToken: "restart-expired-refresh",
+            expiresAt: new Date(Date.now() - 3600 * 1000),
+            scope: "openid",
+            tokenType: "Bearer",
+          });
+        }
+
+        // Session 2: Verify expired state detected after restart
+        {
+          const store = new EncryptedCredentialStore({ encryptionSecret, filePath });
+          const registry = new ProviderRegistry();
+          const service = new ProviderAuthService({ store, registry });
+
+          const anthropicProvider = new MockProvider({
+            config: { id: "anthropic", name: "Anthropic", type: "byok" },
+          });
+          registry.register(anthropicProvider);
+
+          const status = await service.getProviderAuthStatus("anthropic");
+          expect(status.ok).toBe(true);
+          if (!status.ok) return;
+          expect(status.value.connectionState).toBe("requires_reauth");
+          expect(status.value.configured).toBe(true);
+          expect(status.value.credentialType).toBe("oauth");
+
+          // Conversation should be blocked with reauth guidance
+          const check = await service.checkConversationReady("anthropic");
+          expect(check.ok).toBe(true);
+          if (!check.ok) return;
+          expect(check.value.allowed).toBe(false);
+          expect(check.value.connectionState).toBe("requires_reauth");
+          expect(check.value.guidance!.action).toBe("reauth");
+          expect(check.value.guidance!.message).toContain("expired");
+
+          // Router should also block
+          const router = new ModelRouter(registry, service);
+          const routeResult = await router.routeWithAuthCheck({
+            provider: "anthropic",
+          });
+          expect(routeResult.ok).toBe(false);
+          if (routeResult.ok) return;
+          expect(routeResult.error.message).toContain("expired");
+        }
+      } finally {
+        await rm(tempDirectory, { recursive: true, force: true });
       }
     });
   });
