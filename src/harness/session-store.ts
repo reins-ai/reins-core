@@ -1,6 +1,7 @@
 import { ConversationManager, InMemoryConversationStore, SessionRepository } from "../conversation";
 import { ConversationError } from "../errors";
 import { err, ok, type Result } from "../result";
+import type { Message } from "../types";
 import type { SessionMetadata } from "../conversation/session-repository";
 import type { TypedEventBus } from "./event-bus";
 import type { HarnessEventMap } from "./events";
@@ -11,13 +12,24 @@ export interface SessionStoreOptions {
   conversationManager?: ConversationManager;
 }
 
+export interface ForkSessionOptions {
+  title?: string;
+  turnIndex?: number;
+}
+
+export interface RestoredSession {
+  session: SessionMetadata;
+  messages: Message[];
+}
+
 export interface SessionStoreApi {
   getActiveSession(): SessionMetadata | null;
   startTurn(): Result<AbortSignal, ConversationError>;
   abortTurn(reason?: string): Promise<Result<boolean, ConversationError>>;
   isAborted(): boolean;
   persist(): Promise<Result<SessionMetadata, ConversationError>>;
-  restore(sessionId?: string): Promise<Result<SessionMetadata, ConversationError>>;
+  restore(sessionId?: string): Promise<Result<RestoredSession, ConversationError>>;
+  forkSession(options?: ForkSessionOptions): Promise<Result<SessionMetadata, ConversationError>>;
 }
 
 type SessionStoreResult<T> = Result<T, ConversationError>;
@@ -103,7 +115,7 @@ export class SessionStore implements SessionStoreApi {
     return ok(structuredClone(updated.value));
   }
 
-  async restore(sessionId?: string): Promise<SessionStoreResult<SessionMetadata>> {
+  async restore(sessionId?: string): Promise<SessionStoreResult<RestoredSession>> {
     const sessionResult = sessionId
       ? await this.sessionRepository.get(sessionId)
       : await this.conversationManager.resumeMain();
@@ -117,7 +129,41 @@ export class SessionStore implements SessionStoreApi {
     }
 
     this.activeSession = sessionResult.value;
-    return ok(structuredClone(sessionResult.value));
+
+    const messages = await this.loadSessionMessages(sessionResult.value);
+
+    return ok({
+      session: structuredClone(sessionResult.value),
+      messages,
+    });
+  }
+
+  async forkSession(options?: ForkSessionOptions): Promise<SessionStoreResult<SessionMetadata>> {
+    if (!this.activeSession) {
+      return err(new ConversationError("No active session to fork"));
+    }
+
+    const parentSession = this.activeSession;
+    const turnIndex = options?.turnIndex ?? parentSession.messageCount;
+    const title = options?.title?.trim() || `${parentSession.title} (Fork)`;
+
+    const createResult = await this.sessionRepository.create({
+      title,
+      model: parentSession.model,
+      provider: parentSession.provider,
+      messageCount: turnIndex,
+      tokenCount: 0,
+      status: "active",
+      setAsMain: false,
+      parentSessionId: parentSession.id,
+      forkTurnIndex: turnIndex,
+    });
+
+    if (!createResult.ok) {
+      return createResult;
+    }
+
+    return ok(structuredClone(createResult.value));
   }
 
   private abortCurrentTurn(reason: string): void {
@@ -132,5 +178,26 @@ export class SessionStore implements SessionStoreApi {
       initiatedBy: "system",
       reason,
     });
+  }
+
+  private async loadSessionMessages(_session: SessionMetadata): Promise<Message[]> {
+    try {
+      const conversations = await this.conversationManager.list();
+      if (conversations.length === 0) {
+        return [];
+      }
+
+      // Find the most recent conversation matching this session's model/provider
+      // or return empty if none found — the caller can create a new conversation
+      const latest = conversations[0];
+      if (!latest) {
+        return [];
+      }
+
+      const history = await this.conversationManager.getHistory(latest.id);
+      return history;
+    } catch {
+      return [];
+    }
   }
 }

@@ -116,9 +116,9 @@ describe("SessionStore", () => {
       return;
     }
 
-    expect(reloaded.value.id).toBe(started.value.id);
-    expect(reloaded.value.title).toBe("Branch A");
-    expect(reloaded.value.id).not.toBe(initialMain.value.id);
+    expect(reloaded.value.session.id).toBe(started.value.id);
+    expect(reloaded.value.session.title).toBe("Branch A");
+    expect(reloaded.value.session.id).not.toBe(initialMain.value.session.id);
   });
 
   it("emits aborted events and propagates turn cancellation state", async () => {

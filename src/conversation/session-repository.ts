@@ -21,6 +21,8 @@ export interface SessionMetadata {
   status: SessionStatus;
   lastCompactedAt?: string;
   transcriptPath: string;
+  parentSessionId?: string;
+  forkTurnIndex?: number;
 }
 
 interface SessionFileSchema {
@@ -43,6 +45,8 @@ export interface SessionCreateOptions {
   status?: SessionStatus;
   setAsMain?: boolean;
   transcriptPath?: string;
+  parentSessionId?: string;
+  forkTurnIndex?: number;
 }
 
 export interface SessionNewOptions {
@@ -135,6 +139,8 @@ export class SessionRepository {
       isMain: shouldBeMain,
       status: options.status ?? "active",
       transcriptPath: options.transcriptPath ?? this.defaultTranscriptPath(id),
+      ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
+      ...(options.forkTurnIndex !== undefined ? { forkTurnIndex: options.forkTurnIndex } : {}),
     };
 
     state.sessions.set(id, session);
@@ -178,6 +184,8 @@ export class SessionRepository {
       status: updates.status ?? session.status,
       lastCompactedAt: updates.lastCompactedAt ?? session.lastCompactedAt,
       transcriptPath: updates.transcriptPath ?? session.transcriptPath,
+      parentSessionId: updates.parentSessionId ?? session.parentSessionId,
+      forkTurnIndex: updates.forkTurnIndex ?? session.forkTurnIndex,
     };
 
     state.sessions.set(id, updated);
