@@ -72,15 +72,26 @@ function toOAuthTokens(value: SerializedOAuthTokens): OAuthTokens {
 
 type SupportedCredentialType = Extract<CredentialType, "api_key" | "oauth">;
 
+export type ProviderConnectionState = "ready" | "requires_auth" | "requires_reauth" | "invalid";
+
 export interface ProviderAuthStatus {
   provider: string;
   requiresAuth: boolean;
   authModes: AuthMode[];
   configured: boolean;
+  connectionState: ProviderConnectionState;
   credentialType?: SupportedCredentialType;
   updatedAt?: number;
+  expiresAt?: number;
   envVars?: string[];
   baseUrl?: string;
+}
+
+export interface ConversationAuthCheck {
+  allowed: boolean;
+  provider: string;
+  connectionState: ProviderConnectionState;
+  guidance?: ProviderAuthGuidance;
 }
 
 export interface AuthService {
@@ -90,6 +101,8 @@ export interface AuthService {
   completeOAuthCallback(provider: string, context: Omit<OAuthCallbackContext, "provider">): Promise<Result<OAuthTokens, AuthError>>;
   getOAuthAccessToken(provider: string): Promise<Result<string, AuthError>>;
   getCredential(provider: string): Promise<Result<CredentialRecord | null, AuthError>>;
+  getProviderAuthStatus(provider: string): Promise<Result<ProviderAuthStatus, AuthError>>;
+  checkConversationReady(provider: string): Promise<Result<ConversationAuthCheck, AuthError>>;
   listProviders(): Promise<Result<ProviderAuthStatus[], AuthError>>;
   revokeProvider(provider: string): Promise<Result<void, AuthError>>;
   requiresAuth(provider: string): boolean;
@@ -706,11 +719,24 @@ export class ProviderAuthService implements AuthService {
         const authModes = capabilities?.authModes ?? fallbackAuthModes;
         const requiresAuth = capabilities?.requiresAuth ?? authModes.length > 0;
 
+        const configured = requiresAuth ? credential !== undefined : true;
+        let connectionState: ProviderConnectionState;
+        if (!requiresAuth) {
+          connectionState = "ready";
+        } else if (!credential) {
+          connectionState = "requires_auth";
+        } else if (credential.revokedAt !== undefined) {
+          connectionState = "requires_auth";
+        } else {
+          connectionState = "ready";
+        }
+
         return {
           provider: providerId,
           requiresAuth,
           authModes,
-          configured: requiresAuth ? credential !== undefined : true,
+          configured,
+          connectionState,
           credentialType,
           updatedAt: credential?.updatedAt,
           envVars: capabilities?.envVars,
@@ -911,6 +937,169 @@ export class ProviderAuthService implements AuthService {
     });
   }
 
+  public async getProviderAuthStatus(provider: string): Promise<Result<ProviderAuthStatus, AuthError>> {
+    const providerResult = validateProviderId(provider);
+    if (!providerResult.ok) {
+      return providerResult;
+    }
+
+    const normalizedProvider = providerResult.value;
+    const requiresAuth = this.requiresAuth(normalizedProvider);
+    const authModes = this.getAuthMethods(normalizedProvider);
+    const capabilities = this.registry.getCapabilities(normalizedProvider);
+    const registeredProvider = this.registry.get(normalizedProvider);
+
+    if (!requiresAuth) {
+      return ok({
+        provider: normalizedProvider,
+        requiresAuth: false,
+        authModes,
+        configured: true,
+        connectionState: "ready",
+        envVars: capabilities?.envVars,
+        baseUrl: capabilities?.baseUrl ?? registeredProvider?.config.baseUrl,
+      });
+    }
+
+    const credentialResult = await this.getCredential(normalizedProvider);
+    if (!credentialResult.ok) {
+      return credentialResult;
+    }
+
+    const credential = credentialResult.value;
+    if (!credential) {
+      return ok({
+        provider: normalizedProvider,
+        requiresAuth: true,
+        authModes,
+        configured: false,
+        connectionState: "requires_auth",
+        envVars: capabilities?.envVars,
+        baseUrl: capabilities?.baseUrl ?? registeredProvider?.config.baseUrl,
+      });
+    }
+
+    if (credential.revokedAt !== undefined) {
+      return ok({
+        provider: normalizedProvider,
+        requiresAuth: true,
+        authModes,
+        configured: false,
+        connectionState: "requires_auth",
+        credentialType: toSupportedCredentialType(credential.type),
+        updatedAt: credential.updatedAt,
+        envVars: capabilities?.envVars,
+        baseUrl: capabilities?.baseUrl ?? registeredProvider?.config.baseUrl,
+      });
+    }
+
+    const credentialType = toSupportedCredentialType(credential.type);
+
+    if (credentialType === "oauth") {
+      const expiryResult = await this.getOAuthTokenExpiry(normalizedProvider);
+      if (expiryResult.ok && expiryResult.value !== null) {
+        const { expiresAt, expired } = expiryResult.value;
+        if (expired) {
+          return ok({
+            provider: normalizedProvider,
+            requiresAuth: true,
+            authModes,
+            configured: true,
+            connectionState: "requires_reauth",
+            credentialType,
+            updatedAt: credential.updatedAt,
+            expiresAt: expiresAt.getTime(),
+            envVars: capabilities?.envVars,
+            baseUrl: capabilities?.baseUrl ?? registeredProvider?.config.baseUrl,
+          });
+        }
+
+        return ok({
+          provider: normalizedProvider,
+          requiresAuth: true,
+          authModes,
+          configured: true,
+          connectionState: "ready",
+          credentialType,
+          updatedAt: credential.updatedAt,
+          expiresAt: expiresAt.getTime(),
+          envVars: capabilities?.envVars,
+          baseUrl: capabilities?.baseUrl ?? registeredProvider?.config.baseUrl,
+        });
+      }
+    }
+
+    return ok({
+      provider: normalizedProvider,
+      requiresAuth: true,
+      authModes,
+      configured: true,
+      connectionState: "ready",
+      credentialType,
+      updatedAt: credential.updatedAt,
+      envVars: capabilities?.envVars,
+      baseUrl: capabilities?.baseUrl ?? registeredProvider?.config.baseUrl,
+    });
+  }
+
+  public async checkConversationReady(provider: string): Promise<Result<ConversationAuthCheck, AuthError>> {
+    const statusResult = await this.getProviderAuthStatus(provider);
+    if (!statusResult.ok) {
+      return statusResult;
+    }
+
+    const status = statusResult.value;
+    const supportedModes = status.authModes;
+
+    switch (status.connectionState) {
+      case "ready":
+        return ok({
+          allowed: true,
+          provider: status.provider,
+          connectionState: "ready",
+        });
+
+      case "requires_auth":
+        return ok({
+          allowed: false,
+          provider: status.provider,
+          connectionState: "requires_auth",
+          guidance: {
+            provider: status.provider,
+            action: "configure",
+            message: `Authentication required for ${status.provider}. Run /connect to configure ${supportedModes.join(" or ")} credentials.`,
+            supportedModes,
+          },
+        });
+
+      case "requires_reauth":
+        return ok({
+          allowed: false,
+          provider: status.provider,
+          connectionState: "requires_reauth",
+          guidance: {
+            provider: status.provider,
+            action: "reauth",
+            message: `Credentials expired for ${status.provider}. Run /connect to re-authenticate.`,
+            supportedModes,
+          },
+        });
+
+      case "invalid":
+        return ok({
+          allowed: false,
+          provider: status.provider,
+          connectionState: "invalid",
+          guidance: {
+            provider: status.provider,
+            action: "configure",
+            message: `Invalid credentials for ${status.provider}. Run /connect to re-configure your connection.`,
+            supportedModes,
+          },
+        });
+    }
+  }
+
   public requiresAuth(provider: string): boolean {
     const normalizedProvider = normalizeProviderId(provider);
     const capabilities = this.registry.getCapabilities(normalizedProvider);
@@ -955,6 +1144,30 @@ export class ProviderAuthService implements AuthService {
     }
 
     return ok(this.oauthStrategies.get(provider) ?? this.defaultOAuthStrategy);
+  }
+
+  private async getOAuthTokenExpiry(
+    provider: string,
+  ): Promise<Result<{ expiresAt: Date; expired: boolean } | null, AuthError>> {
+    const strategyResult = this.resolveOAuthStrategy(provider);
+    if (!strategyResult.ok) {
+      return ok(null);
+    }
+
+    const tokensResult = await strategyResult.value.retrieveTokens({ provider });
+    if (!tokensResult.ok) {
+      return ok(null);
+    }
+
+    const tokens = tokensResult.value;
+    if (!tokens) {
+      return ok(null);
+    }
+
+    return ok({
+      expiresAt: tokens.expiresAt,
+      expired: isOAuthTokenExpired(tokens),
+    });
   }
 
   private buildGuidance(
