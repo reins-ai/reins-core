@@ -1,6 +1,6 @@
 import { ProviderError } from "../../errors";
 import { generateId } from "../../conversation/id";
-import { getTextContent } from "../../types/conversation";
+import type { ContentBlock } from "../../types/conversation";
 import { StreamTransformer } from "../../streaming";
 import type { StreamEvent } from "../../types/streaming";
 import type {
@@ -13,9 +13,20 @@ import type {
 } from "../../types/provider";
 import type { ToolCall } from "../../types/tool";
 
+interface AnthropicContentBlock {
+  type: "text" | "tool_use" | "tool_result";
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string;
+  is_error?: boolean;
+}
+
 interface AnthropicMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AnthropicContentBlock[];
 }
 
 interface BYOKAnthropicProviderOptions {
@@ -102,6 +113,29 @@ function mapFinishReason(value: unknown): ChatResponse["finishReason"] {
   return "stop";
 }
 
+function mapContentBlocks(blocks: ContentBlock[]): AnthropicContentBlock[] {
+  return blocks.map((block) => {
+    switch (block.type) {
+      case "text":
+        return { type: "text" as const, text: block.text };
+      case "tool_use":
+        return {
+          type: "tool_use" as const,
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        };
+      case "tool_result":
+        return {
+          type: "tool_result" as const,
+          tool_use_id: block.tool_use_id,
+          content: block.content,
+          ...(block.is_error ? { is_error: true } : {}),
+        };
+    }
+  });
+}
+
 function mapMessages(request: ChatRequest): AnthropicMessage[] {
   return request.messages
     .filter(
@@ -110,7 +144,9 @@ function mapMessages(request: ChatRequest): AnthropicMessage[] {
     )
     .map((message) => ({
       role: message.role,
-      content: getTextContent(message.content),
+      content: typeof message.content === "string"
+        ? message.content
+        : mapContentBlocks(message.content),
     }));
 }
 
