@@ -66,6 +66,33 @@ describe("StreamTransformer", () => {
     });
   });
 
+  it("parses Anthropic SSE delta events", async () => {
+    const sse = createByteStream([
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":12}}}\n\n',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}\n\n',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" world"}}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
+    ]);
+
+    const events = await collectEvents(StreamTransformer.fromSSE(sse));
+
+    expect(events).toEqual([
+      { type: "token", content: "Hello" },
+      { type: "token", content: " world" },
+      {
+        type: "done",
+        usage: { inputTokens: 0, outputTokens: 5, totalTokens: 5 },
+        finishReason: "end_turn",
+      },
+      {
+        type: "done",
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        finishReason: "stop",
+      },
+    ]);
+  });
+
   it("parses NDJSON events", async () => {
     const ndjson = createByteStream([
       '{"type":"token","content":"Hello"}\n',

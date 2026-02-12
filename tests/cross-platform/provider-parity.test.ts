@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { KeyEncryption } from "../../src/providers/byok/crypto";
 import { BYOKProviderFactory } from "../../src/providers/byok/factory";
 import { BYOKManager } from "../../src/providers/byok/manager";
 import { InMemoryKeyStorage } from "../../src/providers/byok/storage";
 import { MockProvider, ModelRouter, ProviderRegistry } from "../../src/providers";
+import { ProviderAuthService } from "../../src/providers/auth-service";
+import { EncryptedCredentialStore } from "../../src/providers/credentials/store";
 import type { Model } from "../../src/types";
 
 type Platform = "tui" | "desktop" | "mobile";
@@ -61,6 +66,33 @@ describe("cross-platform/provider-parity", () => {
     expect(userConfigurableProviderIds).toContain("anthropic");
     expect(userConfigurableProviderIds).toContain("reins-gateway");
     expect(registry.getCapabilities("fireworks")?.userConfigurable).toBe(false);
+  });
+
+  it("excludes fireworks from auth service listProviders response", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "reins-parity-auth-"));
+
+    try {
+      const store = new EncryptedCredentialStore({
+        encryptionSecret: "parity-test-secret",
+        filePath: join(tempDirectory, "credentials.enc.json"),
+      });
+      const registry = new ProviderRegistry();
+      const service = new ProviderAuthService({ store, registry });
+
+      const listResult = await service.listProviders();
+      expect(listResult.ok).toBe(true);
+      if (!listResult.ok) {
+        return;
+      }
+
+      const providerIds = listResult.value.map((status) => status.provider);
+      expect(providerIds).not.toContain("fireworks");
+      expect(providerIds).toContain("anthropic");
+      expect(providerIds).toContain("openai");
+      expect(providerIds).toContain("ollama");
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
   });
 
   it("keeps fireworks capability metadata available for internal routing", () => {

@@ -52,6 +52,8 @@ interface PendingOAuthSession {
 }
 
 const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
+const OAUTH_BETA_HEADERS = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
+const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -141,6 +143,25 @@ function mapFinishReason(value: unknown): ChatResponse["finishReason"] {
   return "stop";
 }
 
+function oauthHeaders(token: string, withJsonContentType = true): Record<string, string> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${token}`,
+    "anthropic-version": "2023-06-01",
+    "anthropic-beta": OAUTH_BETA_HEADERS,
+    "user-agent": OAUTH_USER_AGENT,
+  };
+
+  if (withJsonContentType) {
+    headers["content-type"] = "application/json";
+  }
+
+  return headers;
+}
+
+function resolveAnthropicApiModelId(model: string): string {
+  return model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
+}
+
 function mapMessages(request: ChatRequest): AnthropicMessage[] {
   return request.messages
     .filter(
@@ -157,19 +178,35 @@ const DEFAULT_BASE_URL = "https://api.anthropic.com";
 
 const DEFAULT_MODELS: Model[] = [
   {
-    id: "claude-3-5-sonnet-latest",
-    name: "Claude 3.5 Sonnet",
+    id: "anthropic/claude-sonnet-4-5",
+    name: "Claude Sonnet 4.5",
     provider: "anthropic-oauth",
     contextWindow: 200_000,
-    maxOutputTokens: 8_192,
+    maxOutputTokens: 16_384,
     capabilities: ["chat", "streaming", "tool_use", "vision"],
   },
   {
-    id: "claude-3-5-haiku-latest",
-    name: "Claude 3.5 Haiku",
+    id: "anthropic/claude-haiku-4-5",
+    name: "Claude Haiku 4.5",
     provider: "anthropic-oauth",
     contextWindow: 200_000,
-    maxOutputTokens: 8_192,
+    maxOutputTokens: 16_384,
+    capabilities: ["chat", "streaming", "tool_use", "vision"],
+  },
+  {
+    id: "anthropic/claude-opus-4-5",
+    name: "Claude Opus 4.5",
+    provider: "anthropic-oauth",
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+    capabilities: ["chat", "streaming", "tool_use", "vision"],
+  },
+  {
+    id: "anthropic/claude-opus-4-6",
+    name: "Claude Opus 4.6",
+    provider: "anthropic-oauth",
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
     capabilities: ["chat", "streaming", "tool_use", "vision"],
   },
 ];
@@ -231,9 +268,10 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       return err(new AuthError(`OAuth strategy for ${this.providerType} cannot initiate flow for ${context.provider}`));
     }
 
-    const state = context.register?.state ?? crypto.randomUUID().replace(/-/g, "");
     const pkce = this.flow.generatePkcePair();
     const codeVerifier = context.register?.codeVerifier ?? pkce.verifier;
+    // OpenCode pattern: use the PKCE verifier as the OAuth state parameter
+    const state = context.register?.state ?? codeVerifier;
     const redirectUri = context.register?.redirectUri ?? this.oauthConfig.redirectUri;
     const authorizationUrl = this.flow.getAuthorizationUrl(state, {
       codeChallenge: OAuthFlowHandler.computePkceChallenge(codeVerifier),
@@ -260,12 +298,18 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       return err(new AuthError(`OAuth strategy for ${this.providerType} cannot handle callback for ${context.provider}`));
     }
 
+    const code = context.code.trim();
+    if (code.length === 0) {
+      return err(new AuthError("OAuth callback code is required for provider anthropic"));
+    }
+
     const pendingSession = this.pendingSession;
     if (!pendingSession) {
       try {
-        const tokens = await this.flow.exchangeCode(context.code.trim(), {
+        const tokens = await this.flow.exchangeCode(code, {
           codeVerifier: context.exchange?.codeVerifier,
           redirectUri: context.exchange?.redirectUri,
+          state: context.state,
         });
         await persistOAuthTokens(this.tokenStore, this.providerType, tokens);
         return ok(tokens);
@@ -284,22 +328,15 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       return err(new AuthError("Anthropic OAuth session expired. Start sign-in again."));
     }
 
-    const callbackState = context.state?.trim() ?? "";
-    if (callbackState.length === 0 || callbackState !== pendingSession.state) {
-      return err(
-        new AuthError("OAuth state validation failed. Restart sign-in and retry to prevent CSRF risks."),
-      );
-    }
-
-    const code = context.code.trim();
-    if (code.length === 0) {
-      return err(new AuthError("OAuth callback code is required for provider anthropic"));
-    }
-
+    // In the code-paste flow (Anthropic callback page), the user pastes "code#state".
+    // The state embedded in the pasted string is handled by exchangeCode() which splits
+    // on "#". The codeVerifier (= the original PKCE verifier = the state param we sent)
+    // is used for the token exchange, matching the OpenCode reference pattern.
     try {
       const tokens = await this.flow.exchangeCode(code, {
         codeVerifier: context.exchange?.codeVerifier ?? pendingSession.codeVerifier,
         redirectUri: context.exchange?.redirectUri ?? pendingSession.redirectUri,
+        state: context.state ?? pendingSession.state,
       });
       await persistOAuthTokens(this.tokenStore, this.providerType, tokens);
       this.pendingSession = null;
@@ -446,15 +483,12 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
 
   public async chat(request: ChatRequest): Promise<ChatResponse> {
     const token = await this.getAccessToken();
+    const apiModel = resolveAnthropicApiModelId(request.model);
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-      },
+      headers: oauthHeaders(token),
       body: JSON.stringify({
-        model: request.model,
+        model: apiModel,
         system: request.systemPrompt,
         messages: mapMessages(request),
         max_tokens: request.maxTokens ?? 1024,
@@ -490,15 +524,12 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
 
   public async *stream(request: ChatRequest): AsyncIterable<StreamEvent> {
     const token = await this.getAccessToken();
+    const apiModel = resolveAnthropicApiModelId(request.model);
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-      },
+      headers: oauthHeaders(token),
       body: JSON.stringify({
-        model: request.model,
+        model: apiModel,
         system: request.systemPrompt,
         messages: mapMessages(request),
         max_tokens: request.maxTokens ?? 1024,
@@ -527,10 +558,7 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       const token = await this.getAccessToken();
       const response = await fetch(`${this.baseUrl}/v1/models`, {
         method: "GET",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "anthropic-version": "2023-06-01",
-        },
+        headers: oauthHeaders(token, false),
       });
       return response.ok;
     } catch {

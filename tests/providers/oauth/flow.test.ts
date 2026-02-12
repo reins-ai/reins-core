@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { ProviderAuthService } from "../../../src/providers/auth-service";
+import { EncryptedCredentialStore } from "../../../src/providers/credentials/store";
 import { OAuthFlowHandler } from "../../../src/providers/oauth/flow";
+import { ProviderRegistry } from "../../../src/providers/registry";
 import type { OAuthConfig, OAuthTokens } from "../../../src/providers/oauth/types";
 
 const originalFetch = globalThis.fetch;
@@ -32,16 +38,27 @@ describe("OAuthFlowHandler", () => {
     expect(url.searchParams.get("response_type")).toBe("code");
   });
 
+  it("supports overriding redirect URI for runtime callback sessions", () => {
+    const handler = new OAuthFlowHandler(oauthConfig);
+
+    const url = new URL(
+      handler.getAuthorizationUrl("state-runtime", {
+        redirectUri: "http://127.0.0.1:9000/oauth/callback",
+      }),
+    );
+
+    expect(url.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:9000/oauth/callback");
+  });
+
   it("exchanges authorization code for OAuth tokens", async () => {
     globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const body = String(init?.body ?? "");
-      const params = new URLSearchParams(body);
+      const body = JSON.parse(String(init?.body ?? "{}"));
       expect(init?.method).toBe("POST");
-      expect(params.get("grant_type")).toBe("authorization_code");
-      expect(params.get("code")).toBe("auth-code");
-      expect(params.get("client_id")).toBe(oauthConfig.clientId);
-      expect(params.get("client_secret")).toBe(oauthConfig.clientSecret);
-      expect(params.get("redirect_uri")).toBe(oauthConfig.redirectUri);
+      expect(body.grant_type).toBe("authorization_code");
+      expect(body.code).toBe("auth-code");
+      expect(body.client_id).toBe(oauthConfig.clientId);
+      expect(body.client_secret).toBe(oauthConfig.clientSecret);
+      expect(body.redirect_uri).toBe(oauthConfig.redirectUri);
 
       return new Response(
         JSON.stringify({
@@ -70,9 +87,9 @@ describe("OAuthFlowHandler", () => {
 
   it("refreshes OAuth tokens with refresh_token grant", async () => {
     globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const params = new URLSearchParams(String(init?.body ?? ""));
-      expect(params.get("grant_type")).toBe("refresh_token");
-      expect(params.get("refresh_token")).toBe("old-refresh");
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      expect(body.grant_type).toBe("refresh_token");
+      expect(body.refresh_token).toBe("old-refresh");
 
       return new Response(
         JSON.stringify({
@@ -166,6 +183,165 @@ describe("OAuthFlowHandler", () => {
       expect(callback.state).toBe("server-state");
     } finally {
       session.stop();
+    }
+  });
+
+  it("completes runtime callback flow before token exchange", async () => {
+    const handler = new OAuthFlowHandler(oauthConfig);
+    const session = OAuthFlowHandler.startLocalCallbackServer({
+      host: "127.0.0.1",
+      callbackPath: "/oauth/callback",
+      timeoutMs: 5_000,
+    });
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url.startsWith("https://auth.example.com/token")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        expect(body.grant_type).toBe("authorization_code");
+        expect(body.code).toBe("runtime-code");
+        expect(body.redirect_uri).toBe(session.redirectUri);
+
+        return new Response(
+          JSON.stringify({
+            access_token: "runtime-access-token",
+            refresh_token: "runtime-refresh-token",
+            expires_in: 1800,
+            scope: "chat:read chat:write",
+            token_type: "Bearer",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+
+      return originalFetch(input, init);
+    };
+
+    try {
+      const authorizationUrl = new URL(
+        handler.getAuthorizationUrl("runtime-state", {
+          redirectUri: session.redirectUri,
+        }),
+      );
+      expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(session.redirectUri);
+
+      const callbackPromise = session.waitForCallback("runtime-state");
+      const callbackResponse = await originalFetch(
+        `${session.redirectUri}?code=runtime-code&state=runtime-state`,
+      );
+
+      expect(callbackResponse.status).toBe(200);
+
+      const callback = await callbackPromise;
+      const tokens = await handler.exchangeCode(callback.code, {
+        redirectUri: session.redirectUri,
+      });
+
+      expect(tokens.accessToken).toBe("runtime-access-token");
+      expect(tokens.refreshToken).toBe("runtime-refresh-token");
+    } finally {
+      session.stop();
+    }
+  });
+
+  it("wires runtime OAuth initiation and callback completion through auth service", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "reins-oauth-runtime-"));
+    const store = new EncryptedCredentialStore({
+      encryptionSecret: "oauth-runtime-secret",
+      filePath: join(tempDirectory, "credentials.enc.json"),
+    });
+
+    try {
+      const handler = new OAuthFlowHandler(oauthConfig);
+      const strategy = {
+        mode: "oauth" as const,
+        async initiate(context: {
+          provider: string;
+          register?: { state?: string; codeVerifier?: string; redirectUri?: string };
+        }) {
+          const state = context.register?.state ?? "service-runtime-state";
+          return {
+            ok: true as const,
+            value: {
+              type: "authorization_code" as const,
+              authorizationUrl: handler.getAuthorizationUrl(state, {
+                redirectUri: context.register?.redirectUri,
+              }),
+              state,
+              codeVerifier: context.register?.codeVerifier,
+            },
+          };
+        },
+        async handleCallback(context: { code: string; state?: string }) {
+          return {
+            ok: true as const,
+            value: {
+              accessToken: `service-${context.code}`,
+              refreshToken: "service-refresh",
+              expiresAt: new Date(Date.now() + 3_600_000),
+              scope: "chat:read chat:write",
+              tokenType: "Bearer",
+            },
+          };
+        },
+        async refresh() {
+          throw new Error("not used");
+        },
+        async storeTokens() {
+          return { ok: true as const, value: undefined };
+        },
+        async retrieveTokens() {
+          return { ok: true as const, value: null };
+        },
+        async revoke() {
+          return { ok: true as const, value: undefined };
+        },
+      };
+
+      const service = new ProviderAuthService({
+        store,
+        registry: new ProviderRegistry(),
+        oauthStrategies: {
+          anthropic: strategy,
+        },
+      });
+
+      const initiateResult = await service.initiateOAuth("anthropic", {
+        localCallback: {
+          host: "127.0.0.1",
+          callbackPath: "/oauth/callback",
+          timeoutMs: 5_000,
+        },
+      });
+
+      expect(initiateResult.ok).toBe(true);
+      if (!initiateResult.ok || initiateResult.value.type !== "authorization_code") {
+        return;
+      }
+
+      const authorizationUrl = new URL(initiateResult.value.authorizationUrl);
+      const redirectUri = authorizationUrl.searchParams.get("redirect_uri");
+      const state = authorizationUrl.searchParams.get("state");
+
+      expect(redirectUri).toContain("127.0.0.1");
+      expect(state).toBeTruthy();
+
+      const completePromise = service.completeOAuthCallback("anthropic");
+      const callbackResponse = await originalFetch(
+        `${redirectUri}?code=service-runtime-code&state=${state}`,
+      );
+      expect(callbackResponse.status).toBe(200);
+
+      const completeResult = await completePromise;
+      expect(completeResult.ok).toBe(true);
+      if (!completeResult.ok) {
+        return;
+      }
+
+      expect(completeResult.value.accessToken).toBe("service-service-runtime-code");
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
     }
   });
 });

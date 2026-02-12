@@ -55,10 +55,10 @@ describe("AnthropicOAuthProvider", () => {
 
   it("exchanges callback code when state matches pending OAuth session", async () => {
     globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const params = new URLSearchParams(String(init?.body ?? ""));
-      expect(params.get("grant_type")).toBe("authorization_code");
-      expect(params.get("code")).toBe("auth-code");
-      expect(params.get("code_verifier")?.length).toBeGreaterThan(20);
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      expect(body.grant_type).toBe("authorization_code");
+      expect(body.code).toBe("auth-code");
+      expect(body.code_verifier?.length).toBeGreaterThan(20);
 
       return new Response(
         JSON.stringify({
@@ -99,7 +99,16 @@ describe("AnthropicOAuthProvider", () => {
     expect(callbackResult.value.refreshToken).toBe("oauth-refresh");
   });
 
-  it("rejects callback when OAuth state is invalid", async () => {
+  it("rejects callback when token exchange fails with bad code", async () => {
+    // In the code-paste flow, state validation happens implicitly during
+    // token exchange — if the wrong verifier is used, exchange fails.
+    globalThis.fetch = async (): Promise<Response> => {
+      return new Response(
+        JSON.stringify({ error: "invalid_grant", error_description: "Invalid authorization code" }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    };
+
     const provider = new AnthropicOAuthProvider({
       oauthConfig,
       tokenStore: new InMemoryOAuthTokenStore(),
@@ -114,8 +123,7 @@ describe("AnthropicOAuthProvider", () => {
 
     const callbackResult = await provider.strategy.handleCallback({
       provider: "anthropic",
-      code: "auth-code",
-      state: "wrong-state",
+      code: "bad-code",
     });
 
     expect(callbackResult.ok).toBe(false);
@@ -123,14 +131,14 @@ describe("AnthropicOAuthProvider", () => {
       return;
     }
 
-    expect(callbackResult.error.message).toContain("state validation failed");
+    expect(callbackResult.error.message).toContain("token exchange failed");
   });
 
   it("refreshes and persists OAuth tokens", async () => {
     globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const params = new URLSearchParams(String(init?.body ?? ""));
-      expect(params.get("grant_type")).toBe("refresh_token");
-      expect(params.get("refresh_token")).toBe("refresh-token");
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      expect(body.grant_type).toBe("refresh_token");
+      expect(body.refresh_token).toBe("refresh-token");
 
       return new Response(
         JSON.stringify({
@@ -250,8 +258,11 @@ describe("AnthropicOAuthProvider", () => {
     });
 
     const models = await provider.listModels();
-    expect(models.length).toBeGreaterThanOrEqual(2);
-    expect(models.some((model) => model.id === "claude-3-5-sonnet-latest")).toBe(true);
+    expect(models.length).toBeGreaterThanOrEqual(4);
+    expect(models.some((model) => model.id === "anthropic/claude-sonnet-4-5")).toBe(true);
+    expect(models.some((model) => model.id === "anthropic/claude-haiku-4-5")).toBe(true);
+    expect(models.some((model) => model.id === "anthropic/claude-opus-4-5")).toBe(true);
+    expect(models.some((model) => model.id === "anthropic/claude-opus-4-6")).toBe(true);
   });
 });
 

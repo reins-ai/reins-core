@@ -15,6 +15,8 @@ import type {
   OAuthStrategy,
   OAuthStoreContext,
 } from "./oauth/types";
+import type { OAuthLocalCallbackServerOptions, OAuthLocalCallbackSession } from "./oauth/flow";
+import { OAuthFlowHandler } from "./oauth/flow";
 
 import type { ProviderRegistry } from "./registry";
 
@@ -97,8 +99,8 @@ export interface ConversationAuthCheck {
 export interface AuthService {
   setApiKey(provider: string, key: string, metadata?: Record<string, string>): Promise<Result<void, AuthError>>;
   setOAuthTokens(provider: string, tokens: OAuthTokens): Promise<Result<void, AuthError>>;
-  initiateOAuth(provider: string, context?: Omit<OAuthInitiateContext, "provider">): Promise<Result<AuthorizationResult, AuthError>>;
-  completeOAuthCallback(provider: string, context: Omit<OAuthCallbackContext, "provider">): Promise<Result<OAuthTokens, AuthError>>;
+  initiateOAuth(provider: string, context?: OAuthInitiationRuntimeContext): Promise<Result<AuthorizationResult, AuthError>>;
+  completeOAuthCallback(provider: string, context?: OAuthCompletionRuntimeContext): Promise<Result<OAuthTokens, AuthError>>;
   getOAuthAccessToken(provider: string): Promise<Result<string, AuthError>>;
   getCredential(provider: string): Promise<Result<CredentialRecord | null, AuthError>>;
   getProviderAuthStatus(provider: string): Promise<Result<ProviderAuthStatus, AuthError>>;
@@ -182,6 +184,19 @@ export interface ProviderAuthCommandResult {
   guidance?: ProviderAuthGuidance;
   authorization?: AuthorizationResult;
   tokens?: OAuthTokens;
+}
+
+export interface OAuthInitiationRuntimeContext extends Omit<OAuthInitiateContext, "provider"> {
+  localCallback?: OAuthLocalCallbackServerOptions | false;
+}
+
+export interface OAuthCompletionRuntimeContext extends Omit<OAuthCallbackContext, "provider" | "code"> {
+  code?: string;
+}
+
+interface PendingOAuthCallbackSession {
+  session: OAuthLocalCallbackSession;
+  expectedState?: string;
 }
 
 interface EndpointValidatable {
@@ -461,6 +476,7 @@ export class ProviderAuthService implements AuthService {
   private readonly oauthStrategies: Map<string, OAuthStrategy>;
   private readonly defaultApiKeyStrategy: ApiKeyAuthStrategy;
   private readonly defaultOAuthStrategy: OAuthStrategy;
+  private readonly pendingOAuthCallbackSessions = new Map<string, PendingOAuthCallbackSession>();
 
   constructor(options: ProviderAuthServiceOptions) {
     this.store = options.store;
@@ -546,7 +562,7 @@ export class ProviderAuthService implements AuthService {
 
   public async initiateOAuth(
     provider: string,
-    context: Omit<OAuthInitiateContext, "provider"> = {},
+    context: OAuthInitiationRuntimeContext = {},
   ): Promise<Result<AuthorizationResult, AuthError>> {
     const providerResult = validateProviderId(provider);
     if (!providerResult.ok) {
@@ -559,15 +575,56 @@ export class ProviderAuthService implements AuthService {
       return strategyResult;
     }
 
-    return strategyResult.value.initiate({
+    const localCallbackOptions = context.localCallback;
+    const shouldUseLocalCallback = localCallbackOptions !== false && normalizedProvider !== "anthropic";
+    let callbackSession: OAuthLocalCallbackSession | null = null;
+
+    if (shouldUseLocalCallback) {
+      try {
+        callbackSession = OAuthFlowHandler.startLocalCallbackServer(localCallbackOptions ?? {});
+      } catch (error) {
+        return err(
+          new AuthError(
+            `Unable to start local OAuth callback server for provider ${normalizedProvider}`,
+            error instanceof Error ? error : undefined,
+          ),
+        );
+      }
+    }
+
+    const register = callbackSession
+      ? {
+          ...context.register,
+          redirectUri: callbackSession.redirectUri,
+        }
+      : context.register;
+
+    const initiateResult = await strategyResult.value.initiate({
       provider: normalizedProvider,
-      register: context.register,
+      register,
     });
+
+    if (!initiateResult.ok) {
+      callbackSession?.stop();
+      return initiateResult;
+    }
+
+    if (callbackSession && initiateResult.value.type === "authorization_code") {
+      this.stopPendingOAuthCallbackSession(normalizedProvider);
+      this.pendingOAuthCallbackSessions.set(normalizedProvider, {
+        session: callbackSession,
+        expectedState: initiateResult.value.state,
+      });
+    } else {
+      callbackSession?.stop();
+    }
+
+    return initiateResult;
   }
 
   public async completeOAuthCallback(
     provider: string,
-    context: Omit<OAuthCallbackContext, "provider">,
+    context: OAuthCompletionRuntimeContext = {},
   ): Promise<Result<OAuthTokens, AuthError>> {
     const providerResult = validateProviderId(provider);
     if (!providerResult.ok) {
@@ -580,12 +637,45 @@ export class ProviderAuthService implements AuthService {
       return strategyResult;
     }
 
+    const pendingCallbackSession = this.pendingOAuthCallbackSessions.get(normalizedProvider);
+    const explicitCode = context.code?.trim() ?? "";
+    let code = explicitCode;
+    let state = context.state;
+
+    if (!code) {
+      if (!pendingCallbackSession) {
+        return err(
+          new AuthError(
+            `OAuth callback code is required for provider ${normalizedProvider}. Start browser sign-in and retry.`,
+          ),
+        );
+      }
+
+      try {
+        const callback = await pendingCallbackSession.session.waitForCallback(pendingCallbackSession.expectedState);
+        code = callback.code;
+        state = callback.state;
+      } catch (error) {
+        this.stopPendingOAuthCallbackSession(normalizedProvider);
+        return err(
+          new AuthError(
+            `OAuth callback failed for provider ${normalizedProvider}. Restart sign-in and try again.`,
+            error instanceof Error ? error : undefined,
+          ),
+        );
+      }
+    }
+
     const callbackResult = await strategyResult.value.handleCallback({
       provider: normalizedProvider,
-      code: context.code,
-      state: context.state,
+      code,
+      state,
       exchange: context.exchange,
     });
+
+    if (pendingCallbackSession) {
+      this.stopPendingOAuthCallbackSession(normalizedProvider);
+    }
 
     if (!callbackResult.ok) {
       return callbackResult;
@@ -600,6 +690,21 @@ export class ProviderAuthService implements AuthService {
     }
 
     return callbackResult;
+  }
+
+  private stopPendingOAuthCallbackSession(provider: string): void {
+    const pending = this.pendingOAuthCallbackSessions.get(provider);
+    if (!pending) {
+      return;
+    }
+
+    try {
+      pending.session.stop();
+    } catch {
+      // swallow cleanup failures
+    }
+
+    this.pendingOAuthCallbackSessions.delete(provider);
   }
 
   public async getOAuthAccessToken(provider: string): Promise<Result<string, AuthError>> {
@@ -698,7 +803,7 @@ export class ProviderAuthService implements AuthService {
       }
     }
 
-    const knownProviderIds = new Set<string>(this.registry.listCapabilities().map((entry) => entry.providerId));
+    const knownProviderIds = new Set<string>(this.registry.listUserConfigurableCapabilities().map((entry) => entry.providerId));
     for (const providerId of latestCredentialByProvider.keys()) {
       knownProviderIds.add(providerId);
     }

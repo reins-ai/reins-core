@@ -15,12 +15,14 @@ interface OAuthTokenResponse {
 export interface OAuthAuthorizationUrlOptions {
   codeChallenge?: string;
   codeChallengeMethod?: "S256" | "plain";
+  redirectUri?: string;
   extraParams?: Record<string, string>;
 }
 
 export interface OAuthExchangeCodeOptions {
   codeVerifier?: string;
   redirectUri?: string;
+  state?: string;
 }
 
 export interface OAuthRefreshOptions {
@@ -106,6 +108,34 @@ function toOAuthTokenResponse(value: unknown): OAuthTokenResponse {
 export class OAuthFlowHandler {
   constructor(private readonly config: OAuthConfig) {}
 
+  private static parseCallbackParametersFromSearchParams(
+    params: URLSearchParams,
+    expectedState?: string,
+  ): OAuthCallbackParameters {
+    const error = params.get("error");
+    if (error) {
+      const description = params.get("error_description") ?? "OAuth authorization failed";
+      throw new AuthError(`OAuth callback returned error: ${error}. ${description}`);
+    }
+
+    const code = params.get("code")?.trim() ?? "";
+    const state = params.get("state")?.trim() ?? "";
+
+    if (!code) {
+      throw new AuthError("OAuth callback is missing authorization code");
+    }
+
+    if (!state) {
+      throw new AuthError("OAuth callback is missing state parameter");
+    }
+
+    if (expectedState && state !== expectedState) {
+      throw new AuthError("OAuth callback state mismatch. Restart sign-in and try again.");
+    }
+
+    return { code, state };
+  }
+
   public generatePkcePair(): OAuthPkcePair {
     const verifierBytes = crypto.getRandomValues(new Uint8Array(32));
     const verifier = base64UrlEncode(verifierBytes);
@@ -134,31 +164,14 @@ export class OAuthFlowHandler {
           ? input.searchParams
           : new URL(input).searchParams;
 
-    const error = params.get("error");
-    if (error) {
-      const description = params.get("error_description") ?? "OAuth authorization failed";
-      throw new AuthError(`OAuth callback returned error: ${error}. ${description}`);
-    }
-
-    const code = params.get("code")?.trim() ?? "";
-    const state = params.get("state")?.trim() ?? "";
-
-    if (!code) {
-      throw new AuthError("OAuth callback is missing authorization code");
-    }
-
-    if (!state) {
-      throw new AuthError("OAuth callback is missing state parameter");
-    }
-
-    if (expectedState && state !== expectedState) {
-      throw new AuthError("OAuth callback state mismatch. Restart sign-in and try again.");
-    }
-
-    return { code, state };
+    return OAuthFlowHandler.parseCallbackParametersFromSearchParams(params, expectedState);
   }
 
   public startLocalCallbackServer(options: OAuthLocalCallbackServerOptions = {}): OAuthLocalCallbackSession {
+    return OAuthFlowHandler.startLocalCallbackServer(options);
+  }
+
+  public static startLocalCallbackServer(options: OAuthLocalCallbackServerOptions = {}): OAuthLocalCallbackSession {
     const host = options.host ?? "127.0.0.1";
     const callbackPath = options.callbackPath ?? "/oauth/callback";
     const timeoutMs = options.timeoutMs ?? 2 * 60 * 1000;
@@ -181,7 +194,7 @@ export class OAuthFlowHandler {
       }
 
       try {
-        resolveWait(this.parseCallbackParameters(url, expectedState));
+        resolveWait(OAuthFlowHandler.parseCallbackParametersFromSearchParams(url.searchParams, expectedState));
       } catch (error) {
         rejectWait?.(error);
       }
@@ -240,23 +253,25 @@ export class OAuthFlowHandler {
           rejectWait(new AuthError("OAuth callback server stopped before callback was received"));
         }
         settled = true;
-        server.stop(true);
+        server.stop(false);
       },
     };
   }
 
   public getAuthorizationUrl(state: string, options: OAuthAuthorizationUrlOptions = {}): string {
     const url = new URL(this.config.authorizationUrl);
+    url.searchParams.set("code", "true");
     url.searchParams.set("client_id", this.config.clientId);
-    url.searchParams.set("redirect_uri", this.config.redirectUri);
-    url.searchParams.set("scope", this.config.scopes.join(" "));
-    url.searchParams.set("state", state);
     url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", options.redirectUri ?? this.config.redirectUri);
+    url.searchParams.set("scope", this.config.scopes.join(" "));
 
     if (options.codeChallenge) {
       url.searchParams.set("code_challenge", options.codeChallenge);
       url.searchParams.set("code_challenge_method", options.codeChallengeMethod ?? "S256");
     }
+
+    url.searchParams.set("state", state);
 
     if (options.extraParams) {
       for (const [key, value] of Object.entries(options.extraParams)) {
@@ -268,38 +283,49 @@ export class OAuthFlowHandler {
   }
 
   public async exchangeCode(code: string, options: OAuthExchangeCodeOptions = {}): Promise<OAuthTokens> {
-    const body = new URLSearchParams();
-    body.set("grant_type", "authorization_code");
-    body.set("code", code);
-    body.set("client_id", this.config.clientId);
-    body.set("redirect_uri", options.redirectUri ?? this.config.redirectUri);
+    // Anthropic's callback page returns "code#state" — split them apart
+    const splits = code.split("#");
+    const actualCode = splits[0];
+    const callbackState = splits[1] ?? options.state;
+
+    const jsonBody: Record<string, string> = {
+      grant_type: "authorization_code",
+      code: actualCode,
+      client_id: this.config.clientId,
+      redirect_uri: options.redirectUri ?? this.config.redirectUri,
+    };
+
+    if (callbackState) {
+      jsonBody.state = callbackState;
+    }
 
     if (this.config.clientSecret) {
-      body.set("client_secret", this.config.clientSecret);
+      jsonBody.client_secret = this.config.clientSecret;
     }
 
     if (options.codeVerifier) {
-      body.set("code_verifier", options.codeVerifier);
+      jsonBody.code_verifier = options.codeVerifier;
     }
 
-    return this.requestTokens(body);
+    return this.requestTokensJson(jsonBody);
   }
 
   public async refreshTokens(refreshToken: string, options: OAuthRefreshOptions = {}): Promise<OAuthTokens> {
-    const body = new URLSearchParams();
-    body.set("grant_type", "refresh_token");
-    body.set("refresh_token", refreshToken);
-    body.set("client_id", this.config.clientId);
+    const jsonBody: Record<string, string> = {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: this.config.clientId,
+    };
 
     if (this.config.clientSecret) {
-      body.set("client_secret", this.config.clientSecret);
+      jsonBody.client_secret = this.config.clientSecret;
     }
 
     if (options.scope) {
-      body.set("scope", options.scope);
+      jsonBody.scope = options.scope;
     }
 
-    return this.requestTokens(body, refreshToken);
+    return this.requestTokensJson(jsonBody, refreshToken);
   }
 
   public isExpired(tokens: OAuthTokens): boolean {
@@ -307,14 +333,13 @@ export class OAuthFlowHandler {
     return Date.now() >= expiresWithBuffer;
   }
 
-  private async requestTokens(body: URLSearchParams, currentRefreshToken?: string): Promise<OAuthTokens> {
+  private async requestTokensJson(jsonBody: Record<string, string>, currentRefreshToken?: string): Promise<OAuthTokens> {
     const response = await fetch(this.config.tokenUrl, {
       method: "POST",
       headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        accept: "application/json",
+        "Content-Type": "application/json",
       },
-      body: body.toString(),
+      body: JSON.stringify(jsonBody),
     });
 
     if (!response.ok) {
@@ -335,4 +360,6 @@ export class OAuthFlowHandler {
       tokenType: data.token_type ?? "Bearer",
     };
   }
+
+
 }

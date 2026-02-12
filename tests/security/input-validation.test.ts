@@ -6,6 +6,8 @@ import { CredentialBackedOAuthTokenStore } from "../../src/providers/oauth/token
 import type { OAuthTokens } from "../../src/providers/oauth/types";
 import { ToolExecutor } from "../../src/tools/executor";
 import { ToolRegistry } from "../../src/tools/registry";
+import { readUserConfig } from "../../src/config/user-config";
+import { runSetupWizard, type SetupDaemonTransport, type SetupWizardIO } from "../../src/cli/setup-wizard";
 
 function createEchoExecutor(): ToolExecutor {
   const registry = new ToolRegistry();
@@ -138,6 +140,73 @@ function createTestStore(directory: string): EncryptedCredentialStore {
 }
 
 describe("security/credential-storage", () => {
+  it("does not persist plaintext API keys in user config during setup flow", async () => {
+    const directory = await makeTempDirectory("/tmp/reins-config-security-");
+    const configPath = `${directory}/config.json`;
+    const apiKey = "sk-ant-api03-plaintext-should-never-persist";
+
+    let promptIndex = 0;
+    const promptValues = [
+      "1", // provider: anthropic
+      "1", // auth method: api key
+      apiKey,
+      "Security Tester",
+      "y",
+    ];
+    const outputLines: string[] = [];
+
+    const io: SetupWizardIO = {
+      writeLine: (text: string) => {
+        outputLines.push(text);
+      },
+      prompt: async () => {
+        const value = promptValues[promptIndex] ?? "";
+        promptIndex += 1;
+        return value;
+      },
+      confirm: async () => {
+        const value = promptValues[promptIndex] ?? "";
+        promptIndex += 1;
+        return value.toLowerCase() === "y" || value.toLowerCase() === "yes";
+      },
+    };
+
+    let receivedByTransport: string | undefined;
+    const transport: SetupDaemonTransport = {
+      configureApiKey: async (_provider: string, providedApiKey: string) => {
+        receivedByTransport = providedApiKey;
+        return { success: true };
+      },
+      initiateOAuth: async () => ({ success: false, error: "OAuth not used in this test" }),
+      getProviderAuthStatus: async () => ({ connectionState: "ready", configured: true }),
+    };
+
+    const result = await runSetupWizard({
+      io,
+      transport,
+      configPath,
+      fetchHealth: async () => new Response("ok", { status: 200 }),
+    });
+
+    expect(result.status).toBe("completed");
+    expect(receivedByTransport).toBe(apiKey);
+
+    const rawConfig = await Bun.file(configPath).text();
+    expect(rawConfig.includes(apiKey)).toBe(false);
+    expect(rawConfig.includes("\"apiKey\"")).toBe(false);
+
+    const parsedConfig = await readUserConfig({ filePath: configPath });
+    expect(parsedConfig.ok).toBe(true);
+    if (!parsedConfig.ok || !parsedConfig.value) {
+      return;
+    }
+
+    expect(parsedConfig.value.provider.mode).toBe("byok");
+    expect(parsedConfig.value.provider.activeProvider).toBe("anthropic");
+    expect(Object.prototype.hasOwnProperty.call(parsedConfig.value.provider, "apiKey")).toBe(false);
+    expect(outputLines.join("\n").includes(apiKey)).toBe(false);
+  });
+
   it("encrypts API key credentials at rest with no plaintext leakage", async () => {
     const directory = await makeTempDirectory("/tmp/reins-cred-security-");
     const store = createTestStore(directory);

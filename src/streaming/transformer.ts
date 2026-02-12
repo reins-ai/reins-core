@@ -49,6 +49,22 @@ function asTokenUsage(value: unknown): TokenUsage | undefined {
   return undefined;
 }
 
+function asAnthropicUsage(value: unknown): TokenUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const inputTokens = typeof value.input_tokens === "number" ? value.input_tokens : 0;
+  const outputTokens = typeof value.output_tokens === "number" ? value.output_tokens : 0;
+  const totalTokens = inputTokens + outputTokens;
+
+  if (totalTokens === 0 && typeof value.input_tokens !== "number" && typeof value.output_tokens !== "number") {
+    return undefined;
+  }
+
+  return { inputTokens, outputTokens, totalTokens };
+}
+
 function normalizeParsedEvent(payload: unknown): StreamEvent[] {
   if (!isRecord(payload)) {
     return [{ type: "error", error: new Error("Invalid stream payload") }];
@@ -126,6 +142,33 @@ function normalizeParsedEvent(payload: unknown): StreamEvent[] {
     const usage = asTokenUsage(payload.usage) ?? createDefaultUsage();
     const finishReason = asString(payload.finishReason) ?? "stop";
     return [{ type: "done", usage, finishReason }];
+  }
+
+  if (type === "content_block_delta") {
+    const delta = payload.delta;
+    if (isRecord(delta)) {
+      const text = asString(delta.text);
+      if (text !== undefined && text.length > 0) {
+        return [{ type: "token", content: text }];
+      }
+    }
+
+    return [];
+  }
+
+  if (type === "message_delta") {
+    const delta = isRecord(payload.delta) ? payload.delta : undefined;
+    const finishReason = asString(delta?.stop_reason) ?? "stop";
+    const usage = asAnthropicUsage(payload.usage) ?? createDefaultUsage();
+    return [{ type: "done", usage, finishReason }];
+  }
+
+  if (type === "message_stop") {
+    return [{ type: "done", usage: createDefaultUsage(), finishReason: "stop" }];
+  }
+
+  if (type === "message_start" || type === "content_block_start" || type === "content_block_stop" || type === "ping") {
+    return [];
   }
 
   const choices = payload.choices;

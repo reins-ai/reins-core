@@ -30,6 +30,20 @@ export class ModelRouter {
     private readonly authService?: AuthService,
   ) {}
 
+  async listAllModels(): Promise<Model[]> {
+    const providers = this.registry.list();
+    const allModels: Model[] = [];
+    for (const provider of providers) {
+      try {
+        const models = await provider.listModels();
+        allModels.push(...models);
+      } catch {
+        // Skip providers that fail to list models
+      }
+    }
+    return allModels;
+  }
+
   async route(request: RouteRequest): Promise<RouteResult> {
     const providers = this.getProvidersForRequest(request);
     const requiredCapabilities = request.capabilities ?? [];

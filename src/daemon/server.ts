@@ -911,7 +911,14 @@ export class DaemonHttpServer implements DaemonManagedService {
       const body = await request.json();
       const providerId = body.providerId ?? body.provider;
       const code = body.code;
-      log("info", "OAuth code exchange request", { providerId, hasCode: !!code });
+      const state = typeof body.state === "string" ? body.state : undefined;
+      const codeVerifier = typeof body.codeVerifier === "string" ? body.codeVerifier : undefined;
+      log("info", "OAuth code exchange request", {
+        providerId,
+        hasCode: !!code,
+        hasState: !!state,
+        hasVerifier: !!codeVerifier,
+      });
 
       if (!providerId || !code) {
         return Response.json(
@@ -921,13 +928,27 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       // The code from Anthropic's callback page may be "code#state"
-      const result = await this.authService.completeOAuthCallback(providerId, { code, state: undefined });
+      // Pass codeVerifier for PKCE flow (required by Anthropic OAuth)
+      const result = await this.authService.completeOAuthCallback(providerId, { 
+        code, 
+        state,
+        exchange: codeVerifier ? { codeVerifier } : undefined
+      });
       if (result.ok) {
         log("info", "OAuth code exchange completed", { providerId });
         return Response.json({ success: true, provider: providerId }, { headers: corsHeaders });
       }
-      log("error", "OAuth code exchange failed", { providerId, error: result.error.message });
-      return Response.json({ error: result.error.message }, { status: 400, headers: corsHeaders });
+      const causeMessage = result.error.cause instanceof Error ? result.error.cause.message : undefined;
+      log("error", "OAuth code exchange failed", {
+        providerId,
+        error: result.error.message,
+        cause: causeMessage,
+        codeLength: typeof code === "string" ? code.length : 0,
+        stateLength: typeof state === "string" ? state.length : 0,
+        verifierLength: typeof codeVerifier === "string" ? codeVerifier.length : 0,
+      });
+      const detail = causeMessage ? `${result.error.message} (${causeMessage})` : result.error.message;
+      return Response.json({ error: detail }, { status: 400, headers: corsHeaders });
     }
 
     // GET /api/providers/auth/check-conversation/:providerId

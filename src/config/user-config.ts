@@ -13,7 +13,6 @@ export interface UserConfig {
   name: string;
   provider: {
     mode: UserProviderMode;
-    apiKey?: string;
     activeProvider?: string;
   };
   daemon: {
@@ -91,9 +90,6 @@ function normalizeConfig(value: unknown): UserConfig {
   const daemonCandidate = isRecord(value.daemon) ? value.daemon : {};
   const providerCandidate = isRecord(value.provider) ? value.provider : {};
   const mode = normalizeProviderMode(providerCandidate.mode);
-  const apiKey = typeof providerCandidate.apiKey === "string" && providerCandidate.apiKey.trim().length > 0
-    ? providerCandidate.apiKey
-    : undefined;
   const activeProvider = typeof providerCandidate.activeProvider === "string" && providerCandidate.activeProvider.trim().length > 0
     ? providerCandidate.activeProvider
     : undefined;
@@ -102,7 +98,6 @@ function normalizeConfig(value: unknown): UserConfig {
     name: typeof value.name === "string" ? value.name : "",
     provider: {
       mode,
-      apiKey: mode === "byok" ? apiKey : undefined,
       activeProvider,
     },
     daemon: {
@@ -120,17 +115,12 @@ function normalizeConfig(value: unknown): UserConfig {
 function mergeUserConfig(existing: UserConfig | null, updates: Partial<UserConfig>): UserConfig {
   const base = existing ?? normalizeConfig(undefined);
   const nextProviderMode = normalizeProviderMode(updates.provider?.mode ?? base.provider.mode);
-  const nextProviderApiKey =
-    nextProviderMode === "byok"
-      ? updates.provider?.apiKey ?? base.provider.apiKey
-      : undefined;
   const nextActiveProvider = updates.provider?.activeProvider ?? base.provider.activeProvider;
 
   return {
     name: updates.name ?? base.name,
     provider: {
       mode: nextProviderMode,
-      apiKey: nextProviderApiKey,
       activeProvider: nextActiveProvider,
     },
     daemon: {

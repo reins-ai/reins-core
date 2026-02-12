@@ -687,20 +687,41 @@ describe("StreamRegistry", () => {
 });
 
 /**
- * MockProvider variant that introduces a configurable delay before streaming,
- * allowing tests to subscribe to the stream registry before events are emitted.
+ * Captures all stream lifecycle events emitted through a StreamRegistry,
+ * regardless of conversationId/messageId. Installed before the POST request
+ * to avoid race conditions between event emission and subscription.
  */
-class DelayedMockProvider extends MockProvider {
-  private readonly delayMs: number;
+class StreamEventCapture {
+  readonly events: StreamLifecycleEvent[] = [];
+  private readonly originalEmit: StreamRegistry["emit"];
 
-  constructor(options: ConstructorParameters<typeof MockProvider>[0] & { delayMs?: number }) {
-    super(options);
-    this.delayMs = options?.delayMs ?? 50;
+  constructor(registry: StreamRegistry) {
+    this.originalEmit = registry.emit.bind(registry);
+    registry.emit = (event: StreamLifecycleEvent): void => {
+      this.events.push(event);
+      this.originalEmit(event);
+    };
   }
 
-  async *stream(request: import("../../src/types/provider").ChatRequest): AsyncIterable<import("../../src/types/streaming").StreamEvent> {
-    await Bun.sleep(this.delayMs);
-    yield* super.stream(request);
+  eventsFor(conversationId: string, messageId: string): StreamLifecycleEvent[] {
+    return this.events.filter(
+      (event) => event.conversationId === conversationId && event.messageId === messageId,
+    );
+  }
+
+  async waitForTerminal(conversationId: string, messageId: string, timeoutMs = 2000): Promise<StreamLifecycleEvent[]> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const events = this.eventsFor(conversationId, messageId);
+      const hasTerminal = events.some(
+        (event) => event.type === "message_complete" || event.type === "error",
+      );
+      if (hasTerminal) {
+        return events;
+      }
+      await Bun.sleep(10);
+    }
+    return this.eventsFor(conversationId, messageId);
   }
 }
 
@@ -723,15 +744,14 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       connectionState: "ready",
     });
 
-    const mockProvider = new DelayedMockProvider({
-      config: { id: "anthropic", type: "oauth" },
-      models: [createMockModel("anthropic-test-model", "anthropic")],
-      responseContent: "Hi",
-      delayMs: 30,
-    });
-
     const registry = new ProviderRegistry();
-    registry.register(mockProvider);
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+        responseContent: "Hi",
+      }),
+    );
 
     const modelRouter = new ModelRouter(registry, authService);
     const port = testPort++;
@@ -745,7 +765,9 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
 
     await server.start();
 
-    // Post message to get conversation and assistant IDs
+    // Capture all stream events before posting to avoid race conditions
+    const capture = new StreamEventCapture(server.getStreamRegistry());
+
     const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -762,20 +784,11 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       assistantMessageId: string;
     };
 
-    // Subscribe to stream events before provider starts streaming
-    const streamEvents: StreamLifecycleEvent[] = [];
-    server.getStreamRegistry().subscribe(
+    // Wait for terminal event
+    const streamEvents = await capture.waitForTerminal(
       payload.conversationId,
       payload.assistantMessageId,
-      (event) => streamEvents.push(event),
     );
-
-    // Wait for provider execution to complete
-    await waitForAssistantCompletion({
-      manager,
-      conversationId: payload.conversationId,
-      assistantMessageId: payload.assistantMessageId,
-    });
 
     // Verify lifecycle event order
     expect(streamEvents.length).toBeGreaterThanOrEqual(3);
@@ -803,7 +816,7 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
     }
   });
 
-  it("emits error event on provider failure", async () => {
+  it("emits error event on provider stream failure", async () => {
     const manager = new ConversationManager(new InMemoryConversationStore());
     const authService = createConversationReadyStubAuthService({
       allowed: true,
@@ -811,16 +824,15 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       connectionState: "ready",
     });
 
-    const mockProvider = new DelayedMockProvider({
-      config: { id: "anthropic", type: "oauth" },
-      models: [createMockModel("anthropic-test-model", "anthropic")],
-      simulateError: true,
-      errorMessage: "Provider exploded",
-      delayMs: 30,
-    });
-
     const registry = new ProviderRegistry();
-    registry.register(mockProvider);
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+        simulateError: true,
+        errorMessage: "Provider exploded",
+      }),
+    );
 
     const modelRouter = new ModelRouter(registry, authService);
     const port = testPort++;
@@ -833,6 +845,9 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
     servers.push(server);
 
     await server.start();
+
+    // Capture all stream events before posting
+    const capture = new StreamEventCapture(server.getStreamRegistry());
 
     const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
       method: "POST",
@@ -850,25 +865,17 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       assistantMessageId: string;
     };
 
-    // Subscribe to stream events
-    const streamEvents: StreamLifecycleEvent[] = [];
-    server.getStreamRegistry().subscribe(
+    // Wait for terminal event
+    const streamEvents = await capture.waitForTerminal(
       payload.conversationId,
       payload.assistantMessageId,
-      (event) => streamEvents.push(event),
     );
 
-    // Wait for error to be persisted
-    await waitForAssistantCompletion({
-      manager,
-      conversationId: payload.conversationId,
-      assistantMessageId: payload.assistantMessageId,
-    });
-
-    // Provider failures may occur before the first token is emitted, so
-    // message_start is best-effort while error is required.
+    // MockProvider with simulateError yields an error event as its first stream
+    // event, which throws before message_start can be emitted. The error is
+    // caught and emitted as a terminal error event — same as auth preflight.
     const startEvents = streamEvents.filter((event) => event.type === "message_start");
-    expect(startEvents.length).toBeGreaterThanOrEqual(0);
+    expect(startEvents.length).toBe(0);
 
     const errorEvents = streamEvents.filter((event) => event.type === "error");
     expect(errorEvents.length).toBe(1);
@@ -876,7 +883,8 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
     const errorEvent = errorEvents[0] as Extract<StreamLifecycleEvent, { type: "error" }>;
     expect(errorEvent.conversationId).toBe(payload.conversationId);
     expect(errorEvent.messageId).toBe(payload.assistantMessageId);
-    expect(errorEvent.error.message).toContain("Provider exploded");
+    expect(errorEvent.error.code).toBe("PROVIDER_UNAVAILABLE");
+    expect(errorEvent.error.retryable).toBe(true);
 
     // Stream registry should be cleaned up after terminal error
     expect(server.getStreamRegistry().hasSubscribers(
@@ -884,15 +892,11 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       payload.assistantMessageId,
     )).toBe(false);
 
-    if (startEvents.length > 0) {
-      expect(streamEvents[0].sequence).toBe(0);
-      expect(streamEvents[1].sequence).toBe(1);
-    } else {
-      expect(streamEvents[0].sequence).toBe(0);
-    }
+    // Single error event starts at sequence 0
+    expect(streamEvents[0].sequence).toBe(0);
   });
 
-  it("emits error event on auth preflight failure", async () => {
+  it("emits error event on auth preflight failure without message_start", async () => {
     const manager = new ConversationManager(new InMemoryConversationStore());
     const authService = createConversationReadyStubAuthService({
       allowed: false,
@@ -926,6 +930,9 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
 
     await server.start();
 
+    // Capture all stream events before posting
+    const capture = new StreamEventCapture(server.getStreamRegistry());
+
     const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -942,24 +949,17 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       assistantMessageId: string;
     };
 
-    // Subscribe to stream events — auth failures happen quickly but still
-    // go through the deferred scheduleProviderExecution path
-    const streamEvents: StreamLifecycleEvent[] = [];
-    server.getStreamRegistry().subscribe(
+    // Wait for terminal event
+    const streamEvents = await capture.waitForTerminal(
       payload.conversationId,
       payload.assistantMessageId,
-      (event) => streamEvents.push(event),
     );
 
-    // Wait for error to be persisted
-    await waitForAssistantCompletion({
-      manager,
-      conversationId: payload.conversationId,
-      assistantMessageId: payload.assistantMessageId,
-    });
-
     // Auth preflight failures bypass the streaming loop entirely,
-    // so no message_start is emitted — only the error event from the catch block.
+    // so no message_start is emitted — only the error event.
+    const startEvents = streamEvents.filter((event) => event.type === "message_start");
+    expect(startEvents.length).toBe(0);
+
     const errorEvents = streamEvents.filter((event) => event.type === "error");
     expect(errorEvents.length).toBe(1);
 
@@ -996,15 +996,14 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       connectionState: "ready",
     });
 
-    const mockProvider = new DelayedMockProvider({
-      config: { id: "anthropic", type: "oauth" },
-      models: [createMockModel("anthropic-test-model", "anthropic")],
-      responseContent: "ABC",
-      delayMs: 30,
-    });
-
     const registry = new ProviderRegistry();
-    registry.register(mockProvider);
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+        responseContent: "ABC",
+      }),
+    );
 
     const modelRouter = new ModelRouter(registry, authService);
     const port = testPort++;
@@ -1017,6 +1016,9 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
     servers.push(server);
 
     await server.start();
+
+    // Capture all stream events before posting
+    const capture = new StreamEventCapture(server.getStreamRegistry());
 
     const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
       method: "POST",
@@ -1033,18 +1035,10 @@ describe("DaemonHttpServer streaming lifecycle events", () => {
       assistantMessageId: string;
     };
 
-    const streamEvents: StreamLifecycleEvent[] = [];
-    server.getStreamRegistry().subscribe(
+    const streamEvents = await capture.waitForTerminal(
       payload.conversationId,
       payload.assistantMessageId,
-      (event) => streamEvents.push(event),
     );
-
-    await waitForAssistantCompletion({
-      manager,
-      conversationId: payload.conversationId,
-      assistantMessageId: payload.assistantMessageId,
-    });
 
     // Expected: message_start(0), chunk A(1), chunk B(2), chunk C(3), message_complete(4)
     expect(streamEvents).toHaveLength(5);
