@@ -13,10 +13,11 @@ import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
 import { ProviderRegistry } from "../providers/registry";
 import { ModelRouter } from "../providers/router";
-import { ConversationError } from "../errors";
+import { AuthError, ConversationError, ProviderError } from "../errors";
 import { err, ok, type Result } from "../result";
-import type { Conversation } from "../types";
+import type { Conversation, Message } from "../types";
 import type {
+  DaemonConversationServiceError,
   DaemonConversationRecordDto,
   DaemonConversationSummaryDto,
   DaemonCreateConversationRequestDto,
@@ -57,6 +58,17 @@ interface ServerOptions {
   authService?: ProviderAuthService;
   modelRouter?: ModelRouter;
   conversation?: ConversationServiceOptions;
+}
+
+interface ProviderExecutionContext {
+  conversationId: string;
+  assistantMessageId: string;
+  requestedProvider?: string;
+  requestedModel?: string;
+}
+
+interface ProviderExecutionFailure extends DaemonConversationServiceError {
+  diagnostic: string;
 }
 
 interface HealthResponse {
@@ -177,6 +189,10 @@ function createDefaultServices(): DefaultServices {
   const anthropicOAuth = new AnthropicOAuthProvider({
     oauthConfig: ANTHROPIC_OAUTH_CONFIG,
     tokenStore,
+    providerConfig: {
+      id: "anthropic",
+      name: "Anthropic",
+    },
   });
   oauthRegistry.register(anthropicOAuth);
 
@@ -575,15 +591,15 @@ export class DaemonHttpServer implements DaemonManagedService {
 
   /**
    * POST /api/messages — accept user content, persist immediately, and return
-   * stream identifiers for asynchronous provider completion.
+   * stream identifiers while provider completion runs asynchronously.
    *
    * Validates:
    * - `content` is a non-empty string (required)
    * - `role` is absent or "user" (assistant/system roles are rejected)
    * - `conversationId`, if provided, references an existing conversation
    *
-   * On success, persists the user message and a placeholder assistant message
-   * before returning IDs. No provider invocation happens here.
+   * On success, persists the user message and a placeholder assistant message,
+   * then schedules provider execution in the background.
    */
   private async handlePostMessage(
     request: Request,
@@ -654,10 +670,319 @@ export class DaemonHttpServer implements DaemonManagedService {
         assistantMessageId: result.assistantMessageId,
       });
 
+      this.scheduleProviderExecution({
+        conversationId: result.conversationId,
+        assistantMessageId: result.assistantMessageId,
+        requestedProvider: payload.provider,
+        requestedModel: payload.model,
+      });
+
       return Response.json(response, { status: 201, headers: corsHeaders });
     } catch (error) {
       return this.mapConversationErrorToResponse(error, corsHeaders);
     }
+  }
+
+  private scheduleProviderExecution(context: ProviderExecutionContext): void {
+    void Promise.resolve()
+      .then(() => this.executeProviderGeneration(context))
+      .catch((error) => {
+        log("error", "Provider execution scheduler failed", {
+          conversationId: context.conversationId,
+          assistantMessageId: context.assistantMessageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
+
+  private async executeProviderGeneration(context: ProviderExecutionContext): Promise<void> {
+    if (!this.conversationManager) {
+      return;
+    }
+
+    let resolvedProvider = context.requestedProvider;
+    let resolvedModel = context.requestedModel;
+
+    try {
+      const conversation = await this.conversationManager.load(context.conversationId);
+      const requestedProvider = context.requestedProvider ?? conversation.provider;
+      const requestedModel = context.requestedModel ?? conversation.model;
+
+      const authResult = await this.authService.checkConversationReady(requestedProvider);
+      if (!authResult.ok) {
+        throw authResult.error;
+      }
+
+      if (!authResult.value.allowed) {
+        const failure = this.toProviderExecutionFailure(
+          new AuthError(
+            authResult.value.guidance?.message ??
+              `Provider ${authResult.value.provider} is not ready for conversations.`,
+          ),
+        );
+
+        await this.persistProviderExecutionFailure(context, failure, {
+          provider: authResult.value.provider,
+          model: requestedModel,
+        });
+        return;
+      }
+
+      const routeResult = await this.modelRouter.routeWithAuthCheck({
+        provider: requestedProvider,
+        model: requestedModel,
+        capabilities: ["chat", "streaming"],
+      });
+
+      if (!routeResult.ok) {
+        throw routeResult.error;
+      }
+
+      resolvedProvider = routeResult.value.provider.config.id;
+      resolvedModel = routeResult.value.model.id;
+
+      const anthropicContext = this.mapConversationToAnthropicContext(
+        conversation.messages,
+        context.assistantMessageId,
+      );
+
+      let assistantContent = "";
+      let finishReason: string | undefined;
+      let usage:
+        | {
+            inputTokens: number;
+            outputTokens: number;
+            totalTokens: number;
+          }
+        | undefined;
+
+      for await (const event of routeResult.value.provider.stream({
+        model: routeResult.value.model.id,
+        messages: anthropicContext.messages,
+        systemPrompt: anthropicContext.systemPrompt,
+      })) {
+        if (event.type === "token") {
+          assistantContent += event.content;
+          continue;
+        }
+
+        if (event.type === "error") {
+          throw event.error;
+        }
+
+        if (event.type === "done") {
+          finishReason = event.finishReason;
+          usage = event.usage;
+        }
+      }
+
+      await this.conversationManager.completeAssistantMessage({
+        conversationId: context.conversationId,
+        assistantMessageId: context.assistantMessageId,
+        content: assistantContent,
+        provider: resolvedProvider,
+        model: resolvedModel,
+        finishReason,
+        usage,
+      });
+
+      log("info", "Provider response persisted", {
+        conversationId: context.conversationId,
+        assistantMessageId: context.assistantMessageId,
+        provider: resolvedProvider,
+        model: resolvedModel,
+        contentLength: assistantContent.length,
+      });
+    } catch (error) {
+      const failure = this.toProviderExecutionFailure(error);
+      await this.persistProviderExecutionFailure(context, failure, {
+        provider: resolvedProvider,
+        model: resolvedModel,
+      });
+    }
+  }
+
+  private mapConversationToAnthropicContext(
+    messages: Message[],
+    assistantMessageId: string,
+  ): { systemPrompt?: string; messages: Message[] } {
+    const orderedMessages = [...messages].sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+    const systemParts: string[] = [];
+    const chatMessages: Message[] = [];
+
+    for (const message of orderedMessages) {
+      if (message.role === "system") {
+        const systemText = message.content.trim();
+        if (systemText.length > 0) {
+          systemParts.push(systemText);
+        }
+        continue;
+      }
+
+      if (message.role !== "user" && message.role !== "assistant") {
+        continue;
+      }
+
+      if (message.id === assistantMessageId && message.role === "assistant") {
+        continue;
+      }
+
+      chatMessages.push(message);
+    }
+
+    if (chatMessages.length === 0) {
+      throw new ConversationError("Conversation has no user or assistant history to send to provider");
+    }
+
+    return {
+      systemPrompt: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
+      messages: chatMessages,
+    };
+  }
+
+  private async persistProviderExecutionFailure(
+    context: ProviderExecutionContext,
+    failure: ProviderExecutionFailure,
+    route: { provider?: string; model?: string },
+  ): Promise<void> {
+    if (!this.conversationManager) {
+      return;
+    }
+
+    try {
+      await this.conversationManager.failAssistantMessage({
+        conversationId: context.conversationId,
+        assistantMessageId: context.assistantMessageId,
+        errorCode: failure.code,
+        errorMessage: failure.message,
+        provider: route.provider,
+        model: route.model,
+      });
+    } catch (persistError) {
+      log("error", "Failed to persist provider execution failure", {
+        conversationId: context.conversationId,
+        assistantMessageId: context.assistantMessageId,
+        error: persistError instanceof Error ? persistError.message : String(persistError),
+      });
+    }
+
+    this.emitProviderStreamErrorEvent(context, failure);
+  }
+
+  private emitProviderStreamErrorEvent(
+    context: Pick<ProviderExecutionContext, "conversationId" | "assistantMessageId">,
+    failure: ProviderExecutionFailure,
+  ): void {
+    const streamErrorEvent = {
+      type: "stream-event",
+      event: {
+        type: "error",
+        conversationId: context.conversationId,
+        messageId: context.assistantMessageId,
+        error: {
+          code: failure.code,
+          message: failure.message,
+          retryable: failure.retryable,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    };
+
+    log("error", "Provider generation failed", {
+      conversationId: context.conversationId,
+      assistantMessageId: context.assistantMessageId,
+      daemonErrorCode: failure.code,
+      daemonErrorMessage: failure.message,
+      retryable: failure.retryable,
+      diagnostic: failure.diagnostic,
+      streamEvent: streamErrorEvent,
+    });
+  }
+
+  private toProviderExecutionFailure(error: unknown): ProviderExecutionFailure {
+    if (error instanceof AuthError) {
+      return {
+        code: "UNAUTHORIZED",
+        message: error.message,
+        retryable: false,
+        diagnostic: error.message,
+      };
+    }
+
+    if (error instanceof ProviderError) {
+      return this.fromProviderErrorMessage(error.message);
+    }
+
+    if (error instanceof ConversationError) {
+      return {
+        code: "NOT_FOUND",
+        message: error.message,
+        retryable: false,
+        diagnostic: error.message,
+      };
+    }
+
+    if (error instanceof Error) {
+      return this.fromProviderErrorMessage(error.message);
+    }
+
+    return {
+      code: "INTERNAL_ERROR",
+      message: "Provider request failed unexpectedly.",
+      retryable: false,
+      diagnostic: String(error),
+    };
+  }
+
+  private fromProviderErrorMessage(message: string): ProviderExecutionFailure {
+    const normalized = message.toLowerCase();
+
+    if (normalized.includes("429") || normalized.includes("rate limit")) {
+      return {
+        code: "PROVIDER_UNAVAILABLE",
+        message: "Provider rate limit reached. Please retry shortly.",
+        retryable: true,
+        diagnostic: message,
+      };
+    }
+
+    if (
+      normalized.includes("401") ||
+      normalized.includes("403") ||
+      normalized.includes("unauthorized") ||
+      normalized.includes("forbidden") ||
+      normalized.includes("invalid credential")
+    ) {
+      return {
+        code: "UNAUTHORIZED",
+        message: "Provider authentication failed. Run /connect to re-authenticate.",
+        retryable: false,
+        diagnostic: message,
+      };
+    }
+
+    if (
+      normalized.includes("network") ||
+      normalized.includes("timed out") ||
+      normalized.includes("timeout") ||
+      normalized.includes("fetch") ||
+      normalized.includes("econn") ||
+      normalized.includes("enotfound")
+    ) {
+      return {
+        code: "PROVIDER_UNAVAILABLE",
+        message: "Provider network error. Please retry.",
+        retryable: true,
+        diagnostic: message,
+      };
+    }
+
+    return {
+      code: "PROVIDER_UNAVAILABLE",
+      message: "Provider failed to generate a response.",
+      retryable: true,
+      diagnostic: message,
+    };
   }
 
   /**

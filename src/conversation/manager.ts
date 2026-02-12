@@ -31,6 +31,29 @@ export interface SendMessageResult {
   timestamp: Date;
 }
 
+export interface CompleteAssistantMessageOptions {
+  conversationId: string;
+  assistantMessageId: string;
+  content: string;
+  provider: string;
+  model: string;
+  finishReason?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+}
+
+export interface FailAssistantMessageOptions {
+  conversationId: string;
+  assistantMessageId: string;
+  errorCode: string;
+  errorMessage: string;
+  provider?: string;
+  model?: string;
+}
+
 export interface HistoryOptions {
   limit?: number;
   before?: Date;
@@ -295,6 +318,69 @@ export class ConversationManager {
       assistantMessageId: assistantMessage.id,
       timestamp: now,
     };
+  }
+
+  async completeAssistantMessage(options: CompleteAssistantMessageOptions): Promise<void> {
+    const conversation = await this.load(options.conversationId);
+    const assistantMessage = conversation.messages.find((message) => message.id === options.assistantMessageId);
+
+    if (!assistantMessage) {
+      throw new ConversationError(`Assistant message not found: ${options.assistantMessageId}`);
+    }
+
+    if (assistantMessage.role !== "assistant") {
+      throw new ConversationError(
+        `Cannot complete non-assistant message: ${options.assistantMessageId} (${assistantMessage.role})`,
+      );
+    }
+
+    assistantMessage.content = options.content;
+    assistantMessage.metadata = {
+      ...(assistantMessage.metadata ?? {}),
+      provider: options.provider,
+      model: options.model,
+      status: "complete",
+      completedAt: new Date().toISOString(),
+      ...(options.finishReason ? { finishReason: options.finishReason } : {}),
+      ...(options.usage ? { usage: options.usage } : {}),
+    };
+
+    conversation.updatedAt = new Date();
+    const saveResult = await this.store.save(conversation);
+    if (!saveResult.ok) {
+      throw saveResult.error;
+    }
+  }
+
+  async failAssistantMessage(options: FailAssistantMessageOptions): Promise<void> {
+    const conversation = await this.load(options.conversationId);
+    const assistantMessage = conversation.messages.find((message) => message.id === options.assistantMessageId);
+
+    if (!assistantMessage) {
+      throw new ConversationError(`Assistant message not found: ${options.assistantMessageId}`);
+    }
+
+    if (assistantMessage.role !== "assistant") {
+      throw new ConversationError(
+        `Cannot fail non-assistant message: ${options.assistantMessageId} (${assistantMessage.role})`,
+      );
+    }
+
+    assistantMessage.metadata = {
+      ...(assistantMessage.metadata ?? {}),
+      ...(options.provider ? { provider: options.provider } : {}),
+      ...(options.model ? { model: options.model } : {}),
+      status: "error",
+      errorCode: options.errorCode,
+      errorMessage: options.errorMessage,
+      failedAt: new Date().toISOString(),
+    };
+
+    conversation.updatedAt = new Date();
+    const saveResult = await this.store.save(conversation);
+    if (!saveResult.ok) {
+      throw saveResult.error;
+    }
   }
 
   generateTitle(conversation: Conversation): string {

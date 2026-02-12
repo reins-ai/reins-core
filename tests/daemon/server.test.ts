@@ -10,9 +10,12 @@ import { SQLiteConversationStore } from "../../src/conversation/sqlite-store";
 import { DaemonHttpServer } from "../../src/daemon/server";
 import { DaemonRuntime } from "../../src/daemon/runtime";
 import { ProviderAuthService } from "../../src/providers/auth-service";
+import { MockProvider } from "../../src/providers/mock";
 import { ProviderRegistry } from "../../src/providers/registry";
 import { ModelRouter } from "../../src/providers/router";
 import type { DaemonManagedService } from "../../src/daemon/types";
+import type { ConversationAuthCheck } from "../../src/providers/auth-service";
+import type { Model } from "../../src/types";
 
 /**
  * Create a minimal auth service stub that satisfies the DaemonHttpServer
@@ -54,6 +57,67 @@ function safeUnlink(path: string): void {
   } catch {
     // SHM file may not exist
   }
+}
+
+function createMockModel(id: string, provider: string): Model {
+  return {
+    id,
+    name: id,
+    provider,
+    contextWindow: 8192,
+    capabilities: ["chat", "streaming"],
+  };
+}
+
+function createConversationReadyStubAuthService(check: ConversationAuthCheck): ProviderAuthService {
+  const unimplemented = async () => {
+    throw new Error("Not implemented in test auth stub");
+  };
+
+  return {
+    checkConversationReady: async () => ok(check),
+    listProviders: unimplemented,
+    getProviderAuthStatus: unimplemented,
+    handleCommand: unimplemented,
+    initiateOAuth: unimplemented,
+    completeOAuthCallback: unimplemented,
+    setApiKey: unimplemented,
+    setOAuthTokens: unimplemented,
+    getOAuthAccessToken: unimplemented,
+    getCredential: unimplemented,
+    revokeProvider: unimplemented,
+    requiresAuth: () => true,
+    getAuthMethods: () => ["oauth"],
+  } as unknown as ProviderAuthService;
+}
+
+async function waitForAssistantCompletion(options: {
+  manager: ConversationManager;
+  conversationId: string;
+  assistantMessageId: string;
+  timeoutMs?: number;
+}): Promise<{ status: string; content: string; metadata: Record<string, unknown> | undefined }> {
+  const timeoutMs = options.timeoutMs ?? 1500;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const conversation = await options.manager.load(options.conversationId);
+    const assistantMessage = conversation.messages.find((message) => message.id === options.assistantMessageId);
+    const metadata = assistantMessage?.metadata as Record<string, unknown> | undefined;
+    const status = typeof metadata?.status === "string" ? metadata.status : undefined;
+
+    if (assistantMessage && (status === "complete" || status === "error")) {
+      return {
+        status,
+        content: assistantMessage.content,
+        metadata,
+      };
+    }
+
+    await Bun.sleep(20);
+  }
+
+  throw new Error("Timed out waiting for assistant completion");
 }
 
 describe("DaemonHttpServer conversation wiring", () => {
@@ -305,5 +369,135 @@ describe("DaemonRuntime with conversation-wired server", () => {
     expect(server.getConversationManager()).toBeNull();
 
     safeUnlink(dbPath);
+  });
+});
+
+describe("DaemonHttpServer provider execution pipeline", () => {
+  const servers: DaemonHttpServer[] = [];
+  let testPort = 17600;
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+  });
+
+  it("runs provider generation asynchronously and persists assistant output", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+        responseContent: "Provider completed response",
+      }),
+    );
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const postResponse = await fetch(`http://localhost:${testPort - 1}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Tell me something useful",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    const completion = await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+
+    expect(completion.status).toBe("complete");
+    expect(completion.content).toBe("Provider completed response");
+    expect(completion.metadata?.provider).toBe("anthropic");
+    expect(completion.metadata?.model).toBe("anthropic-test-model");
+  });
+
+  it("maps auth preflight failures to safe assistant error metadata", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: false,
+      provider: "anthropic",
+      connectionState: "requires_auth",
+      guidance: {
+        provider: "anthropic",
+        action: "configure",
+        message: "Authentication required for anthropic. Run /connect to configure credentials.",
+        supportedModes: ["api_key", "oauth"],
+      },
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+      }),
+    );
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const postResponse = await fetch(`http://localhost:${testPort - 1}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Should fail auth",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    const completion = await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+
+    expect(completion.status).toBe("error");
+    expect(completion.metadata?.errorCode).toBe("UNAUTHORIZED");
+    expect(completion.metadata?.errorMessage).toBe(
+      "Authentication required for anthropic. Run /connect to configure credentials.",
+    );
   });
 });
