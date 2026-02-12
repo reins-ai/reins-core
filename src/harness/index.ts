@@ -2,6 +2,7 @@ export * from "./agent-loop";
 export * from "./context-budget";
 export * from "./doom-loop-guard";
 export * from "./event-bus";
+export * from "./event-transport";
 export * from "./events";
 export {
   FULL_PROFILE,

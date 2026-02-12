@@ -144,6 +144,45 @@ function normalizeParsedEvent(payload: unknown): StreamEvent[] {
     return [{ type: "done", usage, finishReason }];
   }
 
+  if (type === "message_start") {
+    const messageId = asString(payload.messageId);
+    if (messageId === undefined) {
+      return [];
+    }
+
+    return [
+      {
+        type: "message_start",
+        messageId,
+        conversationId: asString(payload.conversationId),
+        model: asString(payload.model),
+      },
+    ];
+  }
+
+  if (type === "compaction") {
+    const summary = asString(payload.summary);
+    const beforeTokenEstimate = payload.beforeTokenEstimate;
+    const afterTokenEstimate = payload.afterTokenEstimate;
+
+    if (
+      summary === undefined ||
+      typeof beforeTokenEstimate !== "number" ||
+      typeof afterTokenEstimate !== "number"
+    ) {
+      return [{ type: "error", error: new Error("Invalid compaction event payload") }];
+    }
+
+    return [
+      {
+        type: "compaction",
+        summary,
+        beforeTokenEstimate,
+        afterTokenEstimate,
+      },
+    ];
+  }
+
   if (type === "content_block_delta") {
     const delta = payload.delta;
     if (isRecord(delta)) {
@@ -255,8 +294,15 @@ export class StreamTransformer {
 
         const lines = block.split(/\r?\n/);
         const dataLines: string[] = [];
+        let eventName: string | null = null;
 
         for (const line of lines) {
+          if (line.startsWith("event:")) {
+            const parsedEventName = line.slice(6).trim();
+            eventName = parsedEventName.length > 0 ? parsedEventName : null;
+            continue;
+          }
+
           if (line.startsWith("data:")) {
             dataLines.push(line.slice(5).trimStart());
           }
@@ -277,7 +323,12 @@ export class StreamTransformer {
 
         try {
           const parsed = JSON.parse(payloadText) as unknown;
-          for (const event of normalizeParsedEvent(parsed)) {
+          const normalizedPayload =
+            eventName && isRecord(parsed) && asString(parsed.type) === undefined
+              ? { ...parsed, type: eventName }
+              : parsed;
+
+          for (const event of normalizeParsedEvent(normalizedPayload)) {
             yield event;
           }
         } catch (error) {
