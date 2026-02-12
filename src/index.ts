@@ -11,6 +11,7 @@ export * from "./daemon/service-installer";
 export * from "./daemon/paths";
 export * from "./daemon/types";
 export * from "./errors";
+export * from "./harness";
 export * from "./memory";
 export * from "./persona";
 export * from "./plugins";
