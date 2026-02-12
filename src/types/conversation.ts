@@ -54,6 +54,38 @@ export function serializeContent(content: string | ContentBlock[]): string {
 }
 
 /**
+ * Deserialize stored content back to its runtime representation.
+ * If the value is a JSON array of ContentBlock objects, returns ContentBlock[].
+ * Otherwise returns the plain string.
+ */
+export function deserializeContent(value: string): string | ContentBlock[] {
+  if (!value.startsWith("[")) {
+    return value;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return value;
+    }
+
+    const first = parsed[0] as Record<string, unknown>;
+    if (typeof first.type !== "string") {
+      return value;
+    }
+
+    const validTypes = new Set(["text", "tool_use", "tool_result"]);
+    if (!validTypes.has(first.type)) {
+      return value;
+    }
+
+    return parsed as ContentBlock[];
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Check if message content contains tool blocks.
  */
 export function hasToolBlocks(content: string | ContentBlock[]): boolean {
