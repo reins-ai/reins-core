@@ -38,6 +38,19 @@ export interface OAuthCallbackParameters {
   state: string;
 }
 
+export interface OAuthLocalCallbackServerOptions {
+  host?: string;
+  port?: number;
+  callbackPath?: string;
+  timeoutMs?: number;
+}
+
+export interface OAuthLocalCallbackSession {
+  redirectUri: string;
+  waitForCallback(expectedState?: string): Promise<OAuthCallbackParameters>;
+  stop(): void;
+}
+
 function base64UrlEncode(value: Uint8Array): string {
   return Buffer.from(value)
     .toString("base64")
@@ -143,6 +156,93 @@ export class OAuthFlowHandler {
     }
 
     return { code, state };
+  }
+
+  public startLocalCallbackServer(options: OAuthLocalCallbackServerOptions = {}): OAuthLocalCallbackSession {
+    const host = options.host ?? "127.0.0.1";
+    const callbackPath = options.callbackPath ?? "/oauth/callback";
+    const timeoutMs = options.timeoutMs ?? 2 * 60 * 1000;
+
+    let expectedState: string | undefined;
+    let callbackUrl: URL | null = null;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let resolveWait: ((value: OAuthCallbackParameters) => void) | null = null;
+    let rejectWait: ((reason?: unknown) => void) | null = null;
+
+    const resolveFromUrl = (url: URL): void => {
+      if (!resolveWait || settled) {
+        return;
+      }
+
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+
+      try {
+        resolveWait(this.parseCallbackParameters(url, expectedState));
+      } catch (error) {
+        rejectWait?.(error);
+      }
+    };
+
+    const server = Bun.serve({
+      hostname: host,
+      port: options.port ?? 0,
+      fetch: (request) => {
+        const url = new URL(request.url);
+        if (url.pathname !== callbackPath) {
+          return new Response("Not Found", { status: 404 });
+        }
+
+        callbackUrl = url;
+        resolveFromUrl(url);
+
+        return new Response("OAuth callback received. You can return to Reins.", {
+          status: 200,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      },
+    });
+
+    return {
+      redirectUri: `http://${host}:${server.port}${callbackPath}`,
+      waitForCallback: (state?: string) => {
+        if (settled) {
+          return Promise.reject(new AuthError("OAuth callback session already completed"));
+        }
+
+        expectedState = state;
+
+        return new Promise<OAuthCallbackParameters>((resolve, reject) => {
+          resolveWait = resolve;
+          rejectWait = reject;
+          timer = setTimeout(() => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+            reject(new AuthError("Timed out waiting for OAuth callback. Restart sign-in and try again."));
+          }, timeoutMs);
+
+          if (callbackUrl) {
+            resolveFromUrl(callbackUrl);
+          }
+        });
+      },
+      stop: () => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        if (!settled && rejectWait) {
+          rejectWait(new AuthError("OAuth callback server stopped before callback was received"));
+        }
+        settled = true;
+        server.stop(true);
+      },
+    };
   }
 
   public getAuthorizationUrl(state: string, options: OAuthAuthorizationUrlOptions = {}): string {

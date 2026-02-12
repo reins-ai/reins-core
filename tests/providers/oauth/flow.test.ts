@@ -145,4 +145,27 @@ describe("OAuthFlowHandler", () => {
       ),
     ).toThrow("state mismatch");
   });
+
+  it("receives callback through local callback server", async () => {
+    const handler = new OAuthFlowHandler(oauthConfig);
+    const session = handler.startLocalCallbackServer({
+      host: "127.0.0.1",
+      callbackPath: "/oauth/callback",
+      timeoutMs: 5_000,
+    });
+
+    try {
+      const callbackPromise = session.waitForCallback("server-state");
+      const response = await fetch(
+        `${session.redirectUri}?code=server-code&state=server-state`,
+      );
+      expect(response.status).toBe(200);
+
+      const callback = await callbackPromise;
+      expect(callback.code).toBe("server-code");
+      expect(callback.state).toBe("server-state");
+    } finally {
+      session.stop();
+    }
+  });
 });
