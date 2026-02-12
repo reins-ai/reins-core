@@ -28,6 +28,132 @@ import type {
   DaemonStreamSubscribeRequestDto,
 } from "../types/conversation";
 import type { DaemonError, DaemonManagedService } from "./types";
+import { WsStreamRegistry, type StreamRegistrySocketData } from "./ws-stream-registry";
+
+/**
+ * Stream lifecycle event emitted over WebSocket during provider generation.
+ * Events follow a deterministic order per assistant message:
+ *   message_start → content_chunk* → message_complete | error
+ *
+ * Each event carries a monotonic sequence number for ordering guarantees.
+ */
+export type StreamLifecycleEvent =
+  | {
+      type: "message_start";
+      conversationId: string;
+      messageId: string;
+      sequence: number;
+      timestamp: string;
+    }
+  | {
+      type: "content_chunk";
+      conversationId: string;
+      messageId: string;
+      delta: string;
+      sequence: number;
+      timestamp: string;
+    }
+  | {
+      type: "message_complete";
+      conversationId: string;
+      messageId: string;
+      content: string;
+      sequence: number;
+      timestamp: string;
+      finishReason?: string;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+        totalTokens: number;
+      };
+    }
+  | {
+      type: "error";
+      conversationId: string;
+      messageId: string;
+      sequence: number;
+      timestamp: string;
+      error: {
+        code: string;
+        message: string;
+        retryable: boolean;
+      };
+    };
+
+/**
+ * Callback invoked for each stream lifecycle event.
+ * Subscribers receive events wrapped in a `stream-event` envelope.
+ */
+export type StreamSubscriber = (event: StreamLifecycleEvent) => void;
+
+/**
+ * Registry tracking active stream subscriptions per assistant message.
+ * Supports multiple concurrent subscribers per stream and multiple
+ * concurrent streams (one per assistant message).
+ */
+export class StreamRegistry {
+  private readonly streams = new Map<string, Set<StreamSubscriber>>();
+
+  private streamKey(conversationId: string, messageId: string): string {
+    return `${conversationId}:${messageId}`;
+  }
+
+  subscribe(conversationId: string, messageId: string, subscriber: StreamSubscriber): void {
+    const key = this.streamKey(conversationId, messageId);
+    let subscribers = this.streams.get(key);
+    if (!subscribers) {
+      subscribers = new Set();
+      this.streams.set(key, subscribers);
+    }
+    subscribers.add(subscriber);
+  }
+
+  unsubscribe(conversationId: string, messageId: string, subscriber: StreamSubscriber): void {
+    const key = this.streamKey(conversationId, messageId);
+    const subscribers = this.streams.get(key);
+    if (subscribers) {
+      subscribers.delete(subscriber);
+      if (subscribers.size === 0) {
+        this.streams.delete(key);
+      }
+    }
+  }
+
+  emit(event: StreamLifecycleEvent): void {
+    const key = this.streamKey(event.conversationId, event.messageId);
+    const subscribers = this.streams.get(key);
+    if (!subscribers) {
+      return;
+    }
+
+    for (const subscriber of subscribers) {
+      try {
+        subscriber(event);
+      } catch {
+        // Subscriber errors must not break the stream pipeline
+      }
+    }
+
+    // Clean up subscriptions on terminal events
+    if (event.type === "message_complete" || event.type === "error") {
+      this.streams.delete(key);
+    }
+  }
+
+  hasSubscribers(conversationId: string, messageId: string): boolean {
+    const key = this.streamKey(conversationId, messageId);
+    const subscribers = this.streams.get(key);
+    return subscribers !== undefined && subscribers.size > 0;
+  }
+
+  clear(): void {
+    this.streams.clear();
+  }
+
+  get activeStreamCount(): number {
+    return this.streams.size;
+  }
+}
 
 const DEFAULT_PORT = 7433;
 const DEFAULT_HOST = "localhost";
@@ -71,6 +197,90 @@ interface ProviderExecutionFailure extends DaemonConversationServiceError {
   diagnostic: string;
 }
 
+interface DaemonWebSocketData extends StreamRegistrySocketData {
+  connectionId: string;
+  lastSeenAt: number;
+}
+
+interface DaemonStreamUnsubscribeRequestDto {
+  type: "stream.unsubscribe";
+  conversationId: string;
+  assistantMessageId: string;
+}
+
+interface DaemonHeartbeatPingEnvelope {
+  type: "heartbeat.ping";
+  timestamp: string;
+}
+
+interface DaemonHeartbeatPongEnvelope {
+  type: "heartbeat.pong";
+  timestamp: string;
+}
+
+interface DaemonStreamControlAckEnvelope {
+  type: "stream.subscribed" | "stream.unsubscribed";
+  conversationId: string;
+  assistantMessageId: string;
+  timestamp: string;
+}
+
+interface DaemonWebSocketErrorEnvelope {
+  type: "stream.error";
+  error: {
+    code: "INVALID_REQUEST";
+    message: string;
+  };
+  timestamp: string;
+}
+
+type DaemonWebSocketInboundMessage =
+  | DaemonStreamSubscribeRequestDto
+  | DaemonStreamUnsubscribeRequestDto
+  | { type: "heartbeat.ping" }
+  | { type: "heartbeat.pong" };
+
+type DaemonStreamLifecycleEnvelope = {
+  type: "stream-event";
+  event:
+    | {
+        type: "message_start";
+        conversationId: string;
+        messageId: string;
+        sequence: number;
+        timestamp: string;
+      }
+    | {
+        type: "content_chunk";
+        conversationId: string;
+        messageId: string;
+        chunk: string;
+        sequence: number;
+        timestamp: string;
+      }
+    | {
+        type: "message_complete";
+        conversationId: string;
+        messageId: string;
+        content: string;
+        sequence: number;
+        finishReason?: string;
+        timestamp: string;
+      }
+    | {
+        type: "error";
+        conversationId: string;
+        messageId: string;
+        sequence: number;
+        error: {
+          code: string;
+          message: string;
+          retryable: boolean;
+        };
+        timestamp: string;
+      };
+};
+
 interface HealthResponse {
   status: "ok";
   timestamp: string;
@@ -104,6 +314,8 @@ const CONVERSATIONS_ROUTE = {
 } as const;
 
 const WEBSOCKET_ROUTE = "/ws";
+const WS_HEARTBEAT_INTERVAL_MS = 15_000;
+const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
 
 export const DAEMON_CONTRACT_COMPATIBILITY_NOTES = [
   "HTTP compatibility aliases remain active while TUI transport migrates from /messages and /conversations to /api-prefixed paths.",
@@ -131,6 +343,36 @@ export function isStreamSubscribePayload(payload: unknown): payload is DaemonStr
     typeof request.conversationId === "string" &&
     typeof request.assistantMessageId === "string"
   );
+}
+
+function isStreamUnsubscribePayload(payload: unknown): payload is DaemonStreamUnsubscribeRequestDto {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const request = payload as Partial<DaemonStreamUnsubscribeRequestDto>;
+  return (
+    request.type === "stream.unsubscribe" &&
+    typeof request.conversationId === "string" &&
+    typeof request.assistantMessageId === "string"
+  );
+}
+
+function parseInboundWebSocketMessage(payload: unknown): DaemonWebSocketInboundMessage | null {
+  if (isStreamSubscribePayload(payload) || isStreamUnsubscribePayload(payload)) {
+    return payload;
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const message = payload as { type?: unknown };
+  if (message.type === "heartbeat.ping" || message.type === "heartbeat.pong") {
+    return { type: message.type };
+  }
+
+  return null;
 }
 
 export function isPostMessagePayload(payload: unknown): payload is DaemonPostMessageRequestDto {
@@ -219,14 +461,17 @@ function createDefaultServices(): DefaultServices {
  */
 export class DaemonHttpServer implements DaemonManagedService {
   readonly id = "http-server";
-  private server: ReturnType<typeof Bun.serve> | null = null;
+  private server: ReturnType<typeof Bun.serve<DaemonWebSocketData>> | null = null;
   private readonly port: number;
   private readonly host: string;
   private readonly authService: ProviderAuthService;
   private readonly modelRouter: ModelRouter;
+  private readonly wsRegistry = new WsStreamRegistry<DaemonWebSocketData>();
+  private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private conversationManager: ConversationManager | null = null;
   private ownedSqliteStore: SQLiteConversationStore | null = null;
   private readonly conversationOptions: ConversationServiceOptions;
+  private readonly streamRegistry = new StreamRegistry();
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
@@ -250,6 +495,13 @@ export class DaemonHttpServer implements DaemonManagedService {
     return this.conversationManager;
   }
 
+  /**
+   * Returns the stream registry for subscribing to lifecycle events.
+   */
+  getStreamRegistry(): StreamRegistry {
+    return this.streamRegistry;
+  }
+
   async start(): Promise<Result<void, DaemonError>> {
     if (this.server) {
       return err({
@@ -268,11 +520,17 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
-      this.server = Bun.serve({
+      this.server = Bun.serve<DaemonWebSocketData>({
         port: this.port,
         hostname: this.host,
         fetch: this.handleRequest.bind(this),
+        websocket: {
+          open: this.handleWebSocketOpen.bind(this),
+          message: this.handleWebSocketMessage.bind(this),
+          close: this.handleWebSocketClose.bind(this),
+        },
       });
+      this.startWebSocketHeartbeatLoop();
 
       const capabilities = this.conversationManager
         ? "with conversation services"
@@ -295,6 +553,8 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
+      this.stopWebSocketHeartbeatLoop();
+      this.wsRegistry.clear();
       this.server.stop();
       this.server = null;
       this.cleanupConversationServices();
@@ -309,7 +569,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
   }
 
-  private async handleRequest(request: Request): Promise<Response> {
+  private async handleRequest(request: Request, server: Bun.Server<DaemonWebSocketData>): Promise<Response> {
     const url = new URL(request.url);
     const method = request.method;
 
@@ -324,6 +584,21 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    if (url.pathname === WEBSOCKET_ROUTE) {
+      const upgraded = server.upgrade(request, {
+        data: {
+          connectionId: crypto.randomUUID(),
+          lastSeenAt: Date.now(),
+        },
+      });
+
+      if (upgraded) {
+        return new Response(null);
+      }
+
+      return Response.json({ error: "WebSocket upgrade required" }, { status: 426, headers: corsHeaders });
     }
 
     try {
@@ -384,6 +659,119 @@ export class DaemonHttpServer implements DaemonManagedService {
         { error: error instanceof Error ? error.message : "Internal server error" },
         { status: 500, headers: corsHeaders }
       );
+    }
+  }
+
+  private handleWebSocketOpen(socket: Bun.ServerWebSocket<DaemonWebSocketData>): void {
+    socket.data.lastSeenAt = Date.now();
+  }
+
+  private handleWebSocketMessage(
+    socket: Bun.ServerWebSocket<DaemonWebSocketData>,
+    rawMessage: string | Buffer,
+  ): void {
+    socket.data.lastSeenAt = Date.now();
+
+    const text = typeof rawMessage === "string" ? rawMessage : rawMessage.toString("utf8");
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      this.sendWebSocketError(socket, "Malformed JSON payload");
+      return;
+    }
+
+    const message = parseInboundWebSocketMessage(payload);
+    if (!message) {
+      this.sendWebSocketError(socket, "Unsupported websocket message type");
+      return;
+    }
+
+    if (message.type === "stream.subscribe") {
+      this.wsRegistry.subscribe(socket, {
+        conversationId: message.conversationId,
+        assistantMessageId: message.assistantMessageId,
+      });
+      const ack: DaemonStreamControlAckEnvelope = {
+        type: "stream.subscribed",
+        conversationId: message.conversationId,
+        assistantMessageId: message.assistantMessageId,
+        timestamp: new Date().toISOString(),
+      };
+      socket.send(JSON.stringify(ack));
+      return;
+    }
+
+    if (message.type === "stream.unsubscribe") {
+      this.wsRegistry.unsubscribe(socket, {
+        conversationId: message.conversationId,
+        assistantMessageId: message.assistantMessageId,
+      });
+      const ack: DaemonStreamControlAckEnvelope = {
+        type: "stream.unsubscribed",
+        conversationId: message.conversationId,
+        assistantMessageId: message.assistantMessageId,
+        timestamp: new Date().toISOString(),
+      };
+      socket.send(JSON.stringify(ack));
+      return;
+    }
+
+    if (message.type === "heartbeat.ping") {
+      const pong: DaemonHeartbeatPongEnvelope = {
+        type: "heartbeat.pong",
+        timestamp: new Date().toISOString(),
+      };
+      socket.send(JSON.stringify(pong));
+      return;
+    }
+  }
+
+  private handleWebSocketClose(socket: Bun.ServerWebSocket<DaemonWebSocketData>): void {
+    this.wsRegistry.removeConnection(socket);
+  }
+
+  private sendWebSocketError(socket: Bun.ServerWebSocket<DaemonWebSocketData>, message: string): void {
+    const errorEnvelope: DaemonWebSocketErrorEnvelope = {
+      type: "stream.error",
+      error: {
+        code: "INVALID_REQUEST",
+        message,
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    socket.send(JSON.stringify(errorEnvelope));
+  }
+
+  private startWebSocketHeartbeatLoop(): void {
+    this.stopWebSocketHeartbeatLoop();
+
+    this.wsHeartbeatTimer = setInterval(() => {
+      const now = Date.now();
+      this.wsRegistry.forEachSocket((socket) => {
+        if (now - socket.data.lastSeenAt > WS_HEARTBEAT_TIMEOUT_MS) {
+          try {
+            socket.close(4002, "heartbeat-timeout");
+          } finally {
+            this.wsRegistry.removeConnection(socket);
+          }
+          return;
+        }
+
+        const ping: DaemonHeartbeatPingEnvelope = {
+          type: "heartbeat.ping",
+          timestamp: new Date().toISOString(),
+        };
+        socket.send(JSON.stringify(ping));
+      });
+    }, WS_HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopWebSocketHeartbeatLoop(): void {
+    if (this.wsHeartbeatTimer) {
+      clearInterval(this.wsHeartbeatTimer);
+      this.wsHeartbeatTimer = null;
     }
   }
 
@@ -685,7 +1073,10 @@ export class DaemonHttpServer implements DaemonManagedService {
 
   private scheduleProviderExecution(context: ProviderExecutionContext): void {
     void Promise.resolve()
-      .then(() => this.executeProviderGeneration(context))
+      .then(async () => {
+        await Bun.sleep(25);
+        await this.executeProviderGeneration(context);
+      })
       .catch((error) => {
         log("error", "Provider execution scheduler failed", {
           conversationId: context.conversationId,
@@ -702,6 +1093,11 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     let resolvedProvider = context.requestedProvider;
     let resolvedModel = context.requestedModel;
+    let sequence = -1;
+    const nextSequence = (): number => {
+      sequence += 1;
+      return sequence;
+    };
 
     try {
       const conversation = await this.conversationManager.load(context.conversationId);
@@ -748,6 +1144,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
       let assistantContent = "";
       let finishReason: string | undefined;
+      let didEmitStart = false;
       let usage:
         | {
             inputTokens: number;
@@ -761,8 +1158,33 @@ export class DaemonHttpServer implements DaemonManagedService {
         messages: anthropicContext.messages,
         systemPrompt: anthropicContext.systemPrompt,
       })) {
+        if (!didEmitStart) {
+          didEmitStart = true;
+          this.publishStreamLifecycleEvent({
+            type: "stream-event",
+            event: {
+              type: "message_start",
+              conversationId: context.conversationId,
+              messageId: context.assistantMessageId,
+              sequence: nextSequence(),
+              timestamp: new Date().toISOString(),
+            },
+          });
+        }
+
         if (event.type === "token") {
           assistantContent += event.content;
+          this.publishStreamLifecycleEvent({
+            type: "stream-event",
+            event: {
+              type: "content_chunk",
+              conversationId: context.conversationId,
+              messageId: context.assistantMessageId,
+              chunk: event.content,
+              sequence: nextSequence(),
+              timestamp: new Date().toISOString(),
+            },
+          });
           continue;
         }
 
@@ -786,6 +1208,19 @@ export class DaemonHttpServer implements DaemonManagedService {
         usage,
       });
 
+      this.publishStreamLifecycleEvent({
+        type: "stream-event",
+        event: {
+          type: "message_complete",
+          conversationId: context.conversationId,
+          messageId: context.assistantMessageId,
+          content: assistantContent,
+          sequence: nextSequence(),
+          finishReason,
+          timestamp: new Date().toISOString(),
+        },
+      });
+
       log("info", "Provider response persisted", {
         conversationId: context.conversationId,
         assistantMessageId: context.assistantMessageId,
@@ -795,10 +1230,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
     } catch (error) {
       const failure = this.toProviderExecutionFailure(error);
+      const errorSequence = nextSequence();
       await this.persistProviderExecutionFailure(context, failure, {
         provider: resolvedProvider,
         model: resolvedModel,
-      });
+      }, errorSequence);
     }
   }
 
@@ -844,6 +1280,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     context: ProviderExecutionContext,
     failure: ProviderExecutionFailure,
     route: { provider?: string; model?: string },
+    sequence?: number,
   ): Promise<void> {
     if (!this.conversationManager) {
       return;
@@ -866,19 +1303,21 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
     }
 
-    this.emitProviderStreamErrorEvent(context, failure);
+    this.emitProviderStreamErrorEvent(context, failure, sequence);
   }
 
   private emitProviderStreamErrorEvent(
     context: Pick<ProviderExecutionContext, "conversationId" | "assistantMessageId">,
     failure: ProviderExecutionFailure,
+    sequence = 0,
   ): void {
-    const streamErrorEvent = {
+    const streamErrorEvent: DaemonStreamLifecycleEnvelope = {
       type: "stream-event",
       event: {
         type: "error",
         conversationId: context.conversationId,
         messageId: context.assistantMessageId,
+        sequence,
         error: {
           code: failure.code,
           message: failure.message,
@@ -888,6 +1327,8 @@ export class DaemonHttpServer implements DaemonManagedService {
       },
     };
 
+    this.publishStreamLifecycleEvent(streamErrorEvent);
+
     log("error", "Provider generation failed", {
       conversationId: context.conversationId,
       assistantMessageId: context.assistantMessageId,
@@ -896,6 +1337,67 @@ export class DaemonHttpServer implements DaemonManagedService {
       retryable: failure.retryable,
       diagnostic: failure.diagnostic,
       streamEvent: streamErrorEvent,
+    });
+  }
+
+  private publishStreamLifecycleEvent(envelope: DaemonStreamLifecycleEnvelope): void {
+    const legacyEvent: StreamLifecycleEvent =
+      envelope.event.type === "message_start"
+        ? {
+            type: "message_start",
+            conversationId: envelope.event.conversationId,
+            messageId: envelope.event.messageId,
+            sequence: envelope.event.sequence,
+            timestamp: envelope.event.timestamp,
+          }
+        : envelope.event.type === "content_chunk"
+          ? {
+              type: "content_chunk",
+              conversationId: envelope.event.conversationId,
+              messageId: envelope.event.messageId,
+              delta: envelope.event.chunk,
+              sequence: envelope.event.sequence,
+              timestamp: envelope.event.timestamp,
+            }
+          : envelope.event.type === "message_complete"
+            ? {
+                type: "message_complete",
+                conversationId: envelope.event.conversationId,
+                messageId: envelope.event.messageId,
+                content: envelope.event.content,
+                sequence: envelope.event.sequence,
+                timestamp: envelope.event.timestamp,
+                finishReason: envelope.event.finishReason,
+              }
+            : {
+                type: "error",
+                conversationId: envelope.event.conversationId,
+                messageId: envelope.event.messageId,
+                sequence: envelope.event.sequence,
+                timestamp: envelope.event.timestamp,
+                error: {
+                  code: envelope.event.error.code,
+                  message: envelope.event.error.message,
+                  retryable: envelope.event.error.retryable,
+                },
+              };
+
+    this.streamRegistry.emit(legacyEvent);
+
+    const delivered = this.wsRegistry.publish(
+      {
+        conversationId: envelope.event.conversationId,
+        assistantMessageId: envelope.event.messageId,
+      },
+      envelope,
+    );
+
+    log("info", "Stream lifecycle event published", {
+      eventType: envelope.event.type,
+      conversationId: envelope.event.conversationId,
+      assistantMessageId: envelope.event.messageId,
+      delivered,
+      sequence: envelope.event.sequence,
     });
   }
 
@@ -979,7 +1481,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     return {
       code: "PROVIDER_UNAVAILABLE",
-      message: "Provider failed to generate a response.",
+      message: message.trim().length > 0 ? message : "Provider failed to generate a response.",
       retryable: true,
       diagnostic: message,
     };
@@ -1217,6 +1719,8 @@ export class DaemonHttpServer implements DaemonManagedService {
    * Clean up conversation services owned by this server instance.
    */
   private cleanupConversationServices(): void {
+    this.streamRegistry.clear();
+
     if (this.ownedSqliteStore) {
       try {
         this.ownedSqliteStore.close();

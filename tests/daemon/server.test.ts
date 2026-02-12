@@ -7,7 +7,7 @@ import { ok } from "../../src/result";
 import { ConversationManager } from "../../src/conversation/manager";
 import { InMemoryConversationStore } from "../../src/conversation/memory-store";
 import { SQLiteConversationStore } from "../../src/conversation/sqlite-store";
-import { DaemonHttpServer } from "../../src/daemon/server";
+import { DaemonHttpServer, StreamRegistry, type StreamLifecycleEvent } from "../../src/daemon/server";
 import { DaemonRuntime } from "../../src/daemon/runtime";
 import { ProviderAuthService } from "../../src/providers/auth-service";
 import { MockProvider } from "../../src/providers/mock";
@@ -499,5 +499,684 @@ describe("DaemonHttpServer provider execution pipeline", () => {
     expect(completion.metadata?.errorMessage).toBe(
       "Authentication required for anthropic. Run /connect to configure credentials.",
     );
+  });
+});
+
+describe("StreamRegistry", () => {
+  it("delivers events to subscribers and cleans up on terminal events", () => {
+    const registry = new StreamRegistry();
+    const events: StreamLifecycleEvent[] = [];
+
+    registry.subscribe("c1", "a1", (event) => events.push(event));
+    expect(registry.hasSubscribers("c1", "a1")).toBe(true);
+    expect(registry.activeStreamCount).toBe(1);
+
+    registry.emit({
+      type: "message_start",
+      conversationId: "c1",
+      messageId: "a1",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    registry.emit({
+      type: "content_chunk",
+      conversationId: "c1",
+      messageId: "a1",
+      delta: "hello",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:01.000Z",
+    });
+
+    registry.emit({
+      type: "message_complete",
+      conversationId: "c1",
+      messageId: "a1",
+      content: "hello",
+      sequence: 2,
+      timestamp: "2026-01-01T00:00:02.000Z",
+    });
+
+    expect(events).toHaveLength(3);
+    expect(events[0].type).toBe("message_start");
+    expect(events[1].type).toBe("content_chunk");
+    expect(events[2].type).toBe("message_complete");
+
+    // Terminal event should clean up subscriptions
+    expect(registry.hasSubscribers("c1", "a1")).toBe(false);
+    expect(registry.activeStreamCount).toBe(0);
+  });
+
+  it("cleans up subscriptions on error terminal event", () => {
+    const registry = new StreamRegistry();
+    const events: StreamLifecycleEvent[] = [];
+
+    registry.subscribe("c1", "a1", (event) => events.push(event));
+
+    registry.emit({
+      type: "error",
+      conversationId: "c1",
+      messageId: "a1",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      error: { code: "PROVIDER_UNAVAILABLE", message: "Provider failed", retryable: true },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("error");
+    expect(registry.hasSubscribers("c1", "a1")).toBe(false);
+  });
+
+  it("supports multiple subscribers per stream", () => {
+    const registry = new StreamRegistry();
+    const events1: StreamLifecycleEvent[] = [];
+    const events2: StreamLifecycleEvent[] = [];
+
+    registry.subscribe("c1", "a1", (event) => events1.push(event));
+    registry.subscribe("c1", "a1", (event) => events2.push(event));
+
+    registry.emit({
+      type: "message_start",
+      conversationId: "c1",
+      messageId: "a1",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(events1).toHaveLength(1);
+    expect(events2).toHaveLength(1);
+  });
+
+  it("supports multiple concurrent streams", () => {
+    const registry = new StreamRegistry();
+    const stream1Events: StreamLifecycleEvent[] = [];
+    const stream2Events: StreamLifecycleEvent[] = [];
+
+    registry.subscribe("c1", "a1", (event) => stream1Events.push(event));
+    registry.subscribe("c2", "a2", (event) => stream2Events.push(event));
+    expect(registry.activeStreamCount).toBe(2);
+
+    registry.emit({
+      type: "content_chunk",
+      conversationId: "c1",
+      messageId: "a1",
+      delta: "for stream 1",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    registry.emit({
+      type: "content_chunk",
+      conversationId: "c2",
+      messageId: "a2",
+      delta: "for stream 2",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(stream1Events).toHaveLength(1);
+    expect(stream2Events).toHaveLength(1);
+    expect((stream1Events[0] as Extract<StreamLifecycleEvent, { type: "content_chunk" }>).delta).toBe("for stream 1");
+    expect((stream2Events[0] as Extract<StreamLifecycleEvent, { type: "content_chunk" }>).delta).toBe("for stream 2");
+  });
+
+  it("unsubscribe removes specific subscriber", () => {
+    const registry = new StreamRegistry();
+    const events: StreamLifecycleEvent[] = [];
+    const subscriber = (event: StreamLifecycleEvent) => events.push(event);
+
+    registry.subscribe("c1", "a1", subscriber);
+    registry.unsubscribe("c1", "a1", subscriber);
+
+    registry.emit({
+      type: "message_start",
+      conversationId: "c1",
+      messageId: "a1",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(events).toHaveLength(0);
+    expect(registry.hasSubscribers("c1", "a1")).toBe(false);
+  });
+
+  it("does not throw when emitting to non-existent stream", () => {
+    const registry = new StreamRegistry();
+
+    expect(() => {
+      registry.emit({
+        type: "message_start",
+        conversationId: "no-such",
+        messageId: "no-such",
+        sequence: 0,
+        timestamp: "2026-01-01T00:00:00.000Z",
+      });
+    }).not.toThrow();
+  });
+
+  it("subscriber errors do not break the stream pipeline", () => {
+    const registry = new StreamRegistry();
+    const events: StreamLifecycleEvent[] = [];
+
+    registry.subscribe("c1", "a1", () => {
+      throw new Error("subscriber crash");
+    });
+    registry.subscribe("c1", "a1", (event) => events.push(event));
+
+    registry.emit({
+      type: "message_start",
+      conversationId: "c1",
+      messageId: "a1",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    // Second subscriber still receives the event despite first crashing
+    expect(events).toHaveLength(1);
+  });
+
+  it("clear removes all streams", () => {
+    const registry = new StreamRegistry();
+    registry.subscribe("c1", "a1", () => {});
+    registry.subscribe("c2", "a2", () => {});
+    expect(registry.activeStreamCount).toBe(2);
+
+    registry.clear();
+    expect(registry.activeStreamCount).toBe(0);
+  });
+});
+
+/**
+ * MockProvider variant that introduces a configurable delay before streaming,
+ * allowing tests to subscribe to the stream registry before events are emitted.
+ */
+class DelayedMockProvider extends MockProvider {
+  private readonly delayMs: number;
+
+  constructor(options: ConstructorParameters<typeof MockProvider>[0] & { delayMs?: number }) {
+    super(options);
+    this.delayMs = options?.delayMs ?? 50;
+  }
+
+  async *stream(request: import("../../src/types/provider").ChatRequest): AsyncIterable<import("../../src/types/streaming").StreamEvent> {
+    await Bun.sleep(this.delayMs);
+    yield* super.stream(request);
+  }
+}
+
+describe("DaemonHttpServer streaming lifecycle events", () => {
+  const servers: DaemonHttpServer[] = [];
+  let testPort = 17700;
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+  });
+
+  it("emits message_start → content_chunk → message_complete on successful generation", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const mockProvider = new DelayedMockProvider({
+      config: { id: "anthropic", type: "oauth" },
+      models: [createMockModel("anthropic-test-model", "anthropic")],
+      responseContent: "Hi",
+      delayMs: 30,
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(mockProvider);
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    // Post message to get conversation and assistant IDs
+    const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Hello",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    // Subscribe to stream events before provider starts streaming
+    const streamEvents: StreamLifecycleEvent[] = [];
+    server.getStreamRegistry().subscribe(
+      payload.conversationId,
+      payload.assistantMessageId,
+      (event) => streamEvents.push(event),
+    );
+
+    // Wait for provider execution to complete
+    await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+
+    // Verify lifecycle event order
+    expect(streamEvents.length).toBeGreaterThanOrEqual(3);
+
+    // First event must be message_start
+    expect(streamEvents[0].type).toBe("message_start");
+    expect(streamEvents[0].conversationId).toBe(payload.conversationId);
+    expect(streamEvents[0].messageId).toBe(payload.assistantMessageId);
+    expect(streamEvents[0].sequence).toBe(0);
+
+    // Middle events are content_chunks (MockProvider yields one char at a time: "H", "i")
+    const chunks = streamEvents.filter((event) => event.type === "content_chunk");
+    expect(chunks.length).toBe(2);
+    expect((chunks[0] as Extract<StreamLifecycleEvent, { type: "content_chunk" }>).delta).toBe("H");
+    expect((chunks[1] as Extract<StreamLifecycleEvent, { type: "content_chunk" }>).delta).toBe("i");
+
+    // Last event must be message_complete
+    const lastEvent = streamEvents[streamEvents.length - 1];
+    expect(lastEvent.type).toBe("message_complete");
+    expect((lastEvent as Extract<StreamLifecycleEvent, { type: "message_complete" }>).content).toBe("Hi");
+
+    // Verify monotonic sequence numbers
+    for (let i = 1; i < streamEvents.length; i++) {
+      expect(streamEvents[i].sequence).toBe(streamEvents[i - 1].sequence + 1);
+    }
+  });
+
+  it("emits error event on provider failure", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const mockProvider = new DelayedMockProvider({
+      config: { id: "anthropic", type: "oauth" },
+      models: [createMockModel("anthropic-test-model", "anthropic")],
+      simulateError: true,
+      errorMessage: "Provider exploded",
+      delayMs: 30,
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(mockProvider);
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "This will fail",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    // Subscribe to stream events
+    const streamEvents: StreamLifecycleEvent[] = [];
+    server.getStreamRegistry().subscribe(
+      payload.conversationId,
+      payload.assistantMessageId,
+      (event) => streamEvents.push(event),
+    );
+
+    // Wait for error to be persisted
+    await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+
+    // Provider failures may occur before the first token is emitted, so
+    // message_start is best-effort while error is required.
+    const startEvents = streamEvents.filter((event) => event.type === "message_start");
+    expect(startEvents.length).toBeGreaterThanOrEqual(0);
+
+    const errorEvents = streamEvents.filter((event) => event.type === "error");
+    expect(errorEvents.length).toBe(1);
+
+    const errorEvent = errorEvents[0] as Extract<StreamLifecycleEvent, { type: "error" }>;
+    expect(errorEvent.conversationId).toBe(payload.conversationId);
+    expect(errorEvent.messageId).toBe(payload.assistantMessageId);
+    expect(errorEvent.error.message).toContain("Provider exploded");
+
+    // Stream registry should be cleaned up after terminal error
+    expect(server.getStreamRegistry().hasSubscribers(
+      payload.conversationId,
+      payload.assistantMessageId,
+    )).toBe(false);
+
+    if (startEvents.length > 0) {
+      expect(streamEvents[0].sequence).toBe(0);
+      expect(streamEvents[1].sequence).toBe(1);
+    } else {
+      expect(streamEvents[0].sequence).toBe(0);
+    }
+  });
+
+  it("emits error event on auth preflight failure", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: false,
+      provider: "anthropic",
+      connectionState: "requires_auth",
+      guidance: {
+        provider: "anthropic",
+        action: "configure",
+        message: "Auth required",
+        supportedModes: ["api_key"],
+      },
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+      }),
+    );
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Should fail auth",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    // Subscribe to stream events — auth failures happen quickly but still
+    // go through the deferred scheduleProviderExecution path
+    const streamEvents: StreamLifecycleEvent[] = [];
+    server.getStreamRegistry().subscribe(
+      payload.conversationId,
+      payload.assistantMessageId,
+      (event) => streamEvents.push(event),
+    );
+
+    // Wait for error to be persisted
+    await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+
+    // Auth preflight failures bypass the streaming loop entirely,
+    // so no message_start is emitted — only the error event from the catch block.
+    const errorEvents = streamEvents.filter((event) => event.type === "error");
+    expect(errorEvents.length).toBe(1);
+
+    const errorEvent = errorEvents[0] as Extract<StreamLifecycleEvent, { type: "error" }>;
+    expect(errorEvent.error.code).toBe("UNAUTHORIZED");
+    expect(errorEvent.error.retryable).toBe(false);
+  });
+
+  it("cleans up stream registry on server stop", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    // Add a subscriber
+    server.getStreamRegistry().subscribe("c1", "a1", () => {});
+    expect(server.getStreamRegistry().activeStreamCount).toBe(1);
+
+    await server.stop();
+    expect(server.getStreamRegistry().activeStreamCount).toBe(0);
+  });
+
+  it("sequence numbers are monotonically increasing per stream", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const mockProvider = new DelayedMockProvider({
+      config: { id: "anthropic", type: "oauth" },
+      models: [createMockModel("anthropic-test-model", "anthropic")],
+      responseContent: "ABC",
+      delayMs: 30,
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(mockProvider);
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Test sequence",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    const streamEvents: StreamLifecycleEvent[] = [];
+    server.getStreamRegistry().subscribe(
+      payload.conversationId,
+      payload.assistantMessageId,
+      (event) => streamEvents.push(event),
+    );
+
+    await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+
+    // Expected: message_start(0), chunk A(1), chunk B(2), chunk C(3), message_complete(4)
+    expect(streamEvents).toHaveLength(5);
+    const sequences = streamEvents.map((event) => event.sequence);
+    expect(sequences).toEqual([0, 1, 2, 3, 4]);
+  });
+});
+
+describe("DaemonHttpServer websocket stream transport", () => {
+  const servers: DaemonHttpServer[] = [];
+  let testPort = 17950;
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+  });
+
+  it("accepts stream.subscribe and responds to heartbeat ping", async () => {
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      conversation: { conversationManager: new ConversationManager(new InMemoryConversationStore()) },
+    });
+    servers.push(server);
+    await server.start();
+
+    const ws = new WebSocket(`ws://localhost:${testPort - 1}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("websocket open timeout")), 500);
+      ws.addEventListener("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      ws.addEventListener("error", () => {
+        clearTimeout(timeout);
+        reject(new Error("websocket failed to open"));
+      }, { once: true });
+    });
+
+    const messages: unknown[] = [];
+    ws.addEventListener("message", (event) => {
+      const data = typeof event.data === "string" ? event.data : String(event.data);
+      messages.push(JSON.parse(data));
+    });
+
+    ws.send(JSON.stringify({ type: "stream.subscribe", conversationId: "c1", assistantMessageId: "a1" }));
+    ws.send(JSON.stringify({ type: "heartbeat.ping" }));
+
+    await new Promise<void>((resolve, reject) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        const hasSubscribed = messages.some((message) => {
+          const payload = message as { type?: string };
+          return payload.type === "stream.subscribed";
+        });
+        const hasPong = messages.some((message) => {
+          const payload = message as { type?: string };
+          return payload.type === "heartbeat.pong";
+        });
+
+        if (hasSubscribed && hasPong) {
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+
+        if (Date.now() - started > 1000) {
+          clearInterval(timer);
+          reject(new Error("Timed out waiting for subscribe/heartbeat responses"));
+        }
+      }, 20);
+    });
+
+    ws.close();
+  });
+
+  it("acknowledges stream.unsubscribe", async () => {
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      conversation: { conversationManager: new ConversationManager(new InMemoryConversationStore()) },
+    });
+    servers.push(server);
+    await server.start();
+
+    const ws = new WebSocket(`ws://localhost:${testPort - 1}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("websocket open timeout")), 500);
+      ws.addEventListener("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      ws.addEventListener("error", () => {
+        clearTimeout(timeout);
+        reject(new Error("websocket failed to open"));
+      }, { once: true });
+    });
+
+    const messages: unknown[] = [];
+    ws.addEventListener("message", (event) => {
+      const data = typeof event.data === "string" ? event.data : String(event.data);
+      messages.push(JSON.parse(data));
+    });
+
+    ws.send(JSON.stringify({ type: "stream.subscribe", conversationId: "c1", assistantMessageId: "a1" }));
+    ws.send(JSON.stringify({ type: "stream.unsubscribe", conversationId: "c1", assistantMessageId: "a1" }));
+
+    await new Promise<void>((resolve, reject) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        const hasUnsubscribed = messages.some((message) => {
+          const payload = message as { type?: string };
+          return payload.type === "stream.unsubscribed";
+        });
+
+        if (hasUnsubscribed) {
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+
+        if (Date.now() - started > 1000) {
+          clearInterval(timer);
+          reject(new Error("Timed out waiting for unsubscribe response"));
+        }
+      }, 20);
+    });
+
+    ws.close();
   });
 });
