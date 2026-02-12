@@ -11,6 +11,7 @@ import type {
   CredentialRecordQuery,
   CredentialStoreState,
   CredentialSyncEnvelope,
+  CredentialUpdateInput,
   EncryptedCredentialPayload,
 } from "./types";
 
@@ -412,6 +413,59 @@ export class EncryptedCredentialStore {
     }
 
     return ok(true);
+  }
+
+  public async update(input: CredentialUpdateInput): Promise<Result<CredentialRecord, AuthError>> {
+    const recordId = input.id.trim();
+    if (recordId.length === 0) {
+      return err(new AuthError("Credential id is required for update"));
+    }
+
+    const stateResult = await this.loadState();
+    if (!stateResult.ok) {
+      return stateResult;
+    }
+
+    const existing = stateResult.value.records[recordId];
+    if (!existing) {
+      return err(new AuthError("Credential record not found for update"));
+    }
+
+    if (existing.revokedAt !== undefined) {
+      return err(new AuthError("Cannot update a revoked credential"));
+    }
+
+    const encryptedPayloadResult = await this.encryptPayload(input.payload);
+    if (!encryptedPayloadResult.ok) {
+      return encryptedPayloadResult;
+    }
+
+    const now = Date.now();
+    const updatedRecord: CredentialRecord = {
+      ...existing,
+      metadata: input.metadata ? copyMetadata(input.metadata) : existing.metadata,
+      encryptedPayload: encryptedPayloadResult.value,
+      updatedAt: now,
+      sync: {
+        version: STATE_VERSION,
+        checksum: "",
+        updatedAt: now,
+        syncedAt: existing.sync.syncedAt,
+      },
+    };
+
+    stateResult.value.records[recordId] = updatedRecord;
+    const saveResult = await this.saveState(stateResult.value);
+    if (!saveResult.ok) {
+      return saveResult;
+    }
+
+    const persisted = saveResult.value.records[recordId];
+    if (!persisted) {
+      return err(new AuthError("Credential record update failed"));
+    }
+
+    return ok(cloneRecord(persisted));
   }
 
   public async decryptPayload<T>(record: CredentialRecord): Promise<Result<T, AuthError>> {

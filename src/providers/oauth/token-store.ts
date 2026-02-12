@@ -2,6 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuthError } from "../../errors";
+import { err, ok, type Result } from "../../result";
 import type { EncryptedCredentialStore } from "../credentials/store";
 import type { OAuthConnectionStatus, OAuthProviderType, OAuthTokens } from "./types";
 
@@ -227,6 +228,52 @@ export class CredentialBackedOAuthTokenStore implements OAuthTokenStore {
     }
 
     return result.value;
+  }
+
+  public async updateTokens(
+    provider: OAuthProviderType,
+    tokens: OAuthTokens,
+  ): Promise<Result<void, AuthError>> {
+    const credentialId = `oauth_${provider}`;
+
+    const existingResult = await this.store.get({
+      id: credentialId,
+      provider,
+      type: "oauth",
+    });
+
+    if (!existingResult.ok) {
+      return err(
+        new AuthError(`Unable to load existing OAuth credentials for rotation: ${provider}`, existingResult.error),
+      );
+    }
+
+    if (!existingResult.value) {
+      const setResult = await this.store.set({
+        id: credentialId,
+        provider,
+        type: "oauth",
+        accountId: provider,
+        payload: serializeTokens(tokens),
+      });
+
+      if (!setResult.ok) {
+        return err(new AuthError(`Unable to persist new OAuth credentials during rotation: ${provider}`, setResult.error));
+      }
+
+      return ok(undefined);
+    }
+
+    const updateResult = await this.store.update({
+      id: credentialId,
+      payload: serializeTokens(tokens),
+    });
+
+    if (!updateResult.ok) {
+      return err(new AuthError(`Unable to rotate OAuth credentials for provider: ${provider}`, updateResult.error));
+    }
+
+    return ok(undefined);
   }
 
   public async getStatus(provider: OAuthProviderType): Promise<OAuthConnectionStatus> {
