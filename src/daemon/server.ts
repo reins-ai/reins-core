@@ -5,11 +5,13 @@
 
 import { ProviderAuthService } from "../providers/auth-service";
 import { EncryptedCredentialStore } from "../providers/credentials/store";
+import { ProviderRegistry } from "../providers/registry";
 import { err, ok, type Result } from "../result";
 import type { DaemonError, DaemonManagedService } from "./types";
 
 const DEFAULT_PORT = 7433;
 const DEFAULT_HOST = "localhost";
+const DEFAULT_ENCRYPTION_SECRET = "reins-daemon-default-secret"; // TODO: Use machine-specific secret
 
 interface ServerOptions {
   port?: number;
@@ -37,9 +39,16 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
     
-    // Initialize auth service with encrypted credential store
-    const credentialStore = new EncryptedCredentialStore();
-    this.authService = options.authService ?? new ProviderAuthService({ credentialStore });
+    // Initialize auth service with encrypted credential store and provider registry
+    if (options.authService) {
+      this.authService = options.authService;
+    } else {
+      const store = new EncryptedCredentialStore({ 
+        encryptionSecret: DEFAULT_ENCRYPTION_SECRET 
+      });
+      const registry = new ProviderRegistry();
+      this.authService = new ProviderAuthService({ store, registry });
+    }
   }
 
   async start(): Promise<Result<void, DaemonError>> {
@@ -171,10 +180,11 @@ export class DaemonHttpServer implements DaemonManagedService {
           return Response.json({ error: "Missing apiKey for BYOK mode" }, { status: 400, headers: corsHeaders });
         }
 
-        const result = await this.authService.handleCommand(providerId, {
-          action: "configure",
+        const result = await this.authService.handleCommand({
+          provider: providerId,
+          source: "tui",
           mode: "api_key",
-          payload: { apiKey },
+          key: apiKey,
         });
 
         if (result.ok) {
