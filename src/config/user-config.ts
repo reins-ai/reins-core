@@ -14,6 +14,7 @@ export interface UserConfig {
   provider: {
     mode: UserProviderMode;
     apiKey?: string;
+    activeProvider?: string;
   };
   daemon: {
     host: string;
@@ -93,12 +94,16 @@ function normalizeConfig(value: unknown): UserConfig {
   const apiKey = typeof providerCandidate.apiKey === "string" && providerCandidate.apiKey.trim().length > 0
     ? providerCandidate.apiKey
     : undefined;
+  const activeProvider = typeof providerCandidate.activeProvider === "string" && providerCandidate.activeProvider.trim().length > 0
+    ? providerCandidate.activeProvider
+    : undefined;
 
   return {
     name: typeof value.name === "string" ? value.name : "",
     provider: {
       mode,
       apiKey: mode === "byok" ? apiKey : undefined,
+      activeProvider,
     },
     daemon: {
       host: typeof daemonCandidate.host === "string" && daemonCandidate.host.length > 0
@@ -119,12 +124,14 @@ function mergeUserConfig(existing: UserConfig | null, updates: Partial<UserConfi
     nextProviderMode === "byok"
       ? updates.provider?.apiKey ?? base.provider.apiKey
       : undefined;
+  const nextActiveProvider = updates.provider?.activeProvider ?? base.provider.activeProvider;
 
   return {
     name: updates.name ?? base.name,
     provider: {
       mode: nextProviderMode,
       apiKey: nextProviderApiKey,
+      activeProvider: nextActiveProvider,
     },
     daemon: {
       host: updates.daemon?.host ?? base.daemon.host,

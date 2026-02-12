@@ -10,12 +10,18 @@ import {
 } from "../config/user-config";
 
 const DAEMON_HEALTH_URL = "http://localhost:7433/health";
+const DAEMON_BASE_URL = "http://localhost:7433";
+
+export type AuthMethod = "api_key" | "oauth";
 
 export type SetupWizardStep =
   | "welcome"
   | "daemon-check"
   | "provider-selection"
+  | "auth-method"
   | "credential-entry"
+  | "oauth-launch"
+  | "connection-validation"
   | "name"
   | "confirmation"
   | "write-config"
@@ -28,7 +34,10 @@ export interface SetupWizardState {
   daemonOnline: boolean | null;
   provider: {
     mode: UserProviderMode;
+    activeProvider?: string;
+    authMethod?: AuthMethod;
     apiKey?: string;
+    connectionVerified?: boolean;
   };
   name: string;
 }
@@ -51,13 +60,39 @@ export interface SetupWizardIO {
   confirm(question: string, defaultValue?: boolean): Promise<boolean>;
 }
 
-type FetchLike = (input: string) => Promise<Response>;
+type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export interface SetupDaemonTransport {
+  configureApiKey(provider: string, apiKey: string): Promise<SetupDaemonResult>;
+  initiateOAuth(provider: string): Promise<SetupDaemonOAuthResult>;
+  getProviderAuthStatus(provider: string): Promise<SetupDaemonAuthStatus>;
+}
+
+export interface SetupDaemonResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface SetupDaemonOAuthResult {
+  success: boolean;
+  authorizationUrl?: string;
+  error?: string;
+}
+
+export interface SetupDaemonAuthStatus {
+  connectionState: "ready" | "requires_auth" | "requires_reauth" | "invalid";
+  configured: boolean;
+  error?: string;
+}
 
 export interface RunSetupWizardOptions {
   reset?: boolean;
   io?: SetupWizardIO;
   fetchHealth?: FetchLike;
+  fetchApi?: FetchLike;
+  transport?: SetupDaemonTransport;
   configPath?: string;
+  openUrl?: (url: string) => Promise<void> | void;
 }
 
 export class SetupWizardCancelledError extends Error {
@@ -87,7 +122,7 @@ export function welcomeStep(state: SetupWizardState): SetupStepResult {
     },
     output: [
       "Welcome to reins setup.",
-      "This wizard configures your daemon connection, provider mode, and display name.",
+      "This wizard connects you to Anthropic and configures your assistant.",
       "You can finish in under 2 minutes.",
     ],
   };
@@ -117,32 +152,14 @@ export function daemonCheckStep(state: SetupWizardState, daemonOnline: boolean):
 }
 
 export function providerSelectionStep(state: SetupWizardState, mode: UserProviderMode): SetupStepResult {
-  const nextStep = mode === "byok" ? "credential-entry" : "name";
-  const providerMessage =
-    mode === "byok"
-      ? "Provider mode selected: BYOK"
-      : mode === "gateway"
-        ? "Provider mode selected: Reins Gateway"
-        : "Provider mode selected: Skip for now";
-
-  return {
-    state: {
-      ...state,
-      provider: {
-        mode,
-      },
-      step: nextStep,
-    },
-    output: [providerMessage],
-  };
-}
-
-export function credentialEntryStep(state: SetupWizardState, apiKey: string): SetupStepResult {
-  const normalizedApiKey = apiKey.trim();
-  if (normalizedApiKey.length === 0) {
+  if (mode === "none") {
     return {
-      state,
-      output: ["API key is required for BYOK mode."],
+      state: {
+        ...state,
+        provider: { mode: "none" },
+        step: "name",
+      },
+      output: ["Provider setup skipped. You can configure a provider later with reins setup --reset."],
     };
   }
 
@@ -151,13 +168,85 @@ export function credentialEntryStep(state: SetupWizardState, apiKey: string): Se
       ...state,
       provider: {
         mode: "byok",
+        activeProvider: "anthropic",
+      },
+      step: "auth-method",
+    },
+    output: ["Provider selected: Anthropic"],
+  };
+}
+
+export function authMethodStep(state: SetupWizardState, method: AuthMethod): SetupStepResult {
+  const nextStep = method === "api_key" ? "credential-entry" : "oauth-launch";
+  const methodLabel = method === "api_key" ? "API Key" : "OAuth (Browser Login)";
+
+  return {
+    state: {
+      ...state,
+      provider: {
+        ...state.provider,
+        authMethod: method,
+      },
+      step: nextStep,
+    },
+    output: [`Authentication method: ${methodLabel}`],
+  };
+}
+
+export function credentialEntryStep(state: SetupWizardState, apiKey: string): SetupStepResult {
+  const normalizedApiKey = apiKey.trim();
+  if (normalizedApiKey.length === 0) {
+    return {
+      state,
+      output: ["API key is required. You can find your key at https://console.anthropic.com/settings/keys"],
+    };
+  }
+
+  return {
+    state: {
+      ...state,
+      provider: {
+        ...state.provider,
+        mode: "byok",
         apiKey: normalizedApiKey,
       },
-      step: "name",
+      step: "connection-validation",
+    },
+    output: ["API key captured. Validating connection..."],
+  };
+}
+
+export function connectionValidationStep(
+  state: SetupWizardState,
+  connectionState: "ready" | "requires_auth" | "requires_reauth" | "invalid",
+): SetupStepResult {
+  if (connectionState === "ready") {
+    return {
+      state: {
+        ...state,
+        provider: {
+          ...state.provider,
+          connectionVerified: true,
+        },
+        step: "name",
+      },
+      output: ["\u2713 Connection successful! Anthropic is ready."],
+    };
+  }
+
+  return {
+    state: {
+      ...state,
+      provider: {
+        ...state.provider,
+        connectionVerified: false,
+      },
+      step: "auth-method",
     },
     output: [
-      "Credential captured.",
-      "Note: API key is stored in plaintext in config.json for now (temporary until keychain integration).",
+      "Connection could not be verified.",
+      "Please check your credentials and try again.",
+      "For API keys, visit https://console.anthropic.com/settings/keys",
     ],
   };
 }
@@ -192,22 +281,26 @@ export function confirmationStep(state: SetupWizardState, confirmed: boolean): S
 }
 
 export function toUserConfig(state: SetupWizardState): UserConfig {
+  const providerConfig: UserConfig["provider"] =
+    state.provider.mode === "byok"
+      ? {
+          mode: "byok",
+          apiKey: state.provider.apiKey,
+          activeProvider: state.provider.activeProvider,
+        }
+      : {
+          mode: state.provider.mode,
+          activeProvider: state.provider.activeProvider,
+        };
+
   return {
     name: state.name,
-    provider:
-      state.provider.mode === "byok"
-        ? {
-            mode: "byok",
-            apiKey: state.provider.apiKey,
-          }
-        : {
-            mode: state.provider.mode,
-          },
+    provider: providerConfig,
     daemon: {
       host: "localhost",
       port: 7433,
     },
-    setupComplete: true,
+    setupComplete: state.provider.connectionVerified === true || state.provider.mode === "none",
   };
 }
 
@@ -222,16 +315,25 @@ export async function checkDaemonHealth(fetchHealth: FetchLike): Promise<boolean
 
 export function parseProviderSelection(inputValue: string): UserProviderMode | null {
   const normalized = inputValue.trim().toLowerCase();
-  if (normalized === "1" || normalized === "byok") {
+  if (normalized === "1" || normalized === "anthropic") {
     return "byok";
   }
 
-  if (normalized === "2" || normalized === "gateway") {
-    return "gateway";
+  if (normalized === "2" || normalized === "skip" || normalized === "none") {
+    return "none";
   }
 
-  if (normalized === "3" || normalized === "none" || normalized === "skip") {
-    return "none";
+  return null;
+}
+
+export function parseAuthMethodSelection(inputValue: string): AuthMethod | null {
+  const normalized = inputValue.trim().toLowerCase();
+  if (normalized === "1" || normalized === "api_key" || normalized === "api key" || normalized === "key") {
+    return "api_key";
+  }
+
+  if (normalized === "2" || normalized === "oauth" || normalized === "browser") {
+    return "oauth";
   }
 
   return null;
@@ -239,12 +341,19 @@ export function parseProviderSelection(inputValue: string): UserProviderMode | n
 
 function buildSummary(state: SetupWizardState, configPath: string): string[] {
   const providerLabel =
-    state.provider.mode === "byok" ? "BYOK" : state.provider.mode === "gateway" ? "Reins Gateway" : "Skip for now";
+    state.provider.activeProvider === "anthropic"
+      ? `Anthropic (${state.provider.authMethod === "oauth" ? "OAuth" : "API Key"})`
+      : state.provider.mode === "none"
+        ? "Not configured"
+        : state.provider.mode;
+
+  const connectionLabel = state.provider.connectionVerified ? "verified" : "not verified";
 
   return [
     "Setup summary:",
     `  Name: ${state.name}`,
     `  Provider: ${providerLabel}`,
+    `  Connection: ${connectionLabel}`,
     `  Daemon: localhost:7433 (${state.daemonOnline ? "online" : "offline"})`,
     `  Config path: ${configPath}`,
   ];
@@ -343,9 +452,148 @@ export function createConsoleSetupIO(): SetupWizardIO {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export class HttpSetupDaemonTransport implements SetupDaemonTransport {
+  private readonly baseUrl: string;
+  private readonly fetchImpl: FetchLike;
+
+  constructor(options: { baseUrl?: string; fetchImpl?: FetchLike } = {}) {
+    this.baseUrl = (options.baseUrl ?? DAEMON_BASE_URL).replace(/\/$/, "");
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  public async configureApiKey(provider: string, apiKey: string): Promise<SetupDaemonResult> {
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/api/providers/validate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider, apiKey, mode: "byok" }),
+      });
+
+      if (!response.ok) {
+        return { success: false, error: `Validation failed (HTTP ${response.status})` };
+      }
+
+      const payload = await response.json() as Record<string, unknown>;
+      if (payload.valid === false) {
+        const errorMessage = typeof payload.error === "string" ? payload.error
+          : typeof payload.message === "string" ? payload.message
+          : "API key validation failed.";
+        return { success: false, error: errorMessage };
+      }
+
+      const configureResponse = await this.fetchImpl(`${this.baseUrl}/api/providers/configure`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider, apiKey, mode: "byok" }),
+      });
+
+      if (!configureResponse.ok) {
+        return { success: false, error: `Configuration failed (HTTP ${configureResponse.status})` };
+      }
+
+      return { success: true };
+    } catch {
+      return { success: false, error: "Unable to reach daemon for API key validation." };
+    }
+  }
+
+  public async initiateOAuth(provider: string): Promise<SetupDaemonOAuthResult> {
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/api/auth/oauth/initiate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider, source: "cli" }),
+      });
+
+      if (!response.ok) {
+        return { success: false, error: `OAuth initiation failed (HTTP ${response.status})` };
+      }
+
+      const payload = await response.json() as Record<string, unknown>;
+      const authorization = isRecord(payload.authorization) ? payload.authorization : payload;
+      const authorizationUrl = typeof authorization.authorizationUrl === "string"
+        ? authorization.authorizationUrl
+        : typeof authorization.url === "string"
+          ? authorization.url
+          : undefined;
+
+      if (!authorizationUrl) {
+        return { success: false, error: "No authorization URL returned from daemon." };
+      }
+
+      return { success: true, authorizationUrl };
+    } catch {
+      return { success: false, error: "Unable to reach daemon for OAuth initiation." };
+    }
+  }
+
+  public async getProviderAuthStatus(provider: string): Promise<SetupDaemonAuthStatus> {
+    try {
+      const response = await this.fetchImpl(
+        `${this.baseUrl}/api/auth/status/${encodeURIComponent(provider)}`,
+        { method: "GET" },
+      );
+
+      if (!response.ok) {
+        return { connectionState: "requires_auth", configured: false, error: `Status check failed (HTTP ${response.status})` };
+      }
+
+      const payload = await response.json() as Record<string, unknown>;
+      const connectionState = payload.connectionState;
+      if (connectionState === "ready" || connectionState === "requires_auth" || connectionState === "requires_reauth" || connectionState === "invalid") {
+        return {
+          connectionState,
+          configured: payload.configured === true,
+        };
+      }
+
+      return { connectionState: "requires_auth", configured: payload.configured === true };
+    } catch {
+      return { connectionState: "requires_auth", configured: false, error: "Unable to reach daemon for status check." };
+    }
+  }
+}
+
+const OAUTH_POLL_INTERVAL_MS = 2_000;
+const OAUTH_POLL_TIMEOUT_MS = 120_000;
+
+async function defaultOpenUrl(url: string): Promise<void> {
+  const { exec } = await import("node:child_process");
+  const platform = process.platform;
+  const command = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
+  exec(`${command} "${url}"`);
+}
+
+async function pollForOAuthCompletion(
+  transport: SetupDaemonTransport,
+  provider: string,
+  io: SetupWizardIO,
+): Promise<"ready" | "requires_auth"> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < OAUTH_POLL_TIMEOUT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, OAUTH_POLL_INTERVAL_MS));
+
+    const status = await transport.getProviderAuthStatus(provider);
+    if (status.connectionState === "ready") {
+      return "ready";
+    }
+  }
+
+  await io.writeLine("OAuth login timed out. You can try again or use an API key instead.");
+  return "requires_auth";
+}
+
 export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promise<SetupWizardResult> {
   const io = options.io ?? createConsoleSetupIO();
-  const fetchHealth = options.fetchHealth ?? ((url: string) => fetch(url));
+  const fetchHealth = options.fetchHealth ?? ((url: string | URL | Request) => fetch(url));
+  const fetchApi = options.fetchApi ?? ((url: string | URL | Request, init?: RequestInit) => fetch(url, init));
+  const transport = options.transport ?? new HttpSetupDaemonTransport({ fetchImpl: fetchApi });
+  const openUrl = options.openUrl ?? defaultOpenUrl;
   const configPath = options.configPath ?? resolveUserConfigPath();
 
   let state = createInitialSetupState(options.reset ?? false);
@@ -360,17 +608,16 @@ export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promi
     state = daemonStep.state;
     await emit(io, daemonStep.output);
 
-    await io.writeLine("Select provider mode:");
-    await io.writeLine("  [1] BYOK");
-    await io.writeLine("  [2] Reins Gateway");
-    await io.writeLine("  [3] Skip for now");
+    await io.writeLine("Choose a provider to connect:");
+    await io.writeLine("  [1] Anthropic");
+    await io.writeLine("  [2] Skip for now");
 
     let mode: UserProviderMode | null = null;
     while (!mode) {
       const rawMode = await io.prompt("Choice: ");
       mode = parseProviderSelection(rawMode);
       if (!mode) {
-        await io.writeLine("Please enter 1, 2, or 3.");
+        await io.writeLine("Please enter 1 or 2.");
       }
     }
 
@@ -378,14 +625,91 @@ export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promi
     state = providerStepResult.state;
     await emit(io, providerStepResult.output);
 
-    if (state.step === "credential-entry") {
-      let credentialComplete = false;
-      while (!credentialComplete) {
-        const apiKey = await io.prompt("Enter provider API key: ", { masked: true });
-        const credentialResult = credentialEntryStep(state, apiKey);
-        await emit(io, credentialResult.output);
-        state = credentialResult.state;
-        credentialComplete = state.step === "name";
+    if (state.step === "auth-method") {
+      let authMethodSelected = false;
+
+      while (!authMethodSelected) {
+        await io.writeLine("Choose authentication method for Anthropic:");
+        await io.writeLine("  [1] API Key");
+        await io.writeLine("  [2] OAuth (Browser Login)");
+
+        let authMethod: AuthMethod | null = null;
+        while (!authMethod) {
+          const rawMethod = await io.prompt("Choice: ");
+          authMethod = parseAuthMethodSelection(rawMethod);
+          if (!authMethod) {
+            await io.writeLine("Please enter 1 or 2.");
+          }
+        }
+
+        const authMethodResult = authMethodStep(state, authMethod);
+        state = authMethodResult.state;
+        await emit(io, authMethodResult.output);
+
+        if (state.step === "credential-entry") {
+          const apiKey = await io.prompt("Enter your Anthropic API key: ", { masked: true });
+          const credentialResult = credentialEntryStep(state, apiKey);
+          await emit(io, credentialResult.output);
+          state = credentialResult.state;
+
+          if (state.step === "connection-validation") {
+            await io.writeLine("Testing connection...");
+
+            if (daemonOnline) {
+              const configureResult = await transport.configureApiKey("anthropic", state.provider.apiKey ?? "");
+              if (configureResult.success) {
+                const authStatus = await transport.getProviderAuthStatus("anthropic");
+                const validationResult = connectionValidationStep(state, authStatus.connectionState);
+                state = validationResult.state;
+                await emit(io, validationResult.output);
+              } else {
+                await io.writeLine(configureResult.error ?? "API key validation failed.");
+                const validationResult = connectionValidationStep(state, "invalid");
+                state = validationResult.state;
+                await emit(io, validationResult.output);
+              }
+            } else {
+              const validationResult = connectionValidationStep(state, "ready");
+              state = validationResult.state;
+              await emit(io, ["Daemon offline — skipping live validation. Connection will be verified on next daemon start."]);
+            }
+          }
+        } else if (state.step === "oauth-launch") {
+          if (!daemonOnline) {
+            await io.writeLine("OAuth requires a running daemon. Please start the daemon first:");
+            await io.writeLine("  reins service start");
+            const validationResult = connectionValidationStep(state, "requires_auth");
+            state = validationResult.state;
+            await emit(io, validationResult.output);
+            continue;
+          }
+
+          await io.writeLine("Opening browser for Anthropic login...");
+          const oauthResult = await transport.initiateOAuth("anthropic");
+
+          if (!oauthResult.success || !oauthResult.authorizationUrl) {
+            await io.writeLine(oauthResult.error ?? "Failed to start OAuth flow.");
+            const validationResult = connectionValidationStep(state, "requires_auth");
+            state = validationResult.state;
+            await emit(io, validationResult.output);
+            continue;
+          }
+
+          await openUrl(oauthResult.authorizationUrl);
+          await io.writeLine("Waiting for browser login to complete...");
+          await io.writeLine("(Press Ctrl+C to cancel)");
+
+          const oauthConnectionState = await pollForOAuthCompletion(transport, "anthropic", io);
+          state = {
+            ...state,
+            step: "connection-validation",
+          };
+          const validationResult = connectionValidationStep(state, oauthConnectionState);
+          state = validationResult.state;
+          await emit(io, validationResult.output);
+        }
+
+        authMethodSelected = state.step === "name";
       }
     }
 
@@ -439,11 +763,15 @@ export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promi
       step: "complete",
     };
 
+    const completionMessage = state.provider.connectionVerified
+      ? `\u2713 Setup complete. Anthropic is connected. Config saved to ${configPath}.`
+      : `Setup complete. Config saved to ${configPath}.`;
+
     return {
       status: "completed",
       configPath,
       state,
-      message: `Setup complete. Config saved to ${configPath}.`,
+      message: completionMessage,
     };
   } catch (error) {
     if (error instanceof SetupWizardCancelledError) {
