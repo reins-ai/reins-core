@@ -3,6 +3,8 @@
  * Listens on localhost:7433
  */
 
+import { ConversationManager } from "../conversation/manager";
+import { SQLiteConversationStore } from "../conversation/sqlite-store";
 import { ProviderAuthService } from "../providers/auth-service";
 import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strategy";
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
@@ -37,11 +39,17 @@ interface DefaultServices {
   modelRouter: ModelRouter;
 }
 
+interface ConversationServiceOptions {
+  conversationManager?: ConversationManager;
+  sqliteStorePath?: string;
+}
+
 interface ServerOptions {
   port?: number;
   host?: string;
   authService?: ProviderAuthService;
   modelRouter?: ModelRouter;
+  conversation?: ConversationServiceOptions;
 }
 
 interface HealthResponse {
@@ -193,10 +201,14 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly host: string;
   private readonly authService: ProviderAuthService;
   private readonly modelRouter: ModelRouter;
+  private conversationManager: ConversationManager | null = null;
+  private ownedSqliteStore: SQLiteConversationStore | null = null;
+  private readonly conversationOptions: ConversationServiceOptions;
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
+    this.conversationOptions = options.conversation ?? {};
 
     if (options.authService) {
       this.authService = options.authService;
@@ -206,6 +218,13 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.authService = services.authService;
       this.modelRouter = services.modelRouter;
     }
+  }
+
+  /**
+   * Returns the conversation manager if conversation services are active.
+   */
+  getConversationManager(): ConversationManager | null {
+    return this.conversationManager;
   }
 
   async start(): Promise<Result<void, DaemonError>> {
@@ -218,15 +237,27 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
+      this.initializeConversationServices();
+    } catch (error) {
+      log("warn", "Conversation services failed to initialize; daemon will start without them", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
       this.server = Bun.serve({
         port: this.port,
         hostname: this.host,
         fetch: this.handleRequest.bind(this),
       });
 
-      log("info", `Daemon HTTP server listening on ${this.host}:${this.port}`);
+      const capabilities = this.conversationManager
+        ? "with conversation services"
+        : "without conversation services";
+      log("info", `Daemon HTTP server listening on ${this.host}:${this.port} (${capabilities})`);
       return ok(undefined);
     } catch (error) {
+      this.cleanupConversationServices();
       return err({
         name: "DaemonError",
         code: "SERVER_START_FAILED",
@@ -243,6 +274,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     try {
       this.server.stop();
       this.server = null;
+      this.cleanupConversationServices();
       log("info", "Daemon HTTP server stopped");
       return ok(undefined);
     } catch (error) {
@@ -274,19 +306,18 @@ export class DaemonHttpServer implements DaemonManagedService {
     try {
       // Health check
       if (url.pathname === "/health") {
+        const capabilities = ["providers.auth", "providers.models"];
+        if (this.conversationManager) {
+          capabilities.push("conversations.crud", "messages.send", "stream.subscribe");
+        }
+
         const health: HealthResponse = {
           status: "ok",
           timestamp: new Date().toISOString(),
           version: "0.1.0",
           contractVersion: CONTRACT_VERSION,
           discovery: {
-            capabilities: [
-              "providers.auth",
-              "providers.models",
-              "conversations.crud",
-              "messages.send",
-              "stream.subscribe",
-            ],
+            capabilities,
             routes: {
               message: MESSAGE_ROUTE,
               conversations: CONVERSATIONS_ROUTE,
@@ -491,5 +522,44 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     log("warn", `Auth endpoint not found: ${method} ${path}`);
     return new Response("Not Found", { status: 404, headers: corsHeaders });
+  }
+
+  /**
+   * Initialize conversation services (SQLite store + manager).
+   * If a ConversationManager was injected via options, use it directly.
+   * Otherwise, create a SQLiteConversationStore and wrap it in a new manager.
+   */
+  private initializeConversationServices(): void {
+    if (this.conversationOptions.conversationManager) {
+      this.conversationManager = this.conversationOptions.conversationManager;
+      log("info", "Conversation services initialized (injected manager)");
+      return;
+    }
+
+    const store = new SQLiteConversationStore({
+      path: this.conversationOptions.sqliteStorePath,
+    });
+    this.ownedSqliteStore = store;
+    this.conversationManager = new ConversationManager(store);
+    log("info", "Conversation services initialized (SQLite store)", {
+      path: store.path,
+    });
+  }
+
+  /**
+   * Clean up conversation services owned by this server instance.
+   */
+  private cleanupConversationServices(): void {
+    if (this.ownedSqliteStore) {
+      try {
+        this.ownedSqliteStore.close();
+      } catch (error) {
+        log("warn", "Failed to close SQLite conversation store", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      this.ownedSqliteStore = null;
+    }
+    this.conversationManager = null;
   }
 }
