@@ -10,6 +10,7 @@ export interface StreamRegistrySocketData {
 export interface StreamRegistrySocket<TData extends StreamRegistrySocketData = StreamRegistrySocketData> {
   data: TData;
   send(message: string): unknown;
+  close(code?: number, reason?: string): void;
 }
 
 export function toStreamSubscriptionKey(target: StreamSubscriptionTarget): string {

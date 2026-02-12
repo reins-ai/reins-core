@@ -24,6 +24,7 @@ function createSocket(connectionId: string): TestSocket {
       sent.push(message);
       return message.length;
     },
+    close() {},
   };
 }
 
