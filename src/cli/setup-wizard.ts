@@ -36,7 +36,6 @@ export interface SetupWizardState {
     mode: UserProviderMode;
     activeProvider?: string;
     authMethod?: AuthMethod;
-    apiKey?: string;
     connectionVerified?: boolean;
   };
   name: string;
@@ -208,7 +207,6 @@ export function credentialEntryStep(state: SetupWizardState, apiKey: string): Se
       provider: {
         ...state.provider,
         mode: "byok",
-        apiKey: normalizedApiKey,
       },
       step: "connection-validation",
     },
@@ -285,7 +283,6 @@ export function toUserConfig(state: SetupWizardState): UserConfig {
     state.provider.mode === "byok"
       ? {
           mode: "byok",
-          apiKey: state.provider.apiKey,
           activeProvider: state.provider.activeProvider,
         }
       : {
@@ -597,6 +594,7 @@ export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promi
   const configPath = options.configPath ?? resolveUserConfigPath();
 
   let state = createInitialSetupState(options.reset ?? false);
+  let pendingApiKey: string | undefined;
 
   try {
     const welcome = welcomeStep(state);
@@ -648,6 +646,7 @@ export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promi
 
         if (state.step === "credential-entry") {
           const apiKey = await io.prompt("Enter your Anthropic API key: ", { masked: true });
+          pendingApiKey = apiKey.trim().length > 0 ? apiKey.trim() : undefined;
           const credentialResult = credentialEntryStep(state, apiKey);
           await emit(io, credentialResult.output);
           state = credentialResult.state;
@@ -656,7 +655,7 @@ export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promi
             await io.writeLine("Testing connection...");
 
             if (daemonOnline) {
-              const configureResult = await transport.configureApiKey("anthropic", state.provider.apiKey ?? "");
+              const configureResult = await transport.configureApiKey("anthropic", pendingApiKey ?? "");
               if (configureResult.success) {
                 const authStatus = await transport.getProviderAuthStatus("anthropic");
                 const validationResult = connectionValidationStep(state, authStatus.connectionState);
@@ -669,10 +668,51 @@ export async function runSetupWizard(options: RunSetupWizardOptions = {}): Promi
                 await emit(io, validationResult.output);
               }
             } else {
-              const validationResult = connectionValidationStep(state, "ready");
-              state = validationResult.state;
-              await emit(io, ["Daemon offline — skipping live validation. Connection will be verified on next daemon start."]);
+              await emit(io, [
+                "Daemon is offline — cannot verify connection.",
+                "Connection verification is required before setup can complete.",
+              ]);
+              const shouldContinueOffline = await io.confirm(
+                "Save partial config and verify later with `reins setup --reset`?",
+                true,
+              );
+              if (shouldContinueOffline) {
+                state = {
+                  ...state,
+                  provider: {
+                    ...state.provider,
+                    connectionVerified: false,
+                  },
+                  step: "name",
+                };
+                await emit(io, [
+                  "Credentials noted. Setup will be marked incomplete until connection is verified.",
+                  "After starting the daemon, run: reins setup --reset",
+                ]);
+              } else {
+                await emit(io, [
+                  "Please start the daemon first:",
+                  "  reins service install",
+                  "  reins service start",
+                  "Then re-run: reins setup",
+                ]);
+                return {
+                  status: "cancelled",
+                  configPath,
+                  state: {
+                    ...state,
+                    provider: {
+                      ...state.provider,
+                      connectionVerified: false,
+                    },
+                    step: "cancelled",
+                  },
+                  message: "Setup cancelled — daemon required for connection verification.",
+                };
+              }
             }
+
+            pendingApiKey = undefined;
           }
         } else if (state.step === "oauth-launch") {
           if (!daemonOnline) {

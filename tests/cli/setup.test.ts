@@ -106,7 +106,6 @@ describe("setup wizard state machine", () => {
     const credential = credentialEntryStep(state, "sk-ant-api03-test123");
     state = credential.state;
     expect(state.step).toBe("connection-validation");
-    expect(state.provider.apiKey).toBe("sk-ant-api03-test123");
 
     const validation = connectionValidationStep(state, "ready");
     state = validation.state;
@@ -232,7 +231,7 @@ describe("connection validation step", () => {
       step: "connection-validation",
       reset: false,
       daemonOnline: true,
-      provider: { mode: "byok", activeProvider: "anthropic", authMethod: "api_key", apiKey: "sk-test" },
+      provider: { mode: "byok", activeProvider: "anthropic", authMethod: "api_key" },
       name: "",
     };
 
@@ -247,7 +246,7 @@ describe("connection validation step", () => {
       step: "connection-validation",
       reset: false,
       daemonOnline: true,
-      provider: { mode: "byok", activeProvider: "anthropic", authMethod: "api_key", apiKey: "sk-bad" },
+      provider: { mode: "byok", activeProvider: "anthropic", authMethod: "api_key" },
       name: "",
     };
 
@@ -281,7 +280,6 @@ describe("toUserConfig", () => {
         mode: "byok",
         activeProvider: "anthropic",
         authMethod: "api_key",
-        apiKey: "sk-ant-test",
         connectionVerified: true,
       },
       name: "Maya",
@@ -291,7 +289,6 @@ describe("toUserConfig", () => {
       name: "Maya",
       provider: {
         mode: "byok",
-        apiKey: "sk-ant-test",
         activeProvider: "anthropic",
       },
       daemon: {
@@ -317,7 +314,6 @@ describe("toUserConfig", () => {
     });
 
     expect(config.provider.activeProvider).toBe("anthropic");
-    expect(config.provider.apiKey).toBeUndefined();
     expect(config.setupComplete).toBe(true);
   });
 
@@ -330,7 +326,6 @@ describe("toUserConfig", () => {
         mode: "byok",
         activeProvider: "anthropic",
         authMethod: "api_key",
-        apiKey: "sk-test",
         connectionVerified: false,
       },
       name: "Test",
@@ -379,7 +374,6 @@ describe("user config read/write", () => {
         name: "Taylor",
         provider: {
           mode: "byok",
-          apiKey: "sk-temp",
           activeProvider: "anthropic",
         },
         daemon: {
@@ -572,16 +566,17 @@ describe("full setup wizard flow", () => {
     expect(output.join("\n")).toContain("OAuth service unavailable");
   });
 
-  it("handles OAuth when daemon is offline", async () => {
+  it("handles OAuth when daemon is offline and falls back to partial API key config", async () => {
     const tempHome = await createTempDirectory();
     const configPath = join(tempHome, ".config", "reins", "config.json");
 
     const transport = createMockTransport();
     const { io, output } = createMockIO([
       "1",              // Choose Anthropic
-      "2",              // Choose OAuth (daemon offline)
+      "2",              // Choose OAuth (daemon offline — redirects to auth-method)
       "1",              // Fall back to API Key
-      "sk-ant-test123", // Enter API key
+      "sk-ant-test123", // Enter API key (daemon still offline — verification gate)
+      "y",              // Save partial config (deferred verification)
       "James",          // Name
       "y",              // Confirm
     ]);
@@ -594,7 +589,15 @@ describe("full setup wizard flow", () => {
     });
 
     expect(result.status).toBe("completed");
+    expect(result.state.provider.connectionVerified).toBe(false);
     expect(output.join("\n")).toContain("OAuth requires a running daemon");
+    expect(output.join("\n")).toContain("cannot verify connection");
+
+    const readResult = await readUserConfig({ filePath: configPath });
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok && readResult.value) {
+      expect(readResult.value.setupComplete).toBe(false);
+    }
   });
 
   it("skips provider setup and completes", async () => {
@@ -683,7 +686,7 @@ describe("full setup wizard flow", () => {
     expect(result.state.step).toBe("cancelled");
   });
 
-  it("skips live validation when daemon is offline for API key flow", async () => {
+  it("blocks setup completion when daemon is offline and user saves partial config", async () => {
     const tempHome = await createTempDirectory();
     const configPath = join(tempHome, ".config", "reins", "config.json");
 
@@ -692,6 +695,7 @@ describe("full setup wizard flow", () => {
       "1",              // Choose Anthropic
       "1",              // Choose API Key
       "sk-ant-test123", // Enter API key
+      "y",              // Save partial config (confirm deferred verification)
       "James",          // Name
       "y",              // Confirm
     ]);
@@ -704,7 +708,40 @@ describe("full setup wizard flow", () => {
     });
 
     expect(result.status).toBe("completed");
-    expect(output.join("\n")).toContain("Daemon offline");
-    expect(output.join("\n")).toContain("skipping live validation");
+    expect(result.state.provider.connectionVerified).toBe(false);
+    expect(output.join("\n")).toContain("cannot verify connection");
+    expect(output.join("\n")).toContain("marked incomplete");
+
+    const readResult = await readUserConfig({ filePath: configPath });
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok && readResult.value) {
+      expect(readResult.value.setupComplete).toBe(false);
+    }
+  });
+
+  it("cancels setup when daemon is offline and user declines partial config", async () => {
+    const tempHome = await createTempDirectory();
+    const configPath = join(tempHome, ".config", "reins", "config.json");
+
+    const transport = createMockTransport();
+    const { io, output } = createMockIO([
+      "1",              // Choose Anthropic
+      "1",              // Choose API Key
+      "sk-ant-test123", // Enter API key
+      "n",              // Decline partial config
+    ]);
+
+    const result = await runSetupWizard({
+      io,
+      transport,
+      configPath,
+      fetchHealth: async () => { throw new Error("offline"); },
+    });
+
+    expect(result.status).toBe("cancelled");
+    expect(result.state.provider.connectionVerified).toBe(false);
+    expect(result.message).toContain("daemon required");
+    expect(output.join("\n")).toContain("cannot verify connection");
+    expect(output.join("\n")).toContain("reins service start");
   });
 });
