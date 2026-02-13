@@ -53,3 +53,27 @@ export {
   type MergeUpdatedRecord,
   type SupersessionRecord,
 } from "./merge-engine";
+export {
+  ConsolidationRunner,
+  ConsolidationRunnerError,
+  DEFAULT_CONSOLIDATION_RUN_CONFIG,
+  DEFAULT_RETRY_POLICY,
+  type ConsolidationRunConfig,
+  type ConsolidationRunResult,
+  type ConsolidationRunStats,
+  type ConsolidationRunnerOptions,
+  type LtmWriter,
+  type RetryPolicy,
+} from "./consolidation-runner";
+export {
+  AUDIT_RUN_STATUSES,
+  ROLLBACK_ACTIONS,
+  ConsolidationAuditLog,
+  ConsolidationAuditLogError,
+  type AuditEntry,
+  type AuditQueryOptions,
+  type AuditRunStatus,
+  type AuditSummary,
+  type RollbackAction,
+  type RollbackMarker,
+} from "./consolidation-audit-log";
