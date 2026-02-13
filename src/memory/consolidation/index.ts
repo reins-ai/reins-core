@@ -33,3 +33,23 @@ export {
   type DistillationEngineOptions,
   type DistillationProvider,
 } from "./distillation-engine";
+export {
+  DEFAULT_IMPORTANCE_SCORER_CONFIG,
+  IMPORTANCE_LEVELS,
+  ImportanceScorer,
+  ImportanceScorerError,
+  type ImportanceLevel,
+  type ImportanceScorerConfig,
+} from "./importance-scorer";
+export {
+  MergeEngine,
+  MergeEngineError,
+  SimpleMemoryLookup,
+  type MemoryLookup,
+  type MergeConfig,
+  type MergeCreatedRecord,
+  type MergeResult,
+  type MergeSkippedFact,
+  type MergeUpdatedRecord,
+  type SupersessionRecord,
+} from "./merge-engine";
