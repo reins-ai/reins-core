@@ -14,4 +14,17 @@ export {
   type VectorSearchOptions,
   type VectorSearchResult,
 } from "./vector-retriever";
+export {
+  HybridMemorySearch,
+  HybridMemorySearchError,
+  type HybridMemorySearchOptions,
+  type HybridSearchOptions,
+  type HybridSearchResult,
+} from "./hybrid-memory-search";
+export {
+  ReciprocalRankFusionPolicy,
+  WeightedSumPolicy,
+  type FusionParams,
+  type RankingPolicy,
+} from "./ranking-policy";
 export { parseSearchQuery } from "./search-query-parser";
