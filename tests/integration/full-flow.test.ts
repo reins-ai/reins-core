@@ -12,13 +12,21 @@ import { CronScheduler } from "../../src/cron/scheduler";
 import { InMemoryMemoryStore } from "../../src/memory";
 import { PersonaRegistry, SystemPromptBuilder } from "../../src/persona";
 import { EncryptedCredentialStore } from "../../src/providers/credentials/store";
-import { MockProvider, ModelRouter, ProviderRegistry } from "../../src/providers";
+import { MockProvider } from "../../src/providers/mock";
+import { ModelRouter, ProviderRegistry } from "../../src/providers";
 import { MachineAuthService } from "../../src/security/machine-auth";
 import { StreamingResponse } from "../../src/streaming";
 import { SyncPolicy } from "../../src/sync/policy";
 import { ToolExecutor, ToolRegistry } from "../../src/tools";
 import { SessionRepository } from "../../src/conversation/session-repository";
-import type { ChatRequest, Model, Tool, ToolCall, ToolContext, ToolResult } from "../../src/types";
+import {
+  AgentLoop,
+  ToolPipeline,
+  createHarnessEventBus,
+  EventTransportAdapter,
+} from "../../src/harness";
+import type { LoopEvent, TransportFrame } from "../../src/harness";
+import type { ChatRequest, ContentBlock, Model, Provider, StreamEvent, Tool, ToolCall, ToolContext, ToolResult } from "../../src/types";
 
 const createModel = (providerId: string): Model => ({
   id: "mock-model-1",
@@ -415,6 +423,404 @@ describe("integration/full-flow contract hardening", () => {
       expect(allowedCredentialSync.ok).toBe(true);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("integration/full-flow: multi-turn tool conversation with event streaming", () => {
+  function createMockProvider(responses: Array<{
+    text?: string;
+    toolCalls?: ToolCall[];
+    finishReason?: string;
+  }>): Provider {
+    let callIndex = 0;
+    return {
+      config: { id: "mock-multi", name: "Mock Multi", type: "local" },
+      async chat() {
+        throw new Error("not used");
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        const response = responses[callIndex] ?? { text: "fallback" };
+        callIndex += 1;
+
+        if (response.text) {
+          yield { type: "token", content: response.text };
+        }
+
+        if (response.toolCalls) {
+          for (const tc of response.toolCalls) {
+            yield { type: "tool_call_start", toolCall: tc };
+          }
+        }
+
+        yield {
+          type: "done",
+          finishReason: response.finishReason ?? "stop",
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        };
+      },
+      async listModels() {
+        return [];
+      },
+      async validateConnection() {
+        return true;
+      },
+    };
+  }
+
+  const integrationToolContext: ToolContext = {
+    conversationId: "conv-integration",
+    userId: "user-integration",
+    workspaceId: "ws-integration",
+  };
+
+  it("complete multi-turn conversation with tools — events ordered end-to-end", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      definition: {
+        name: "get_file",
+        description: "Read a file",
+        parameters: { type: "object", properties: { path: { type: "string" } } },
+      },
+      async execute(args): Promise<ToolResult> {
+        return {
+          callId: "ignored",
+          name: "get_file",
+          result: `contents of ${args.path}`,
+        };
+      },
+    });
+
+    const provider = createMockProvider([
+      {
+        text: "Let me read that file.",
+        toolCalls: [{ id: "tc-1", name: "get_file", arguments: { path: "main.ts" } }],
+        finishReason: "tool_use",
+      },
+      {
+        text: "The file contains your main entry point.",
+      },
+    ]);
+
+    const loop = new AgentLoop({ maxSteps: 5 });
+    const events: LoopEvent[] = [];
+
+    for await (const event of loop.runWithProvider({
+      provider,
+      model: "test-model",
+      messages: [{ id: "u1", role: "user", content: "Read main.ts", createdAt: new Date() }],
+      toolExecutor: new ToolExecutor(registry),
+      toolContext: integrationToolContext,
+      tools: [registry.get("get_file")!.definition],
+    })) {
+      events.push(event);
+    }
+
+    // Should have: tokens, tool_call_start, tool_call_end, more tokens, done
+    const tokenEvents = events.filter((e) => e.type === "token");
+    const toolStartEvents = events.filter((e) => e.type === "tool_call_start");
+    const toolEndEvents = events.filter((e) => e.type === "tool_call_end");
+    const doneEvents = events.filter((e) => e.type === "done");
+
+    expect(tokenEvents.length).toBeGreaterThanOrEqual(1);
+    expect(toolStartEvents).toHaveLength(1);
+    expect(toolEndEvents).toHaveLength(1);
+    expect(doneEvents).toHaveLength(1);
+
+    // Done event should indicate natural completion
+    if (doneEvents[0]?.type === "done") {
+      expect(doneEvents[0].terminationReason).toBe("text_only_response");
+    }
+  });
+
+  it("tool errors do not break event stream — error propagated as tool result", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      definition: {
+        name: "failing_tool",
+        description: "Always fails",
+        parameters: { type: "object", properties: {} },
+      },
+      async execute(): Promise<ToolResult> {
+        throw new Error("Tool crashed");
+      },
+    });
+
+    const provider = createMockProvider([
+      {
+        toolCalls: [{ id: "tc-fail", name: "failing_tool", arguments: {} }],
+        finishReason: "tool_use",
+      },
+      {
+        text: "The tool failed, but I can continue.",
+      },
+    ]);
+
+    const loop = new AgentLoop({ maxSteps: 5 });
+    const events: LoopEvent[] = [];
+
+    for await (const event of loop.runWithProvider({
+      provider,
+      model: "test-model",
+      messages: [{ id: "u1", role: "user", content: "run", createdAt: new Date() }],
+      toolExecutor: new ToolExecutor(registry),
+      toolContext: integrationToolContext,
+      tools: [registry.get("failing_tool")!.definition],
+    })) {
+      events.push(event);
+    }
+
+    // Stream should complete without throwing
+    const doneEvents = events.filter((e) => e.type === "done");
+    expect(doneEvents).toHaveLength(1);
+
+    // tool_call_end should still be emitted with error
+    const toolEndEvents = events.filter((e) => e.type === "tool_call_end");
+    expect(toolEndEvents).toHaveLength(1);
+    if (toolEndEvents[0]?.type === "tool_call_end") {
+      expect(toolEndEvents[0].result.error).toBeDefined();
+    }
+  });
+
+  it("abort mid-conversation — partial results preserved, clean termination", async () => {
+    const controller = new AbortController();
+    const registry = new ToolRegistry();
+    registry.register({
+      definition: {
+        name: "slow_tool",
+        description: "Slow tool",
+        parameters: { type: "object", properties: {} },
+      },
+      async execute(): Promise<ToolResult> {
+        controller.abort("user-interrupt");
+        return { callId: "ignored", name: "slow_tool", result: "partial-output" };
+      },
+    });
+
+    const provider = createMockProvider([
+      {
+        toolCalls: [{ id: "tc-slow", name: "slow_tool", arguments: {} }],
+        finishReason: "tool_use",
+      },
+      {
+        text: "Should not reach this.",
+      },
+    ]);
+
+    const loop = new AgentLoop({ signal: controller.signal });
+    const events: LoopEvent[] = [];
+
+    for await (const event of loop.runWithProvider({
+      provider,
+      model: "test-model",
+      messages: [{ id: "u1", role: "user", content: "run", createdAt: new Date() }],
+      toolExecutor: new ToolExecutor(registry),
+      toolContext: integrationToolContext,
+      tools: [registry.get("slow_tool")!.definition],
+      abortSignal: controller.signal,
+    })) {
+      events.push(event);
+    }
+
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+    if (doneEvent?.type === "done") {
+      expect(doneEvent.terminationReason).toBe("aborted");
+      // Partial content should include the tool result
+      expect(Array.isArray(doneEvent.content)).toBe(true);
+      if (Array.isArray(doneEvent.content)) {
+        const toolResults = doneEvent.content.filter((b) => b.type === "tool_result");
+        expect(toolResults).toHaveLength(1);
+      }
+    }
+  });
+});
+
+describe("integration/full-flow: event transport with agent loop", () => {
+  const integrationToolContext: ToolContext = {
+    conversationId: "conv-transport",
+    userId: "user-transport",
+    workspaceId: "ws-transport",
+  };
+
+  it("event transport captures all tool lifecycle events from agent loop", async () => {
+    const eventBus = createHarnessEventBus();
+    const adapter = new EventTransportAdapter({ eventBus, replayLimit: 256 });
+    const frames: TransportFrame[] = [];
+
+    adapter.onFrame((frame) => { frames.push(frame); });
+    adapter.start();
+
+    const registry = new ToolRegistry();
+    registry.register({
+      definition: {
+        name: "echo",
+        description: "Echo tool",
+        parameters: { type: "object", properties: { msg: { type: "string" } } },
+      },
+      async execute(args): Promise<ToolResult> {
+        return { callId: "ignored", name: "echo", result: args.msg };
+      },
+    });
+
+    const pipeline = new ToolPipeline({ executor: new ToolExecutor(registry), eventBus });
+    const loop = new AgentLoop({ maxSteps: 5, toolPipeline: pipeline });
+
+    let callCount = 0;
+    await loop.run(
+      [{ role: "user", content: "Echo hello" }],
+      async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            type: "tool_calls" as const,
+            toolCalls: [{ id: "tc-1", name: "echo", arguments: { msg: "hello" } }],
+          };
+        }
+        return { type: "text" as const, content: "Done.", done: true };
+      },
+      integrationToolContext,
+    );
+
+    adapter.stop();
+
+    // Should have tool_call_start and tool_call_end frames
+    const startFrames = frames.filter((f) => f.event === "tool_call_start");
+    const endFrames = frames.filter((f) => f.event === "tool_call_end");
+    expect(startFrames).toHaveLength(1);
+    expect(endFrames).toHaveLength(1);
+
+    // Start should come before end
+    const startId = startFrames[0]?.id ?? 0;
+    const endId = endFrames[0]?.id ?? 0;
+    expect(startId).toBeLessThan(endId);
+
+    // Replay buffer should contain the same frames
+    const replay = adapter.getReplayBuffer();
+    expect(replay.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("long-running tool + multiple short tools — ordering correct in transport", async () => {
+    const eventBus = createHarnessEventBus();
+    const adapter = new EventTransportAdapter({ eventBus, replayLimit: 256 });
+    const frames: TransportFrame[] = [];
+
+    adapter.onFrame((frame) => { frames.push(frame); });
+    adapter.start();
+
+    const registry = new ToolRegistry();
+    registry.register({
+      definition: {
+        name: "tool.fast",
+        description: "Fast tool",
+        parameters: { type: "object", properties: { v: { type: "string" } } },
+      },
+      async execute(args): Promise<ToolResult> {
+        return { callId: "ignored", name: "tool.fast", result: args.v };
+      },
+    });
+
+    const pipeline = new ToolPipeline({ executor: new ToolExecutor(registry), eventBus });
+    const loop = new AgentLoop({ maxSteps: 10, toolPipeline: pipeline });
+
+    let callCount = 0;
+    await loop.run(
+      [{ role: "user", content: "Run many tools" }],
+      async () => {
+        callCount += 1;
+        if (callCount <= 5) {
+          return {
+            type: "tool_calls" as const,
+            toolCalls: [{ id: `tc-${callCount}`, name: "tool.fast", arguments: { v: `val-${callCount}` } }],
+          };
+        }
+        return { type: "text" as const, content: "All done.", done: true };
+      },
+      integrationToolContext,
+    );
+
+    adapter.stop();
+
+    const startFrames = frames.filter((f) => f.event === "tool_call_start");
+    const endFrames = frames.filter((f) => f.event === "tool_call_end");
+    expect(startFrames).toHaveLength(5);
+    expect(endFrames).toHaveLength(5);
+
+    // All sequence IDs should be monotonically increasing
+    const ids = frames.map((f) => f.id);
+    for (let i = 1; i < ids.length; i++) {
+      expect(ids[i]).toBeGreaterThan(ids[i - 1] ?? 0);
+    }
+
+    // Each start should come before its corresponding end
+    for (let i = 0; i < 5; i++) {
+      const startId = startFrames[i]?.id ?? 0;
+      const endId = endFrames[i]?.id ?? 0;
+      expect(startId).toBeLessThan(endId);
+    }
+  });
+
+  it("abort during rapid tool execution — clean stop with transport frames", async () => {
+    const eventBus = createHarnessEventBus();
+    const adapter = new EventTransportAdapter({ eventBus, replayLimit: 256 });
+    const frames: TransportFrame[] = [];
+
+    adapter.onFrame((frame) => { frames.push(frame); });
+    adapter.start();
+
+    const controller = new AbortController();
+    const registry = new ToolRegistry();
+    registry.register({
+      definition: {
+        name: "tool.abort",
+        description: "Abort tool",
+        parameters: { type: "object", properties: { v: { type: "string" } } },
+      },
+      async execute(args): Promise<ToolResult> {
+        return { callId: "ignored", name: "tool.abort", result: args.v };
+      },
+    });
+
+    const pipeline = new ToolPipeline({
+      executor: new ToolExecutor(registry),
+      eventBus,
+    });
+    const loop = new AgentLoop({
+      maxSteps: 20,
+      toolPipeline: pipeline,
+      signal: controller.signal,
+    });
+
+    let callCount = 0;
+    await loop.run(
+      [{ role: "user", content: "Run tools then abort" }],
+      async () => {
+        callCount += 1;
+        if (callCount === 4) {
+          controller.abort("stop");
+        }
+        return {
+          type: "tool_calls" as const,
+          toolCalls: [{ id: `tc-${callCount}`, name: "tool.abort", arguments: { v: `v-${callCount}` } }],
+        };
+      },
+      integrationToolContext,
+    );
+
+    adapter.stop();
+
+    // Should have some start/end pairs but not all 20
+    const startFrames = frames.filter((f) => f.event === "tool_call_start");
+    const endFrames = frames.filter((f) => f.event === "tool_call_end");
+
+    expect(startFrames.length).toBeGreaterThan(0);
+    expect(startFrames.length).toBeLessThanOrEqual(4);
+    expect(endFrames.length).toBeLessThanOrEqual(startFrames.length);
+
+    // All frame IDs should still be monotonically increasing
+    const ids = frames.map((f) => f.id);
+    for (let i = 1; i < ids.length; i++) {
+      expect(ids[i]).toBeGreaterThan(ids[i - 1] ?? 0);
     }
   });
 });

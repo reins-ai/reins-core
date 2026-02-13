@@ -1,8 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
 import { ToolError } from "../../src/errors";
-import { ToolRegistry } from "../../src/tools";
-import type { Tool, ToolContext, ToolResult } from "../../src/types";
+import {
+  getBuiltinSystemToolDefinitions,
+  getBuiltinToolDefinitions,
+  ToolRegistry,
+} from "../../src/tools";
+import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../../src/types";
 
 const testContext: ToolContext = {
   conversationId: "conv-1",
@@ -38,6 +42,24 @@ function createMockTool(
   };
 }
 
+function createMockToolWithDefinition(
+  definition: ToolDefinition,
+  handler: (args: Record<string, unknown>) => unknown = () => ({ ok: true }),
+): Tool {
+  return {
+    definition,
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      return {
+        callId: "tool-call",
+        name: definition.name,
+        result: handler(args),
+      };
+    },
+  };
+}
+
+const systemToolNames = ["bash", "read", "write", "edit", "glob", "grep", "ls"];
+
 describe("ToolRegistry", () => {
   it("registers and gets tools by name", () => {
     const registry = new ToolRegistry();
@@ -56,6 +78,79 @@ describe("ToolRegistry", () => {
     expect(() => registry.register(createMockTool("calendar.create", () => ({ ok: true })))).toThrow(
       ToolError,
     );
+  });
+
+  it("registers a system tool definition", () => {
+    const registry = new ToolRegistry();
+    const builtinDefinitions = getBuiltinToolDefinitions();
+    const bashDefinition = builtinDefinitions.find((definition) => definition.name === "bash");
+
+    expect(bashDefinition).toBeDefined();
+
+    registry.register(createMockToolWithDefinition(bashDefinition!));
+
+    expect(registry.has("bash")).toBe(true);
+  });
+
+  it("retrieves a system tool by name", () => {
+    const registry = new ToolRegistry();
+    const builtinDefinitions = getBuiltinToolDefinitions();
+    const readDefinition = builtinDefinitions.find((definition) => definition.name === "read");
+
+    expect(readDefinition).toBeDefined();
+
+    registry.register(createMockToolWithDefinition(readDefinition!));
+
+    expect(registry.get("read")?.definition.name).toBe("read");
+  });
+
+  it("lists all tools including system tools", () => {
+    const registry = new ToolRegistry();
+    const builtinDefinitions = getBuiltinToolDefinitions();
+
+    for (const name of systemToolNames) {
+      const definition = builtinDefinitions.find((toolDefinition) => toolDefinition.name === name);
+      expect(definition).toBeDefined();
+      registry.register(createMockToolWithDefinition(definition!));
+    }
+
+    expect(registry.list().map((tool) => tool.definition.name)).toEqual(systemToolNames);
+  });
+
+  it("prevents duplicate system tool registration by name", () => {
+    const registry = new ToolRegistry();
+    const builtinDefinitions = getBuiltinToolDefinitions();
+    const grepDefinition = builtinDefinitions.find((definition) => definition.name === "grep");
+
+    expect(grepDefinition).toBeDefined();
+
+    registry.register(createMockToolWithDefinition(grepDefinition!));
+
+    expect(() => registry.register(createMockToolWithDefinition(grepDefinition!))).toThrow(ToolError);
+  });
+
+  it("validates system tool definition structure", () => {
+    const systemDefinitions = getBuiltinSystemToolDefinitions();
+
+    expect(systemDefinitions).toHaveLength(systemToolNames.length);
+
+    for (const definition of systemDefinitions) {
+      expect(systemToolNames).toContain(definition.name);
+      expect(definition.description.length).toBeGreaterThan(0);
+      expect(definition.input_schema.type).toBe("object");
+      expect(Object.keys(definition.input_schema.properties).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("includes all builtin system tools in provider definitions", () => {
+    const definitions = getBuiltinToolDefinitions();
+
+    for (const name of systemToolNames) {
+      const definition = definitions.find((toolDefinition) => toolDefinition.name === name);
+      expect(definition).toBeDefined();
+      expect(definition?.parameters.type).toBe("object");
+      expect(Object.keys(definition?.parameters.properties ?? {}).length).toBeGreaterThan(0);
+    }
   });
 
   it("returns tools and definitions in registration order", () => {

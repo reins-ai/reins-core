@@ -5,10 +5,10 @@ import { Database } from "bun:sqlite";
 
 import { ConversationError } from "../errors";
 import { err, ok } from "../result";
-import type { Conversation, ConversationSummary, Message, MessageRole } from "../types";
+import { deserializeContent, getTextContent, type ContentBlock, type Conversation, type ConversationSummary, type Message, type MessageRole } from "../types";
 import type { ConversationStore, ConversationStoreResult, ListOptions } from "./store";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 interface SchemaVersionRow {
   version: number | null;
@@ -30,6 +30,7 @@ interface MessageRow {
   id: string;
   role: MessageRole;
   content: string;
+  content_blocks: string | null;
   provider: string | null;
   model: string | null;
   tool_calls_json: string | null;
@@ -139,6 +140,7 @@ export class SQLiteConversationStore implements ConversationStore {
             conversation_id,
             role,
             content,
+            content_blocks,
             provider,
             model,
             tool_calls_json,
@@ -148,7 +150,7 @@ export class SQLiteConversationStore implements ConversationStore {
             error_code,
             error_message
           )
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         `,
       );
 
@@ -161,11 +163,17 @@ export class SQLiteConversationStore implements ConversationStore {
         const errorMessage =
           typeof metadata?.errorMessage === "string" ? metadata.errorMessage : null;
 
+        const contentText = getTextContent(message.content);
+        const contentBlocks = Array.isArray(message.content)
+          ? JSON.stringify(message.content)
+          : null;
+
         insertMessage.run(
           message.id,
           conversation.id,
           message.role,
-          message.content,
+          contentText,
+          contentBlocks,
           provider,
           model,
           message.toolCalls ? JSON.stringify(message.toolCalls) : null,
@@ -222,6 +230,7 @@ export class SQLiteConversationStore implements ConversationStore {
               id,
               role,
               content,
+              content_blocks,
               provider,
               model,
               tool_calls_json,
@@ -273,10 +282,12 @@ export class SQLiteConversationStore implements ConversationStore {
           metadata.errorMessage = messageRow.error_message;
         }
 
+        const content = this.deserializeMessageContent(messageRow);
+
         messages.push({
           id: messageRow.id,
           role: messageRow.role,
-          content: messageRow.content,
+          content,
           toolCalls: toolCallsResult.value,
           createdAt: new Date(messageRow.created_at),
           metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
@@ -417,6 +428,7 @@ export class SQLiteConversationStore implements ConversationStore {
             conversation_id TEXT NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant', 'tool')),
             content TEXT NOT NULL,
+            content_blocks TEXT,
             provider TEXT,
             model TEXT,
             tool_calls_json TEXT,
@@ -439,11 +451,34 @@ export class SQLiteConversationStore implements ConversationStore {
         `);
       }
 
+      if (currentVersion < 2) {
+        if (currentVersion >= 1) {
+          this.connection.exec("ALTER TABLE messages ADD COLUMN content_blocks TEXT");
+        }
+
+        this.connection.exec(`
+          INSERT INTO schema_version(version, applied_at)
+          VALUES (2, '${this.now().toISOString()}');
+        `);
+      }
+
       this.connection.exec("COMMIT");
     } catch (error) {
       this.safeRollback();
       throw error;
     }
+  }
+
+  private deserializeMessageContent(row: MessageRow): string | ContentBlock[] {
+    if (row.content_blocks) {
+      try {
+        return JSON.parse(row.content_blocks) as ContentBlock[];
+      } catch {
+        // Corrupted content_blocks — fall through to content column
+      }
+    }
+
+    return deserializeContent(row.content);
   }
 
   private parseJson<T>(value: string | null): ConversationStoreResult<T | undefined> {

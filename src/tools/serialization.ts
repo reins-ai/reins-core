@@ -12,6 +12,7 @@ export interface SerializedToolResult {
   name: string;
   resultJson: string;
   error?: string;
+  errorDetailJson?: string;
 }
 
 export function serializeToolCall(toolCall: ToolCall): SerializedToolCall {
@@ -36,6 +37,10 @@ export function serializeToolResult(toolResult: ToolResult): SerializedToolResul
     name: toolResult.name,
     resultJson: safeStringify(toolResult.result, `tool result for ${toolResult.name}`),
     error: toolResult.error,
+    errorDetailJson:
+      toolResult.errorDetail === undefined
+        ? undefined
+        : safeStringify(toolResult.errorDetail, `tool error detail for ${toolResult.name}`),
   };
 }
 
@@ -45,6 +50,38 @@ export function deserializeToolResult(serialized: SerializedToolResult): ToolRes
     name: serialized.name,
     result: safeParse(serialized.resultJson, `tool result for ${serialized.name}`),
     error: serialized.error,
+    errorDetail:
+      serialized.errorDetailJson === undefined
+        ? undefined
+        : parseErrorDetail(serialized.errorDetailJson, `tool error detail for ${serialized.name}`),
+  };
+}
+
+function parseErrorDetail(value: string, label: string): ToolResult["errorDetail"] {
+  const parsed = safeParse(value, label);
+
+  if (!isPlainRecord(parsed)) {
+    throw new ToolError(`Invalid serialized object for ${label}`);
+  }
+
+  const message = parsed["message"];
+  const code = parsed["code"];
+  const retryable = parsed["retryable"];
+  const details = parsed["details"];
+
+  if (typeof message !== "string" || typeof code !== "string" || typeof retryable !== "boolean") {
+    throw new ToolError(`Invalid serialized object for ${label}`);
+  }
+
+  if (details !== undefined && !isPlainRecord(details)) {
+    throw new ToolError(`Invalid serialized object for ${label}`);
+  }
+
+  return {
+    code,
+    message,
+    retryable,
+    details,
   };
 }
 

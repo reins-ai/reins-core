@@ -1,4 +1,4 @@
-import type { Message } from "../types";
+import { serializeContent, type Message } from "../types";
 
 const CHARS_PER_TOKEN = 4;
 const MIN_TOKEN_COUNT = 1;
@@ -24,7 +24,9 @@ export function estimateTokens(text: string): number {
 export function estimateMessageTokens(message: Message): number {
   let total = MESSAGE_FRAMING_OVERHEAD + ROLE_TOKEN_COST;
 
-  total += estimateTokens(message.content);
+  total += estimateTokens(
+    typeof message.content === "string" ? message.content : serializeContent(message.content),
+  );
 
   if (message.toolCalls && message.toolCalls.length > 0) {
     total += estimateTokens(JSON.stringify(message.toolCalls));

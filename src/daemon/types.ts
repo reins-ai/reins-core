@@ -136,3 +136,50 @@ export class DaemonError extends ReinsError {
 
 export type DaemonResult<T> = Result<T, DaemonError>;
 export type DaemonFailure = Result<never, DaemonError | ReinsError>;
+
+export interface DaemonTokenStreamEvent {
+  type: "token";
+  content: string;
+}
+
+export interface DaemonToolCallStartStreamEvent {
+  type: "tool_call_start";
+  tool_use_id: string;
+  name: string;
+  input: Record<string, unknown>;
+  timestamp?: string;
+}
+
+export interface DaemonToolCallEndStreamEvent {
+  type: "tool_call_end";
+  tool_use_id: string;
+  result: unknown;
+  result_summary: string;
+  is_error?: boolean;
+  error?: string;
+  timestamp?: string;
+}
+
+export interface DaemonDoneStreamEvent {
+  type: "done";
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+  stepsUsed?: number;
+  reason?: string;
+}
+
+export interface DaemonErrorStreamEvent {
+  type: "error";
+  error: string;
+  code?: string;
+}
+
+export type DaemonStreamEvent =
+  | DaemonTokenStreamEvent
+  | DaemonToolCallStartStreamEvent
+  | DaemonToolCallEndStreamEvent
+  | DaemonDoneStreamEvent
+  | DaemonErrorStreamEvent;

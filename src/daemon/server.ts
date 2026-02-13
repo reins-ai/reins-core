@@ -15,7 +15,18 @@ import { ProviderRegistry } from "../providers/registry";
 import { ModelRouter } from "../providers/router";
 import { AuthError, ConversationError, ProviderError } from "../errors";
 import { err, ok, type Result } from "../result";
-import type { Conversation, Message } from "../types";
+import { getTextContent, serializeContent, type Conversation, type Message } from "../types";
+import { AgentLoop } from "../harness/agent-loop";
+import { ToolExecutor, ToolRegistry } from "../tools";
+import { EDIT_DEFINITION, GLOB_DEFINITION, GREP_DEFINITION, READ_DEFINITION, WRITE_DEFINITION } from "../tools/builtins";
+import { BashTool } from "../tools/system/bash";
+import { executeEdit } from "../tools/system/edit";
+import { GlobTool } from "../tools/system/glob";
+import { GrepTool } from "../tools/system/grep";
+import { LsTool } from "../tools/system/ls";
+import { ReadTool } from "../tools/system/read";
+import type { SystemToolArgs } from "../tools/system/types";
+import { executeWrite } from "../tools/system/write";
 import type {
   DaemonConversationServiceError,
   DaemonConversationRecordDto,
@@ -29,6 +40,13 @@ import type {
 } from "../types/conversation";
 import type { DaemonError, DaemonManagedService } from "./types";
 import { WsStreamRegistry, type StreamRegistrySocketData } from "./ws-stream-registry";
+import type { ContentBlock, Provider, TokenUsage, Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
+
+interface ActiveExecution {
+  conversationId: string;
+  assistantMessageId: string;
+  controller: AbortController;
+}
 
 /**
  * Stream lifecycle event emitted over WebSocket during provider generation.
@@ -50,6 +68,38 @@ export type StreamLifecycleEvent =
       conversationId: string;
       messageId: string;
       delta: string;
+      sequence: number;
+      timestamp: string;
+    }
+  | {
+      type: "tool_call_start";
+      conversationId: string;
+      messageId: string;
+      tool_use_id: string;
+      name: string;
+      input: Record<string, unknown>;
+      toolCall: {
+        id: string;
+        name: string;
+        arguments: Record<string, unknown>;
+      };
+      sequence: number;
+      timestamp: string;
+    }
+  | {
+      type: "tool_call_end";
+      conversationId: string;
+      messageId: string;
+      tool_use_id: string;
+      name: string;
+      result_summary: string;
+      is_error: boolean;
+      result: {
+        callId: string;
+        name: string;
+        result: unknown;
+        error?: string;
+      };
       sequence: number;
       timestamp: string;
     }
@@ -184,6 +234,8 @@ interface ServerOptions {
   authService?: ProviderAuthService;
   modelRouter?: ModelRouter;
   conversation?: ConversationServiceOptions;
+  toolDefinitions?: ToolDefinition[];
+  toolExecutor?: ToolExecutor;
 }
 
 interface ProviderExecutionContext {
@@ -259,12 +311,49 @@ type DaemonStreamLifecycleEnvelope = {
         timestamp: string;
       }
     | {
+        type: "tool_call_start";
+        conversationId: string;
+        messageId: string;
+        tool_use_id: string;
+        name: string;
+        input: Record<string, unknown>;
+        toolCall: {
+          id: string;
+          name: string;
+          arguments: Record<string, unknown>;
+        };
+        sequence: number;
+        timestamp: string;
+      }
+    | {
+        type: "tool_call_end";
+        conversationId: string;
+        messageId: string;
+        tool_use_id: string;
+        name: string;
+        result_summary: string;
+        is_error: boolean;
+        result: {
+          callId: string;
+          name: string;
+          result: unknown;
+          error?: string;
+        };
+        sequence: number;
+        timestamp: string;
+      }
+    | {
         type: "message_complete";
         conversationId: string;
         messageId: string;
         content: string;
         sequence: number;
         finishReason?: string;
+        usage?: {
+          inputTokens: number;
+          outputTokens: number;
+          totalTokens: number;
+        };
         timestamp: string;
       }
     | {
@@ -375,6 +464,25 @@ function parseInboundWebSocketMessage(payload: unknown): DaemonWebSocketInboundM
   return null;
 }
 
+function summarizeToolResult(result: ToolResult): string {
+  const value = typeof result.error === "string" && result.error.length > 0 ? result.error : result.result;
+  const serialized = typeof value === "string" ? value : safeSerialize(value);
+
+  if (serialized.length <= 300) {
+    return serialized;
+  }
+
+  return `${serialized.slice(0, 297)}...`;
+}
+
+function safeSerialize(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 export function isPostMessagePayload(payload: unknown): payload is DaemonPostMessageRequestDto {
   if (!payload || typeof payload !== "object") {
     return false;
@@ -456,6 +564,83 @@ function createDefaultServices(): DefaultServices {
   return { authService, modelRouter };
 }
 
+function createDefaultToolExecutor(): ToolExecutor {
+  const sandboxRoot = process.cwd();
+  const toolRegistry = new ToolRegistry();
+
+  toolRegistry.register(new BashTool(sandboxRoot));
+  toolRegistry.register(new LsTool(sandboxRoot));
+
+  const readTool = new ReadTool(sandboxRoot);
+  toolRegistry.register(createSystemToolAdapter({
+    name: READ_DEFINITION.name,
+    description: READ_DEFINITION.description,
+    parameters: READ_DEFINITION.input_schema,
+    execute: async (args, context) => {
+      const result = await readTool.execute(args, {
+        conversationId: "daemon",
+        userId: "daemon",
+        abortSignal: context.abortSignal,
+      });
+      return result.result;
+    },
+  }));
+
+  const globTool = new GlobTool(sandboxRoot);
+  toolRegistry.register(createSystemToolAdapter({
+    name: GLOB_DEFINITION.name,
+    description: GLOB_DEFINITION.description,
+    parameters: GLOB_DEFINITION.input_schema,
+    execute: async (args) => await globTool.execute(args),
+  }));
+
+  const grepTool = new GrepTool(sandboxRoot);
+  toolRegistry.register(createSystemToolAdapter({
+    name: GREP_DEFINITION.name,
+    description: GREP_DEFINITION.description,
+    parameters: GREP_DEFINITION.input_schema,
+    execute: async (args) => await grepTool.execute(args),
+  }));
+
+  toolRegistry.register(createSystemToolAdapter({
+    name: WRITE_DEFINITION.name,
+    description: WRITE_DEFINITION.description,
+    parameters: WRITE_DEFINITION.input_schema,
+    execute: async (args) => await executeWrite(args, sandboxRoot),
+  }));
+
+  toolRegistry.register(createSystemToolAdapter({
+    name: EDIT_DEFINITION.name,
+    description: EDIT_DEFINITION.description,
+    parameters: EDIT_DEFINITION.input_schema,
+    execute: async (args) => await executeEdit(args, sandboxRoot),
+  }));
+
+  return new ToolExecutor(toolRegistry);
+}
+
+function createSystemToolAdapter(options: {
+  name: string;
+  description: string;
+  parameters: ToolDefinition["parameters"];
+  execute: (args: SystemToolArgs, context: ToolContext) => Promise<unknown>;
+}): Tool {
+  return {
+    definition: {
+      name: options.name,
+      description: options.description,
+      parameters: options.parameters,
+    },
+    async execute(args, context): Promise<ToolResult> {
+      return {
+        callId: "system-tool",
+        name: options.name,
+        result: await options.execute(args as SystemToolArgs, context),
+      };
+    },
+  };
+}
+
 /**
  * Daemon HTTP server as a managed service.
  */
@@ -472,11 +657,17 @@ export class DaemonHttpServer implements DaemonManagedService {
   private ownedSqliteStore: SQLiteConversationStore | null = null;
   private readonly conversationOptions: ConversationServiceOptions;
   private readonly streamRegistry = new StreamRegistry();
+  private readonly activeExecutions = new Map<string, ActiveExecution>();
+  private readonly streamSubscriptionsByConnection = new Map<string, Set<string>>();
+  private readonly toolDefinitions: ToolDefinition[];
+  private readonly toolExecutor: ToolExecutor;
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
     this.conversationOptions = options.conversation ?? {};
+    this.toolDefinitions = options.toolDefinitions ?? [];
+    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor();
 
     if (options.authService) {
       this.authService = options.authService;
@@ -555,6 +746,13 @@ export class DaemonHttpServer implements DaemonManagedService {
     try {
       this.stopWebSocketHeartbeatLoop();
       this.wsRegistry.clear();
+      for (const execution of this.activeExecutions.values()) {
+        if (!execution.controller.signal.aborted) {
+          execution.controller.abort("daemon stopping");
+        }
+      }
+      this.activeExecutions.clear();
+      this.streamSubscriptionsByConnection.clear();
       this.server.stop();
       this.server = null;
       this.cleanupConversationServices();
@@ -664,6 +862,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
   private handleWebSocketOpen(socket: Bun.ServerWebSocket<DaemonWebSocketData>): void {
     socket.data.lastSeenAt = Date.now();
+    this.streamSubscriptionsByConnection.set(socket.data.connectionId, new Set());
   }
 
   private handleWebSocketMessage(
@@ -688,6 +887,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     if (message.type === "stream.subscribe") {
+      this.trackConnectionSubscription(socket.data.connectionId, message.conversationId, message.assistantMessageId);
       this.wsRegistry.subscribe(socket, {
         conversationId: message.conversationId,
         assistantMessageId: message.assistantMessageId,
@@ -707,6 +907,7 @@ export class DaemonHttpServer implements DaemonManagedService {
         conversationId: message.conversationId,
         assistantMessageId: message.assistantMessageId,
       });
+      this.untrackConnectionSubscription(socket.data.connectionId, message.conversationId, message.assistantMessageId);
       const ack: DaemonStreamControlAckEnvelope = {
         type: "stream.unsubscribed",
         conversationId: message.conversationId,
@@ -728,7 +929,13 @@ export class DaemonHttpServer implements DaemonManagedService {
   }
 
   private handleWebSocketClose(socket: Bun.ServerWebSocket<DaemonWebSocketData>): void {
+    const targets = this.listConnectionTargets(socket.data.connectionId);
     this.wsRegistry.removeConnection(socket);
+    this.streamSubscriptionsByConnection.delete(socket.data.connectionId);
+
+    for (const target of targets) {
+      this.abortExecutionIfUnobserved(target.conversationId, target.assistantMessageId, "stream client disconnected");
+    }
   }
 
   private sendWebSocketError(socket: Bun.ServerWebSocket<DaemonWebSocketData>, message: string): void {
@@ -744,6 +951,76 @@ export class DaemonHttpServer implements DaemonManagedService {
     socket.send(JSON.stringify(errorEnvelope));
   }
 
+  private trackConnectionSubscription(connectionId: string, conversationId: string, assistantMessageId: string): void {
+    const key = this.toExecutionKey(conversationId, assistantMessageId);
+    const streamKeys = this.streamSubscriptionsByConnection.get(connectionId) ?? new Set<string>();
+    streamKeys.add(key);
+    this.streamSubscriptionsByConnection.set(connectionId, streamKeys);
+  }
+
+  private untrackConnectionSubscription(connectionId: string, conversationId: string, assistantMessageId: string): void {
+    const streamKeys = this.streamSubscriptionsByConnection.get(connectionId);
+    if (!streamKeys) {
+      return;
+    }
+
+    streamKeys.delete(this.toExecutionKey(conversationId, assistantMessageId));
+    if (streamKeys.size === 0) {
+      this.streamSubscriptionsByConnection.delete(connectionId);
+    }
+  }
+
+  private listConnectionTargets(connectionId: string): Array<{ conversationId: string; assistantMessageId: string }> {
+    const streamKeys = this.streamSubscriptionsByConnection.get(connectionId);
+    if (!streamKeys || streamKeys.size === 0) {
+      return [];
+    }
+
+    const targets: Array<{ conversationId: string; assistantMessageId: string }> = [];
+    for (const streamKey of streamKeys) {
+      const target = this.fromExecutionKey(streamKey);
+      if (target) {
+        targets.push(target);
+      }
+    }
+
+    return targets;
+  }
+
+  private abortExecutionIfUnobserved(conversationId: string, assistantMessageId: string, reason: string): void {
+    if (this.wsRegistry.getSubscriptionCount({ conversationId, assistantMessageId }) > 0) {
+      return;
+    }
+
+    this.abortExecution(conversationId, assistantMessageId, reason);
+  }
+
+  private abortExecution(conversationId: string, assistantMessageId: string, reason: string): void {
+    const key = this.toExecutionKey(conversationId, assistantMessageId);
+    const execution = this.activeExecutions.get(key);
+    if (!execution || execution.controller.signal.aborted) {
+      return;
+    }
+
+    execution.controller.abort(reason);
+  }
+
+  private toExecutionKey(conversationId: string, assistantMessageId: string): string {
+    return `${conversationId}:${assistantMessageId}`;
+  }
+
+  private fromExecutionKey(key: string): { conversationId: string; assistantMessageId: string } | null {
+    const separatorIndex = key.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === key.length - 1) {
+      return null;
+    }
+
+    return {
+      conversationId: key.slice(0, separatorIndex),
+      assistantMessageId: key.slice(separatorIndex + 1),
+    };
+  }
+
   private startWebSocketHeartbeatLoop(): void {
     this.stopWebSocketHeartbeatLoop();
 
@@ -751,10 +1028,16 @@ export class DaemonHttpServer implements DaemonManagedService {
       const now = Date.now();
       this.wsRegistry.forEachSocket((socket) => {
         if (now - socket.data.lastSeenAt > WS_HEARTBEAT_TIMEOUT_MS) {
+          const connectionId = socket.data.connectionId;
+          const targets = this.listConnectionTargets(connectionId);
           try {
             socket.close(4002, "heartbeat-timeout");
           } finally {
             this.wsRegistry.removeConnection(socket);
+            this.streamSubscriptionsByConnection.delete(connectionId);
+            for (const target of targets) {
+              this.abortExecutionIfUnobserved(target.conversationId, target.assistantMessageId, "stream client disconnected");
+            }
           }
           return;
         }
@@ -1112,6 +1395,14 @@ export class DaemonHttpServer implements DaemonManagedService {
       return;
     }
 
+    const abortController = new AbortController();
+    const executionKey = this.toExecutionKey(context.conversationId, context.assistantMessageId);
+    this.activeExecutions.set(executionKey, {
+      conversationId: context.conversationId,
+      assistantMessageId: context.assistantMessageId,
+      controller: abortController,
+    });
+
     let resolvedProvider = context.requestedProvider;
     let resolvedModel = context.requestedModel;
     let sequence = -1;
@@ -1163,61 +1454,21 @@ export class DaemonHttpServer implements DaemonManagedService {
         context.assistantMessageId,
       );
 
-      let assistantContent = "";
-      let finishReason: string | undefined;
-      let didEmitStart = false;
-      let usage:
-        | {
-            inputTokens: number;
-            outputTokens: number;
-            totalTokens: number;
-          }
-        | undefined;
-
-      for await (const event of routeResult.value.provider.stream({
-        model: routeResult.value.model.id,
+      const generation = await this.generateAndStream({
+        context,
+        providerId: routeResult.value.provider.config.id,
+        modelCapabilities: routeResult.value.model.capabilities,
+        modelId: routeResult.value.model.id,
         messages: anthropicContext.messages,
         systemPrompt: anthropicContext.systemPrompt,
-      })) {
-        if (!didEmitStart) {
-          didEmitStart = true;
-          this.publishStreamLifecycleEvent({
-            type: "stream-event",
-            event: {
-              type: "message_start",
-              conversationId: context.conversationId,
-              messageId: context.assistantMessageId,
-              sequence: nextSequence(),
-              timestamp: new Date().toISOString(),
-            },
-          });
-        }
+        nextSequence,
+        provider: routeResult.value.provider,
+        abortSignal: abortController.signal,
+      });
 
-        if (event.type === "token") {
-          assistantContent += event.content;
-          this.publishStreamLifecycleEvent({
-            type: "stream-event",
-            event: {
-              type: "content_chunk",
-              conversationId: context.conversationId,
-              messageId: context.assistantMessageId,
-              chunk: event.content,
-              sequence: nextSequence(),
-              timestamp: new Date().toISOString(),
-            },
-          });
-          continue;
-        }
-
-        if (event.type === "error") {
-          throw event.error;
-        }
-
-        if (event.type === "done") {
-          finishReason = event.finishReason;
-          usage = event.usage;
-        }
-      }
+      const assistantContent = generation.content;
+      const finishReason = generation.finishReason;
+      const usage = generation.usage;
 
       await this.conversationManager.completeAssistantMessage({
         conversationId: context.conversationId,
@@ -1235,9 +1486,10 @@ export class DaemonHttpServer implements DaemonManagedService {
           type: "message_complete",
           conversationId: context.conversationId,
           messageId: context.assistantMessageId,
-          content: assistantContent,
+          content: getTextContent(assistantContent),
           sequence: nextSequence(),
           finishReason,
+          usage,
           timestamp: new Date().toISOString(),
         },
       });
@@ -1247,7 +1499,7 @@ export class DaemonHttpServer implements DaemonManagedService {
         assistantMessageId: context.assistantMessageId,
         provider: resolvedProvider,
         model: resolvedModel,
-        contentLength: assistantContent.length,
+        contentLength: getTextContent(assistantContent).length,
       });
     } catch (error) {
       const failure = this.toProviderExecutionFailure(error);
@@ -1256,7 +1508,259 @@ export class DaemonHttpServer implements DaemonManagedService {
         provider: resolvedProvider,
         model: resolvedModel,
       }, errorSequence);
+    } finally {
+      this.activeExecutions.delete(executionKey);
     }
+  }
+
+  private async generateAndStream(options: {
+    context: ProviderExecutionContext;
+    providerId: string;
+    modelCapabilities: string[];
+    modelId: string;
+    messages: Message[];
+    systemPrompt?: string;
+    nextSequence: () => number;
+    provider: Provider;
+    abortSignal?: AbortSignal;
+  }): Promise<{
+    content: string | ContentBlock[];
+    finishReason?: string;
+    usage?: TokenUsage;
+  }> {
+    const useHarness = this.shouldUseHarness(options.providerId, options.modelCapabilities);
+
+    log("info", "Generation routing decision", {
+      providerId: options.providerId,
+      modelCapabilities: options.modelCapabilities,
+      toolDefinitionsCount: this.toolDefinitions.length,
+      useHarness,
+    });
+
+    if (useHarness) {
+      return await this.generateAndStreamWithHarness(options);
+    }
+
+    return await this.generateAndStreamSingleTurn(options);
+  }
+
+  private shouldUseHarness(providerId: string, modelCapabilities: string[]): boolean {
+    if (this.toolDefinitions.length === 0) {
+      return false;
+    }
+
+    if (!modelCapabilities.includes("tool_use")) {
+      return false;
+    }
+
+    // Accept any Anthropic provider variant (anthropic, anthropic-oauth, byok-anthropic)
+    return providerId.includes("anthropic");
+  }
+
+  private async generateAndStreamWithHarness(options: {
+    context: ProviderExecutionContext;
+    providerId: string;
+    modelCapabilities: string[];
+    modelId: string;
+    messages: Message[];
+    systemPrompt?: string;
+    nextSequence: () => number;
+    provider: Provider;
+    abortSignal?: AbortSignal;
+  }): Promise<{
+    content: string | ContentBlock[];
+    finishReason?: string;
+    usage?: TokenUsage;
+  }> {
+    const loop = new AgentLoop({ signal: options.abortSignal });
+    let didEmitStart = false;
+
+    for await (const event of loop.runWithProvider({
+      provider: options.provider,
+      model: options.modelId,
+      messages: options.messages,
+      systemPrompt: options.systemPrompt,
+      tools: this.toolDefinitions,
+      toolExecutor: this.toolExecutor,
+      toolContext: {
+        conversationId: options.context.conversationId,
+        userId: "daemon",
+        abortSignal: options.abortSignal,
+      },
+      abortSignal: options.abortSignal,
+    })) {
+      if (!didEmitStart && event.type !== "error") {
+        didEmitStart = true;
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "message_start",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+
+      if (event.type === "token") {
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "content_chunk",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            chunk: event.content,
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        continue;
+      }
+
+      if (event.type === "tool_call_start") {
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "tool_call_start",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            tool_use_id: event.toolCall.id,
+            name: event.toolCall.name,
+            input: event.toolCall.arguments,
+            toolCall: {
+              id: event.toolCall.id,
+              name: event.toolCall.name,
+              arguments: event.toolCall.arguments,
+            },
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        continue;
+      }
+
+      if (event.type === "tool_call_end") {
+        const isError = typeof event.result.error === "string" && event.result.error.length > 0;
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "tool_call_end",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            tool_use_id: event.result.callId,
+            name: event.result.name,
+            result_summary: summarizeToolResult(event.result),
+            is_error: isError,
+            result: {
+              callId: event.result.callId,
+              name: event.result.name,
+              result: event.result.result,
+              error: event.result.error,
+            },
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        continue;
+      }
+
+      if (event.type === "error") {
+        throw event.error;
+      }
+
+      if (event.type === "done") {
+        return {
+          content: event.content,
+          finishReason: event.finishReason,
+          usage: event.usage,
+        };
+      }
+    }
+
+    return {
+      content: "",
+      finishReason: "stop",
+    };
+  }
+
+  private async generateAndStreamSingleTurn(options: {
+    context: ProviderExecutionContext;
+    modelCapabilities: string[];
+    modelId: string;
+    messages: Message[];
+    systemPrompt?: string;
+    nextSequence: () => number;
+    provider: Provider;
+    abortSignal?: AbortSignal;
+  }): Promise<{
+    content: string;
+    finishReason?: string;
+    usage?: TokenUsage;
+  }> {
+    let assistantContent = "";
+    let finishReason: string | undefined;
+    let didEmitStart = false;
+    let usage:
+      | {
+          inputTokens: number;
+          outputTokens: number;
+          totalTokens: number;
+        }
+      | undefined;
+
+    for await (const event of options.provider.stream({
+      model: options.modelId,
+      messages: options.messages,
+      systemPrompt: options.systemPrompt,
+      tools: this.toolDefinitions.length > 0 ? this.toolDefinitions : undefined,
+      signal: options.abortSignal,
+    })) {
+      if (!didEmitStart) {
+        didEmitStart = true;
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "message_start",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+
+      if (event.type === "token") {
+        assistantContent += event.content ?? "";
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "content_chunk",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            chunk: event.content ?? "",
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        continue;
+      }
+
+      if (event.type === "error") {
+        throw event.error ?? new Error("Provider stream failed");
+      }
+
+      if (event.type === "done") {
+        finishReason = event.finishReason;
+        usage = event.usage;
+      }
+    }
+
+    return {
+      content: assistantContent,
+      finishReason,
+      usage,
+    };
   }
 
   private mapConversationToAnthropicContext(
@@ -1269,7 +1773,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     for (const message of orderedMessages) {
       if (message.role === "system") {
-        const systemText = message.content.trim();
+        const systemText = getTextContent(message.content).trim();
         if (systemText.length > 0) {
           systemParts.push(systemText);
         }
@@ -1291,10 +1795,93 @@ export class DaemonHttpServer implements DaemonManagedService {
       throw new ConversationError("Conversation has no user or assistant history to send to provider");
     }
 
+    // Expand assistant messages that contain tool_result blocks from the
+    // harness agent loop.  The harness stores all accumulated content blocks
+    // (text, tool_use, tool_result) as a single assistant message.  Anthropic
+    // requires tool_result blocks to be in user messages, so we split them:
+    //   assistant: [text?, tool_use blocks]
+    //   user:      [tool_result blocks]
+    //   assistant: [remaining text blocks]
+    const expandedMessages = this.expandToolResultMessages(chatMessages);
+
     return {
       systemPrompt: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
-      messages: chatMessages,
+      messages: expandedMessages,
     };
+  }
+
+  /**
+   * Expand assistant messages containing tool_result blocks into the proper
+   * Anthropic message sequence: assistant (tool_use) → user (tool_result) →
+   * assistant (text).
+   *
+   * This handles the case where the harness agent loop stores its full
+   * multi-turn content (text + tool_use + tool_result + final text) as a
+   * single assistant message.
+   */
+  private expandToolResultMessages(messages: Message[]): Message[] {
+    const result: Message[] = [];
+
+    for (const message of messages) {
+      if (
+        message.role !== "assistant" ||
+        typeof message.content === "string" ||
+        !message.content.some((block) => block.type === "tool_result")
+      ) {
+        result.push(message);
+        continue;
+      }
+
+      // Split content blocks into segments: each segment is a group of blocks
+      // that belong to the same message role.
+      //   - text, tool_use → assistant
+      //   - tool_result    → user
+      const blocks = message.content;
+      let currentAssistantBlocks: typeof blocks = [];
+      let currentToolResultBlocks: typeof blocks = [];
+
+      const flushAssistant = () => {
+        if (currentAssistantBlocks.length > 0) {
+          result.push({
+            ...message,
+            id: `${message.id}_asst_${result.length}`,
+            role: "assistant",
+            content: currentAssistantBlocks,
+          });
+          currentAssistantBlocks = [];
+        }
+      };
+
+      const flushToolResults = () => {
+        if (currentToolResultBlocks.length > 0) {
+          result.push({
+            ...message,
+            id: `${message.id}_user_${result.length}`,
+            role: "user",
+            content: currentToolResultBlocks,
+          });
+          currentToolResultBlocks = [];
+        }
+      };
+
+      for (const block of blocks) {
+        if (block.type === "tool_result") {
+          // Flush any pending assistant blocks before starting tool results
+          flushAssistant();
+          currentToolResultBlocks.push(block);
+        } else {
+          // Flush any pending tool results before continuing assistant blocks
+          flushToolResults();
+          currentAssistantBlocks.push(block);
+        }
+      }
+
+      // Flush remaining blocks
+      flushAssistant();
+      flushToolResults();
+    }
+
+    return result;
   }
 
   private async persistProviderExecutionFailure(
@@ -1380,7 +1967,41 @@ export class DaemonHttpServer implements DaemonManagedService {
               sequence: envelope.event.sequence,
               timestamp: envelope.event.timestamp,
             }
-          : envelope.event.type === "message_complete"
+          : envelope.event.type === "tool_call_start"
+            ? {
+                type: "tool_call_start",
+                conversationId: envelope.event.conversationId,
+                messageId: envelope.event.messageId,
+                tool_use_id: envelope.event.tool_use_id,
+                name: envelope.event.name,
+                input: envelope.event.input,
+                toolCall: {
+                  id: envelope.event.toolCall.id,
+                  name: envelope.event.toolCall.name,
+                  arguments: envelope.event.toolCall.arguments,
+                },
+                sequence: envelope.event.sequence,
+                timestamp: envelope.event.timestamp,
+              }
+            : envelope.event.type === "tool_call_end"
+              ? {
+                  type: "tool_call_end",
+                  conversationId: envelope.event.conversationId,
+                  messageId: envelope.event.messageId,
+                  tool_use_id: envelope.event.tool_use_id,
+                  name: envelope.event.name,
+                  result_summary: envelope.event.result_summary,
+                  is_error: envelope.event.is_error,
+                  result: {
+                    callId: envelope.event.result.callId,
+                    name: envelope.event.result.name,
+                    result: envelope.event.result.result,
+                    error: envelope.event.result.error,
+                  },
+                  sequence: envelope.event.sequence,
+                  timestamp: envelope.event.timestamp,
+                }
+              : envelope.event.type === "message_complete"
             ? {
                 type: "message_complete",
                 conversationId: envelope.event.conversationId,
@@ -1389,6 +2010,7 @@ export class DaemonHttpServer implements DaemonManagedService {
                 sequence: envelope.event.sequence,
                 timestamp: envelope.event.timestamp,
                 finishReason: envelope.event.finishReason,
+                usage: envelope.event.usage,
               }
             : {
                 type: "error",
@@ -1664,7 +2286,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       return {
         id: message.id,
         role: message.role as DaemonMessageRole,
-        content: message.content,
+        content: serializeContent(message.content),
         createdAt: message.createdAt.toISOString(),
         provider: typeof metadata?.provider === "string" ? metadata.provider : undefined,
         model: typeof metadata?.model === "string" ? metadata.model : undefined,

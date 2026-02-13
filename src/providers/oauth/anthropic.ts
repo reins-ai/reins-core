@@ -3,6 +3,7 @@ import { AuthError } from "../../errors";
 import { err, ok, type Result } from "../../result";
 import { StreamTransformer } from "../../streaming";
 import { generateId } from "../../conversation/id";
+import type { ContentBlock } from "../../types/conversation";
 import type { StreamEvent } from "../../types/streaming";
 import type {
   ChatRequest,
@@ -12,7 +13,7 @@ import type {
   ProviderConfig,
   TokenUsage,
 } from "../../types/provider";
-import type { ToolCall } from "../../types/tool";
+import type { ToolCall, ToolDefinition } from "../../types/tool";
 import { OAuthFlowHandler } from "./flow";
 import { OAuthProvider } from "./provider";
 import type {
@@ -30,10 +31,30 @@ import type {
   ProviderMetadata,
 } from "./types";
 import { persistOAuthTokens, type OAuthTokenStore } from "./token-store";
+import {
+  claudeCodeHeaders,
+  transformUrl,
+  transformSystemPrompt,
+  prefixToolDefinitions,
+  prefixMessageToolNames,
+  stripToolPrefixFromPayload,
+  createStrippingStream,
+} from "./claude-code-transform";
+
+interface AnthropicContentBlock {
+  type: "text" | "tool_use" | "tool_result";
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string;
+  is_error?: boolean;
+}
 
 interface AnthropicMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | AnthropicContentBlock[];
 }
 
 interface AnthropicOAuthProviderOptions {
@@ -52,8 +73,6 @@ interface PendingOAuthSession {
 }
 
 const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
-const OAUTH_BETA_HEADERS = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
-const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -143,23 +162,52 @@ function mapFinishReason(value: unknown): ChatResponse["finishReason"] {
   return "stop";
 }
 
-function oauthHeaders(token: string, withJsonContentType = true): Record<string, string> {
-  const headers: Record<string, string> = {
-    authorization: `Bearer ${token}`,
-    "anthropic-version": "2023-06-01",
-    "anthropic-beta": OAUTH_BETA_HEADERS,
-    "user-agent": OAUTH_USER_AGENT,
-  };
-
-  if (withJsonContentType) {
-    headers["content-type"] = "application/json";
-  }
-
-  return headers;
-}
+// claudeCodeHeaders() from claude-code-transform.ts replaces the old oauthHeaders().
+// It includes the full set of beta flags required for Claude Code credential acceptance.
 
 function resolveAnthropicApiModelId(model: string): string {
   return model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
+}
+
+/**
+ * Maps internal ToolDefinition[] to Anthropic API tool format.
+ * See: https://docs.anthropic.com/en/docs/build-with-claude/tool-use
+ */
+function mapTools(
+  tools: ToolDefinition[] | undefined,
+): { name: string; description: string; input_schema: ToolDefinition["parameters"] }[] | undefined {
+  if (!tools || tools.length === 0) {
+    return undefined;
+  }
+
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.parameters,
+  }));
+}
+
+function mapContentBlocks(blocks: ContentBlock[]): AnthropicContentBlock[] {
+  return blocks.map((block) => {
+    switch (block.type) {
+      case "text":
+        return { type: "text" as const, text: block.text };
+      case "tool_use":
+        return {
+          type: "tool_use" as const,
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        };
+      case "tool_result":
+        return {
+          type: "tool_result" as const,
+          tool_use_id: block.tool_use_id,
+          content: block.content,
+          ...(block.is_error ? { is_error: true } : {}),
+        };
+    }
+  });
 }
 
 function mapMessages(request: ChatRequest): AnthropicMessage[] {
@@ -170,7 +218,9 @@ function mapMessages(request: ChatRequest): AnthropicMessage[] {
     )
     .map((message) => ({
       role: message.role,
-      content: message.content,
+      content: typeof message.content === "string"
+        ? message.content
+        : mapContentBlocks(message.content),
     }));
 }
 
@@ -484,15 +534,23 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   public async chat(request: ChatRequest): Promise<ChatResponse> {
     const token = await this.getAccessToken();
     const apiModel = resolveAnthropicApiModelId(request.model);
-    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+
+    // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
+    const mappedTools = mapTools(request.tools);
+    const url = transformUrl(`${this.baseUrl}/v1/messages`);
+
+    const response = await fetch(url, {
       method: "POST",
-      headers: oauthHeaders(token),
+      headers: claudeCodeHeaders(token),
       body: JSON.stringify({
         model: apiModel,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: request.maxTokens ?? 1024,
+        system: transformSystemPrompt(request.systemPrompt),
+        messages: prefixMessageToolNames(mapMessages(request)),
+        max_tokens: request.maxTokens ?? 16_384,
         temperature: request.temperature,
+        ...(prefixToolDefinitions(mappedTools)
+          ? { tools: prefixToolDefinitions(mappedTools) }
+          : {}),
       }),
     });
 
@@ -502,10 +560,13 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       );
     }
 
-    const payload = (await response.json()) as unknown;
-    if (!isRecord(payload)) {
+    const rawPayload = (await response.json()) as unknown;
+    if (!isRecord(rawPayload)) {
       throw new ProviderError("Anthropic chat response payload is invalid");
     }
+
+    // Strip mcp_ prefix from tool names in response
+    const payload = stripToolPrefixFromPayload(rawPayload);
 
     const finishReason = mapFinishReason(payload.stop_reason);
     const usage = parseUsage(payload.usage);
@@ -525,16 +586,24 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   public async *stream(request: ChatRequest): AsyncIterable<StreamEvent> {
     const token = await this.getAccessToken();
     const apiModel = resolveAnthropicApiModelId(request.model);
-    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+
+    // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
+    const mappedTools = mapTools(request.tools);
+    const url = transformUrl(`${this.baseUrl}/v1/messages`);
+
+    const response = await fetch(url, {
       method: "POST",
-      headers: oauthHeaders(token),
+      headers: claudeCodeHeaders(token),
       body: JSON.stringify({
         model: apiModel,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: request.maxTokens ?? 1024,
+        system: transformSystemPrompt(request.systemPrompt),
+        messages: prefixMessageToolNames(mapMessages(request)),
+        max_tokens: request.maxTokens ?? 16_384,
         temperature: request.temperature,
         stream: true,
+        ...(prefixToolDefinitions(mappedTools)
+          ? { tools: prefixToolDefinitions(mappedTools) }
+          : {}),
       }),
     });
 
@@ -544,7 +613,9 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       );
     }
 
-    for await (const event of StreamTransformer.fromSSE(response.body)) {
+    // Wrap the SSE stream to strip mcp_ prefix from tool names
+    const strippedStream = createStrippingStream(response.body);
+    for await (const event of StreamTransformer.fromSSE(strippedStream)) {
       yield event;
     }
   }
@@ -558,7 +629,7 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       const token = await this.getAccessToken();
       const response = await fetch(`${this.baseUrl}/v1/models`, {
         method: "GET",
-        headers: oauthHeaders(token, false),
+        headers: claudeCodeHeaders(token, false),
       });
       return response.ok;
     } catch {

@@ -52,6 +52,11 @@ function truncateMessageContent(message: Message, maxMessageTokens: number): Mes
     maxMessageTokens - MESSAGE_BASE_OVERHEAD - toolCallTokens - toolResultTokens,
   );
 
+  // Tool block messages are not truncated — they must be preserved intact
+  if (typeof message.content !== "string") {
+    return message;
+  }
+
   return {
     ...message,
     content: truncateTextToBudget(message.content, contentBudget),

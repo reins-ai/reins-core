@@ -15,6 +15,14 @@ export interface ToolResult {
   name: string;
   result: unknown;
   error?: string;
+  errorDetail?: ToolErrorDetail;
+}
+
+export interface ToolErrorDetail {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
 }
 
 export interface Tool {
@@ -26,6 +34,7 @@ export interface ToolContext {
   conversationId: string;
   userId: string;
   workspaceId?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface JsonSchema {

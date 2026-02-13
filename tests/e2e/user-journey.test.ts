@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { ConversationManager, InMemoryConversationStore } from "../../src/conversation";
 import { AuthError } from "../../src/errors";
-import { MockProvider, ProviderAuthService } from "../../src/providers";
+import { MockProvider } from "../../src/providers/mock";
+import { ProviderAuthService } from "../../src/providers";
 import { AnthropicApiKeyStrategy } from "../../src/providers/byok/anthropic-auth-strategy";
 import { EncryptedCredentialStore } from "../../src/providers/credentials/store";
 import { ModelRouter } from "../../src/providers/router";

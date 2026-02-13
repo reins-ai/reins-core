@@ -1,18 +1,42 @@
 import type { ToolCall, ToolContext, ToolResult } from "../types";
 import { ToolRegistry } from "./registry";
+import {
+  SYSTEM_TOOL_ERROR_CODES,
+  SystemToolExecutionError,
+  toSystemToolError,
+  toSystemToolErrorDetail,
+} from "./system/types";
 
 export class ToolExecutor {
   constructor(private readonly registry: ToolRegistry) {}
 
-  async execute(toolCall: ToolCall, context: ToolContext): Promise<ToolResult> {
+  async execute(
+    toolCall: ToolCall,
+    context: ToolContext,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<ToolResult> {
+    const abortSignal = options?.abortSignal ?? context.abortSignal;
+
+    if (abortSignal?.aborted) {
+      return this.createErrorResult(toolCall, "Tool execution aborted");
+    }
+
     const tool = this.registry.get(toolCall.name);
 
     if (!tool) {
-      return this.createErrorResult(toolCall, `Tool not found: ${toolCall.name}`);
+      return this.createErrorResult(toolCall, SystemToolExecutionError.toolNotFound(toolCall.name));
     }
 
     try {
-      const rawResult = await tool.execute(toolCall.arguments, context);
+      const executionContext: ToolContext = {
+        ...context,
+        ...(abortSignal ? { abortSignal } : {}),
+      };
+      const rawResult = await tool.execute(toolCall.arguments, executionContext);
+
+      if (abortSignal?.aborted && typeof rawResult.error !== "string") {
+        return this.createErrorResult(toolCall, "Tool execution aborted");
+      }
 
       return {
         ...rawResult,
@@ -20,13 +44,31 @@ export class ToolExecutor {
         name: toolCall.name,
       };
     } catch (error) {
-      return this.createErrorResult(toolCall, this.formatError(error));
+      return this.createErrorResult(toolCall, error);
     }
   }
 
-  async executeMany(toolCalls: ToolCall[], context: ToolContext): Promise<ToolResult[]> {
+  async executeMany(
+    toolCalls: ToolCall[],
+    context: ToolContext,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<ToolResult[]> {
+    const abortSignal = options?.abortSignal ?? context.abortSignal;
+
+    if (abortSignal) {
+      const results: ToolResult[] = [];
+      for (const toolCall of toolCalls) {
+        if (abortSignal.aborted) {
+          break;
+        }
+
+        results.push(await this.execute(toolCall, context, { abortSignal }));
+      }
+      return results;
+    }
+
     const settledResults = await Promise.allSettled(
-      toolCalls.map((toolCall) => this.execute(toolCall, context)),
+      toolCalls.map((toolCall) => this.execute(toolCall, context, { abortSignal })),
     );
 
     return settledResults.map((settledResult, index) => {
@@ -36,15 +78,20 @@ export class ToolExecutor {
 
       const toolCall = toolCalls[index];
       if (!toolCall) {
+        const normalizedError = toSystemToolError(
+          settledResult.reason,
+          SYSTEM_TOOL_ERROR_CODES.TOOL_EXECUTION_FAILED,
+        );
         return {
           callId: "unknown",
           name: "unknown",
           result: null,
-          error: this.formatError(settledResult.reason),
+          error: normalizedError.message,
+          errorDetail: toSystemToolErrorDetail(normalizedError),
         };
       }
 
-      return this.createErrorResult(toolCall, this.formatError(settledResult.reason));
+      return this.createErrorResult(toolCall, settledResult.reason);
     });
   }
 
@@ -54,17 +101,14 @@ export class ToolExecutor {
     timeoutMs: number,
   ): Promise<ToolResult> {
     if (timeoutMs <= 0) {
-      return this.createErrorResult(
-        toolCall,
-        `Tool execution timed out after ${Math.max(0, timeoutMs)}ms`,
-      );
+      return this.createErrorResult(toolCall, SystemToolExecutionError.timeout(Math.max(0, timeoutMs)));
     }
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     const timeoutPromise = new Promise<ToolResult>((resolve) => {
       timeoutId = setTimeout(() => {
-        resolve(this.createErrorResult(toolCall, `Tool execution timed out after ${timeoutMs}ms`));
+        resolve(this.createErrorResult(toolCall, SystemToolExecutionError.timeout(timeoutMs)));
       }, timeoutMs);
     });
 
@@ -77,24 +121,15 @@ export class ToolExecutor {
     return result;
   }
 
-  private createErrorResult(toolCall: ToolCall, errorMessage: string): ToolResult {
+  private createErrorResult(toolCall: ToolCall, error: unknown): ToolResult {
+    const normalizedError = toSystemToolError(error, SYSTEM_TOOL_ERROR_CODES.TOOL_EXECUTION_FAILED);
+
     return {
       callId: toolCall.id,
       name: toolCall.name,
       result: null,
-      error: errorMessage,
+      error: normalizedError.message,
+      errorDetail: toSystemToolErrorDetail(normalizedError),
     };
-  }
-
-  private formatError(error: unknown): string {
-    if (error instanceof Error && error.message.trim().length > 0) {
-      return error.message;
-    }
-
-    if (typeof error === "string" && error.trim().length > 0) {
-      return error;
-    }
-
-    return "Tool execution failed";
   }
 }

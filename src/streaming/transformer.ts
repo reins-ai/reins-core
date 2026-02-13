@@ -144,6 +144,45 @@ function normalizeParsedEvent(payload: unknown): StreamEvent[] {
     return [{ type: "done", usage, finishReason }];
   }
 
+  if (type === "message_start") {
+    const messageId = asString(payload.messageId);
+    if (messageId === undefined) {
+      return [];
+    }
+
+    return [
+      {
+        type: "message_start",
+        messageId,
+        conversationId: asString(payload.conversationId),
+        model: asString(payload.model),
+      },
+    ];
+  }
+
+  if (type === "compaction") {
+    const summary = asString(payload.summary);
+    const beforeTokenEstimate = payload.beforeTokenEstimate;
+    const afterTokenEstimate = payload.afterTokenEstimate;
+
+    if (
+      summary === undefined ||
+      typeof beforeTokenEstimate !== "number" ||
+      typeof afterTokenEstimate !== "number"
+    ) {
+      return [{ type: "error", error: new Error("Invalid compaction event payload") }];
+    }
+
+    return [
+      {
+        type: "compaction",
+        summary,
+        beforeTokenEstimate,
+        afterTokenEstimate,
+      },
+    ];
+  }
+
   if (type === "content_block_delta") {
     const delta = payload.delta;
     if (isRecord(delta)) {
@@ -164,7 +203,11 @@ function normalizeParsedEvent(payload: unknown): StreamEvent[] {
   }
 
   if (type === "message_stop") {
-    return [{ type: "done", usage: createDefaultUsage(), finishReason: "stop" }];
+    // Anthropic sends message_stop after message_delta. The message_delta already
+    // emits a "done" event with the correct stop_reason (e.g. "tool_use") and usage.
+    // Emitting a second "done" here would overwrite the correct finishReason with "stop",
+    // breaking tool_use detection in the agent loop.
+    return [];
   }
 
   if (type === "message_start" || type === "content_block_start" || type === "content_block_stop" || type === "ping") {
@@ -234,11 +277,87 @@ async function* readTextChunks(
 }
 
 export class StreamTransformer {
+  /**
+   * Tracks pending Anthropic tool_use content blocks during streaming.
+   * Anthropic streams tool calls across three events:
+   *   1. content_block_start  — announces the tool (id, name)
+   *   2. content_block_delta  — streams partial JSON input (input_json_delta)
+   *   3. content_block_stop   — signals the block is complete
+   *
+   * We accumulate the partial JSON and emit a single `tool_call_start`
+   * StreamEvent when the block finishes.
+   */
+  private static handleAnthropicToolBlock(
+    payload: Record<string, unknown>,
+    pendingTools: Map<number, { id: string; name: string; inputJson: string }>,
+  ): StreamEvent[] | null {
+    const type = payload.type;
+    const index = typeof payload.index === "number" ? payload.index : -1;
+
+    // content_block_start with type tool_use — register a pending tool
+    if (type === "content_block_start") {
+      const contentBlock = isRecord(payload.content_block) ? payload.content_block : null;
+      if (contentBlock && contentBlock.type === "tool_use") {
+        const id = asString(contentBlock.id) ?? "";
+        const name = asString(contentBlock.name) ?? "unknown_tool";
+        if (index >= 0) {
+          pendingTools.set(index, { id, name, inputJson: "" });
+        }
+        return []; // consumed — no StreamEvent yet
+      }
+      // Non-tool content_block_start (e.g. text) — let normalizeParsedEvent handle it
+      return null;
+    }
+
+    // content_block_delta with input_json_delta — accumulate partial JSON
+    if (type === "content_block_delta" && index >= 0 && pendingTools.has(index)) {
+      const delta = isRecord(payload.delta) ? payload.delta : null;
+      if (delta && delta.type === "input_json_delta") {
+        const partialJson = asString(delta.partial_json) ?? "";
+        const pending = pendingTools.get(index)!;
+        pending.inputJson += partialJson;
+        return []; // consumed — still accumulating
+      }
+      // Other delta types for a tool block (shouldn't happen, but handle gracefully)
+      return null;
+    }
+
+    // content_block_stop — finalize and emit tool_call_start
+    if (type === "content_block_stop" && index >= 0 && pendingTools.has(index)) {
+      const pending = pendingTools.get(index)!;
+      pendingTools.delete(index);
+
+      let parsedArgs: Record<string, unknown> = {};
+      if (pending.inputJson.length > 0) {
+        try {
+          parsedArgs = JSON.parse(pending.inputJson) as Record<string, unknown>;
+        } catch {
+          parsedArgs = { _raw: pending.inputJson };
+        }
+      }
+
+      return [
+        {
+          type: "tool_call_start",
+          toolCall: {
+            id: pending.id,
+            name: pending.name,
+            arguments: parsedArgs,
+          },
+        },
+      ];
+    }
+
+    // Not a tool-related event we handle
+    return null;
+  }
+
   public static async *fromSSE(
     stream: ReadableStream<Uint8Array>,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
     let buffer = "";
+    const pendingTools = new Map<number, { id: string; name: string; inputJson: string }>();
 
     for await (const chunk of readTextChunks(stream, signal)) {
       if (signal?.aborted) {
@@ -255,8 +374,15 @@ export class StreamTransformer {
 
         const lines = block.split(/\r?\n/);
         const dataLines: string[] = [];
+        let eventName: string | null = null;
 
         for (const line of lines) {
+          if (line.startsWith("event:")) {
+            const parsedEventName = line.slice(6).trim();
+            eventName = parsedEventName.length > 0 ? parsedEventName : null;
+            continue;
+          }
+
           if (line.startsWith("data:")) {
             dataLines.push(line.slice(5).trimStart());
           }
@@ -277,7 +403,28 @@ export class StreamTransformer {
 
         try {
           const parsed = JSON.parse(payloadText) as unknown;
-          for (const event of normalizeParsedEvent(parsed)) {
+          const normalizedPayload =
+            eventName && isRecord(parsed) && asString(parsed.type) === undefined
+              ? { ...parsed, type: eventName }
+              : parsed;
+
+          // Try Anthropic tool_use block handling first (stateful)
+          if (isRecord(normalizedPayload)) {
+            const toolEvents = StreamTransformer.handleAnthropicToolBlock(
+              normalizedPayload,
+              pendingTools,
+            );
+            if (toolEvents !== null) {
+              for (const event of toolEvents) {
+                yield event;
+              }
+              match = separator.exec(buffer);
+              continue;
+            }
+          }
+
+          // Fall through to stateless normalization for all other events
+          for (const event of normalizeParsedEvent(normalizedPayload)) {
             yield event;
           }
         } catch (error) {

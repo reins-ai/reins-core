@@ -13,9 +13,10 @@ import { ProviderAuthService } from "../../src/providers/auth-service";
 import { MockProvider } from "../../src/providers/mock";
 import { ProviderRegistry } from "../../src/providers/registry";
 import { ModelRouter } from "../../src/providers/router";
+import { ToolExecutor, ToolRegistry } from "../../src/tools";
 import type { DaemonManagedService } from "../../src/daemon/types";
 import type { ConversationAuthCheck } from "../../src/providers/auth-service";
-import type { Model } from "../../src/types";
+import type { ChatRequest, ContentBlock, Model, Provider, StreamEvent, Tool, ToolContext, ToolDefinition, ToolResult } from "../../src/types";
 
 /**
  * Create a minimal auth service stub that satisfies the DaemonHttpServer
@@ -69,6 +70,180 @@ function createMockModel(id: string, provider: string): Model {
   };
 }
 
+function createToolDefinition(name: string): ToolDefinition {
+  return {
+    name,
+    description: `Tool ${name}`,
+    parameters: {
+      type: "object",
+      properties: {
+        value: { type: "string" },
+      },
+    },
+  };
+}
+
+function createToolExecutorForTests(name: string): ToolExecutor {
+  const registry = new ToolRegistry();
+  const tool: Tool = {
+    definition: createToolDefinition(name),
+    async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
+      return {
+        callId: "tool-call",
+        name,
+        result: {
+          ok: true,
+          value: args["value"] ?? null,
+        },
+      };
+    },
+  };
+
+  registry.register(tool);
+  return new ToolExecutor(registry);
+}
+
+function createHarnessTwoTurnProvider(modelId: string): Provider {
+  let turn = 0;
+
+  return {
+    config: {
+      id: "anthropic",
+      name: "Anthropic",
+      type: "oauth",
+    },
+    async chat() {
+      throw new Error("chat is not used in this test provider");
+    },
+    async *stream(_request: ChatRequest): AsyncIterable<StreamEvent> {
+      turn += 1;
+
+      if (turn === 1) {
+        yield { type: "token", content: "P" };
+        yield {
+          type: "tool_call_start",
+          toolCall: {
+            id: "tool-1",
+            name: "notes.create",
+            arguments: { value: "draft" },
+          },
+        };
+        yield {
+          type: "done",
+          usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+          finishReason: "tool_use",
+        };
+        return;
+      }
+
+      yield { type: "token", content: "Q" };
+      yield {
+        type: "done",
+        usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
+        finishReason: "stop",
+      };
+    },
+    async listModels(): Promise<Model[]> {
+      return [
+        {
+          ...createMockModel(modelId, "anthropic"),
+          capabilities: ["chat", "streaming", "tool_use"],
+        },
+      ];
+    },
+    async validateConnection(): Promise<boolean> {
+      return true;
+    },
+  };
+}
+
+function createLongRunningToolProvider(modelId: string): Provider {
+  let turn = 0;
+
+  return {
+    config: {
+      id: "anthropic",
+      name: "Anthropic",
+      type: "oauth",
+    },
+    async chat() {
+      throw new Error("chat is not used in this test provider");
+    },
+    async *stream(_request: ChatRequest): AsyncIterable<StreamEvent> {
+      turn += 1;
+
+      if (turn === 1) {
+        yield {
+          type: "tool_call_start",
+          toolCall: {
+            id: "tool-long",
+            name: "notes.create",
+            arguments: { value: "draft" },
+          },
+        };
+        yield {
+          type: "done",
+          usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+          finishReason: "tool_use",
+        };
+        return;
+      }
+
+      yield { type: "token", content: "should-not-run" };
+      yield {
+        type: "done",
+        usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
+        finishReason: "stop",
+      };
+    },
+    async listModels(): Promise<Model[]> {
+      return [
+        {
+          ...createMockModel(modelId, "anthropic"),
+          capabilities: ["chat", "streaming", "tool_use"],
+        },
+      ];
+    },
+    async validateConnection(): Promise<boolean> {
+      return true;
+    },
+  };
+}
+
+function createSlowAbortAwareToolExecutor(name: string): ToolExecutor {
+  const registry = new ToolRegistry();
+  const tool: Tool = {
+    definition: createToolDefinition(name),
+    async execute(_args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 500) {
+        if (context.abortSignal?.aborted) {
+          return {
+            callId: "tool-call",
+            name,
+            result: "aborted",
+            error: "Tool execution aborted",
+          };
+        }
+
+        await Bun.sleep(10);
+      }
+
+      return {
+        callId: "tool-call",
+        name,
+        result: {
+          ok: true,
+          value: "completed",
+        },
+      };
+    },
+  };
+
+  registry.register(tool);
+  return new ToolExecutor(registry);
+}
+
 function createConversationReadyStubAuthService(check: ConversationAuthCheck): ProviderAuthService {
   const unimplemented = async () => {
     throw new Error("Not implemented in test auth stub");
@@ -96,7 +271,7 @@ async function waitForAssistantCompletion(options: {
   conversationId: string;
   assistantMessageId: string;
   timeoutMs?: number;
-}): Promise<{ status: string; content: string; metadata: Record<string, unknown> | undefined }> {
+}): Promise<{ status: string; content: string | ContentBlock[]; metadata: Record<string, unknown> | undefined }> {
   const timeoutMs = options.timeoutMs ?? 1500;
   const startedAt = Date.now();
 
@@ -437,6 +612,230 @@ describe("DaemonHttpServer provider execution pipeline", () => {
     expect(completion.content).toBe("Provider completed response");
     expect(completion.metadata?.provider).toBe("anthropic");
     expect(completion.metadata?.model).toBe("anthropic-test-model");
+  });
+
+  it("delegates tool-capable turns to harness loop and completes in one request", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(createHarnessTwoTurnProvider("anthropic-tool-model"));
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+      toolDefinitions: [createToolDefinition("notes.create")],
+      toolExecutor: createToolExecutorForTests("notes.create"),
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const capture = new StreamEventCapture(server.getStreamRegistry());
+
+    const postResponse = await fetch(`http://localhost:${testPort - 1}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Create a note then summarize",
+        provider: "anthropic",
+        model: "anthropic-tool-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    const completion = await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+    expect(completion.status).toBe("complete");
+
+    const streamEvents = await capture.waitForTerminal(payload.conversationId, payload.assistantMessageId);
+    expect(streamEvents.map((event) => event.type)).toEqual([
+      "message_start",
+      "content_chunk",
+      "tool_call_start",
+      "tool_call_end",
+      "content_chunk",
+      "message_complete",
+    ]);
+
+    const conversation = await manager.load(payload.conversationId);
+    const assistant = conversation.messages.find((message) => message.id === payload.assistantMessageId);
+    expect(Array.isArray(assistant?.content)).toBe(true);
+
+    if (assistant && Array.isArray(assistant.content)) {
+      expect(assistant.content.some((block) => block.type === "tool_use")).toBe(true);
+      expect(assistant.content.some((block) => block.type === "tool_result")).toBe(true);
+      expect(assistant.content.some((block) => block.type === "text" && block.text === "Q")).toBe(true);
+    }
+  });
+
+  it("aborts harness execution when websocket subscriber disconnects", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(createLongRunningToolProvider("anthropic-tool-abort-model"));
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+      toolDefinitions: [createToolDefinition("notes.create")],
+      toolExecutor: createSlowAbortAwareToolExecutor("notes.create"),
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const capture = new StreamEventCapture(server.getStreamRegistry());
+
+    const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Create note and continue",
+        provider: "anthropic",
+        model: "anthropic-tool-abort-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("websocket open timeout")), 500);
+      ws.addEventListener("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      ws.addEventListener("error", () => {
+        clearTimeout(timeout);
+        reject(new Error("websocket failed to open"));
+      }, { once: true });
+    });
+
+    ws.send(JSON.stringify({
+      type: "stream.subscribe",
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    }));
+
+    await new Promise<void>((resolve, reject) => {
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        const events = capture.eventsFor(payload.conversationId, payload.assistantMessageId);
+        if (events.some((event) => event.type === "tool_call_start")) {
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+
+        if (Date.now() - startedAt > 1200) {
+          clearInterval(timer);
+          reject(new Error("Timed out waiting for tool_call_start"));
+        }
+      }, 20);
+    });
+
+    ws.close();
+
+    const completion = await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+      timeoutMs: 2500,
+    });
+
+    expect(completion.status).toBe("complete");
+    expect(completion.metadata?.finishReason).toBe("aborted");
+
+    const events = await capture.waitForTerminal(payload.conversationId, payload.assistantMessageId, 2500);
+    expect(events.some((event) => event.type === "message_complete")).toBe(true);
+    const contentChunks = events.filter((event) => event.type === "content_chunk");
+    expect(contentChunks).toHaveLength(0);
+
+    const activeExecutions = (server as unknown as { activeExecutions: Map<string, unknown> }).activeExecutions;
+    expect(activeExecutions.size).toBe(0);
+  });
+
+  it("keeps single-turn behavior when harness routing is not enabled", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+        responseContent: "Legacy path",
+      }),
+    );
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const postResponse = await fetch(`http://localhost:${testPort - 1}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "No tools",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    const completion = await waitForAssistantCompletion({
+      manager,
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    });
+
+    expect(completion.status).toBe("complete");
+    expect(completion.content).toBe("Legacy path");
   });
 
   it("maps auth preflight failures to safe assistant error metadata", async () => {

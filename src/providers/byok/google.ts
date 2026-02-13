@@ -1,6 +1,6 @@
 import { ProviderError } from "../../errors";
 import { generateId } from "../../conversation/id";
-import type { Message } from "../../types/conversation";
+import { getTextContent, type Message } from "../../types/conversation";
 import type { StreamEvent } from "../../types/streaming";
 import type {
   ChatRequest,
@@ -70,10 +70,13 @@ function mapRole(role: Message["role"]): GeminiContent["role"] {
 
 function toGeminiRequest(request: ChatRequest): GeminiRequest {
   const systemPrefix = request.systemPrompt ? `${request.systemPrompt}\n\n` : "";
-  const contents = request.messages.map((message, index) => ({
-    role: mapRole(message.role),
-    parts: [{ text: index === 0 ? `${systemPrefix}${message.content}` : message.content }],
-  }));
+  const contents = request.messages.map((message, index) => {
+    const text = getTextContent(message.content);
+    return {
+      role: mapRole(message.role),
+      parts: [{ text: index === 0 ? `${systemPrefix}${text}` : text }],
+    };
+  });
 
   return {
     contents,

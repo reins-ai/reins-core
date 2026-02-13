@@ -49,6 +49,7 @@ export interface ChatRequest {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
+  signal?: AbortSignal;
 }
 
 export interface ChatResponse {
