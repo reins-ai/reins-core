@@ -35,3 +35,14 @@ export {
   type DocumentIndexerFileSystem,
   type IndexedChunk,
 } from "./document-indexer";
+export {
+  DEFAULT_WATCH_CONFIG,
+  DocumentWatchService,
+  FILE_CHANGE_TYPES,
+  type FileChangeEvent,
+  type FileChangeType,
+  type FileSystemSnapshot,
+  type ProcessResult,
+  type WatchServiceConfig,
+  type WatchServiceFileSystem,
+} from "./document-watch-service";
