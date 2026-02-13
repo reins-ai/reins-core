@@ -299,15 +299,22 @@ describe("OAuthFlowHandler", () => {
         },
       };
 
+      const registry = new ProviderRegistry();
+      registry.registerCapabilities("test-oauth-provider", {
+        authModes: ["oauth"],
+        requiresAuth: true,
+        userConfigurable: true,
+      });
+
       const service = new ProviderAuthService({
         store,
-        registry: new ProviderRegistry(),
+        registry,
         oauthStrategies: {
-          anthropic: strategy,
+          "test-oauth-provider": strategy,
         },
       });
 
-      const initiateResult = await service.initiateOAuth("anthropic", {
+      const initiateResult = await service.initiateOAuth("test-oauth-provider", {
         localCallback: {
           host: "127.0.0.1",
           callbackPath: "/oauth/callback",
@@ -327,7 +334,7 @@ describe("OAuthFlowHandler", () => {
       expect(redirectUri).toContain("127.0.0.1");
       expect(state).toBeTruthy();
 
-      const completePromise = service.completeOAuthCallback("anthropic");
+      const completePromise = service.completeOAuthCallback("test-oauth-provider");
       const callbackResponse = await originalFetch(
         `${redirectUri}?code=service-runtime-code&state=${state}`,
       );
