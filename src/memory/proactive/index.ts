@@ -38,3 +38,19 @@ export {
   type PatternPromotion,
   type PatternType,
 } from "./pattern-detector";
+export {
+  ProactiveMemorySettingsManager,
+  ProactiveMemorySettingsError,
+  PROACTIVE_FEATURES,
+  DEFAULT_PROACTIVE_MEMORY_SETTINGS,
+  DEFAULT_PRIMING_SETTINGS,
+  DEFAULT_BRIEFING_SETTINGS,
+  DEFAULT_NUDGE_SETTINGS,
+  DEFAULT_PATTERN_SETTINGS,
+  type ProactiveFeature,
+  type ProactiveMemorySettings,
+  type PrimingSettings,
+  type BriefingSettings,
+  type NudgeSettings,
+  type PatternSettings,
+} from "./proactive-memory-settings";
