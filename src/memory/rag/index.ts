@@ -22,3 +22,16 @@ export {
   type ChunkMetadata,
   type DocumentChunk,
 } from "./markdown-chunker";
+export {
+  DEFAULT_BATCH_CONFIG,
+  INDEX_JOB_STATUSES,
+  type IndexBatchConfig,
+  type IndexJob,
+  type IndexJobStatus,
+} from "./document-index-jobs";
+export {
+  DocumentIndexer,
+  type DocumentIndexerDependencies,
+  type DocumentIndexerFileSystem,
+  type IndexedChunk,
+} from "./document-indexer";
