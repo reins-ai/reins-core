@@ -34,3 +34,18 @@ export {
   type ConversationRetrievalServiceOptions,
   type Logger as ConversationRetrievalLogger,
 } from "./conversation-retrieval-service";
+export {
+  UnifiedMemoryRetrieval,
+  UnifiedMemoryRetrievalError,
+  type DocumentSearchProvider,
+  type DocumentSearchResult,
+  type MemorySearchProvider,
+  type MemorySearchResult,
+  type UnifiedDocumentResultMetadata,
+  type UnifiedMemoryResultMetadata,
+  type UnifiedMemoryRetrievalDependencies,
+  type UnifiedResultSource,
+  type UnifiedSearchConfig,
+  type UnifiedSearchQuery,
+  type UnifiedSearchResult,
+} from "./unified-memory-retrieval";
