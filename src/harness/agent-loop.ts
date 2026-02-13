@@ -1,13 +1,22 @@
-import type { ToolCall, ToolContext } from "../types";
+import type { ContentBlock, Message, Provider, ToolCall, ToolContext, ToolResult, TokenUsage } from "../types";
+import type { ToolDefinition } from "../types";
 import type { TypedEventBus } from "./event-bus";
 import type { HarnessEventMap } from "./events";
 import { DoomLoopGuard } from "./doom-loop-guard";
 import { PermissionChecker } from "./permissions";
 import type { ToolPipeline, ToolPipelineResult } from "./tool-pipeline";
+import type { ToolExecutor } from "../tools";
 
 const DEFAULT_MAX_STEPS = 25;
 const STEP_LIMIT_MESSAGE = "Step limit reached. Tools are now disabled. Please provide a final response.";
 const ABORTED_MESSAGE = "Agent loop aborted";
+
+export type LoopTerminationReason =
+  | "text_only_response"
+  | "max_steps_reached"
+  | "doom_loop_detected"
+  | "aborted"
+  | "error";
 
 export interface AgentLoopOptions {
   maxSteps?: number;
@@ -48,7 +57,34 @@ export interface AgentLoopResult {
   stepsUsed: number;
   limitReached: boolean;
   aborted: boolean;
+  terminationReason: LoopTerminationReason;
 }
+
+export interface ProviderLoopOptions {
+  provider: Provider;
+  model: string;
+  messages: Message[];
+  toolExecutor: ToolExecutor;
+  toolContext: ToolContext;
+  tools?: ToolDefinition[];
+  systemPrompt?: string;
+  abortSignal?: AbortSignal;
+}
+
+export type LoopEvent =
+  | { type: "token"; content: string }
+  | { type: "tool_call_start"; toolCall: ToolCall }
+  | { type: "tool_call_end"; result: ToolResult }
+  | {
+      type: "done";
+      usage?: TokenUsage;
+      finishReason: string;
+      terminationReason: LoopTerminationReason;
+      content: string | ContentBlock[];
+      limitReached: boolean;
+      stepsUsed: number;
+    }
+  | { type: "error"; error: Error };
 
 export class AgentLoop {
   private readonly maxSteps: number;
@@ -66,11 +102,18 @@ export class AgentLoop {
     const messages = initialMessages.map((message) => ({ ...message }));
     let stepsUsed = 0;
     let limitReached = false;
+    this.options.doomLoopGuard?.reset();
 
     while (true) {
       if (this.isAborted()) {
         await this.emitAborted();
-        return { messages, stepsUsed, limitReached, aborted: true };
+        return {
+          messages,
+          stepsUsed,
+          limitReached,
+          aborted: true,
+          terminationReason: "aborted",
+        };
       }
 
       const stepResult = await stepFn(messages, {
@@ -80,7 +123,13 @@ export class AgentLoop {
 
       if (this.isAborted()) {
         await this.emitAborted();
-        return { messages, stepsUsed, limitReached, aborted: true };
+        return {
+          messages,
+          stepsUsed,
+          limitReached,
+          aborted: true,
+          terminationReason: "aborted",
+        };
       }
 
       if (stepResult.type === "error") {
@@ -88,7 +137,13 @@ export class AgentLoop {
 
         const errorMessage = stepResult.error?.message ?? stepResult.content ?? "Step function failed";
         messages.push({ role: "assistant", content: errorMessage });
-        return { messages, stepsUsed, limitReached, aborted: false };
+        return {
+          messages,
+          stepsUsed,
+          limitReached,
+          aborted: false,
+          terminationReason: "error",
+        };
       }
 
       const toolCalls = stepResult.toolCalls ?? [];
@@ -100,7 +155,13 @@ export class AgentLoop {
           messages.push({ role: "assistant", content: textContent });
         }
 
-        return { messages, stepsUsed, limitReached, aborted: false };
+        return {
+          messages,
+          stepsUsed,
+          limitReached,
+          aborted: false,
+          terminationReason: "text_only_response",
+        };
       }
 
       messages.push({
@@ -113,11 +174,30 @@ export class AgentLoop {
         limitReached = true;
         const completionMessage = await this.forceTextOnlyCompletion(messages, stepFn);
         messages.push({ role: "assistant", content: completionMessage });
-        return { messages, stepsUsed, limitReached, aborted: false };
+        return {
+          messages,
+          stepsUsed,
+          limitReached,
+          aborted: false,
+          terminationReason: "max_steps_reached",
+        };
       }
 
       stepsUsed += 1;
-      this.options.doomLoopGuard?.resetTurn();
+      this.options.doomLoopGuard?.track(toolCalls);
+
+      if (this.options.doomLoopGuard?.shouldEscalate()) {
+        limitReached = true;
+        const escalationMessage = await this.forceTextOnlyCompletion(messages, stepFn);
+        messages.push({ role: "assistant", content: escalationMessage });
+        return {
+          messages,
+          stepsUsed,
+          limitReached,
+          aborted: false,
+          terminationReason: "doom_loop_detected",
+        };
+      }
 
       const toolResults = await this.executeToolCalls(toolCalls, context, messages, delegation);
       messages.push({
@@ -125,11 +205,233 @@ export class AgentLoop {
         content: this.serializeToolResults(toolResults),
         toolResults,
       });
+    }
+  }
 
+  async *runWithProvider(options: ProviderLoopOptions): AsyncIterable<LoopEvent> {
+    const loopSignal = options.abortSignal ?? this.options.signal;
+    const messages = options.messages.map((message) => ({
+      ...message,
+      content: cloneContentBlocks(message.content),
+    }));
+
+    const accumulatedBlocks: ContentBlock[] = [];
+    let stepsUsed = 0;
+    this.options.doomLoopGuard?.reset();
+
+    while (true) {
+      if (this.isAbortedSignal(loopSignal)) {
+        yield {
+          type: "done",
+          finishReason: "aborted",
+          terminationReason: "aborted",
+          content: finalizeLoopContent(accumulatedBlocks),
+          limitReached: false,
+          stepsUsed,
+        };
+        return;
+      }
+
+      const stepRequest = {
+        model: options.model,
+        messages,
+        tools: options.tools,
+        systemPrompt: options.systemPrompt,
+        signal: loopSignal,
+      };
+
+      const toolCalls: ToolCall[] = [];
+      let textOutput = "";
+      let finishReason = "stop";
+      let usage: TokenUsage | undefined;
+
+      for await (const event of options.provider.stream(stepRequest)) {
+        if (this.isAbortedSignal(loopSignal)) {
+          break;
+        }
+
+        if (event.type === "token") {
+          textOutput += event.content;
+          yield {
+            type: "token",
+            content: event.content,
+          };
+          continue;
+        }
+
+        if (event.type === "tool_call_start") {
+          toolCalls.push(event.toolCall);
+          continue;
+        }
+
+        if (event.type === "error") {
+          yield {
+            type: "error",
+            error: event.error,
+          };
+          return;
+        }
+
+        if (event.type === "done") {
+          finishReason = event.finishReason;
+          usage = event.usage;
+        }
+      }
+
+      if (this.isAbortedSignal(loopSignal)) {
+        yield {
+          type: "done",
+          usage,
+          finishReason: "aborted",
+          terminationReason: "aborted",
+          content: finalizeLoopContent(accumulatedBlocks),
+          limitReached: false,
+          stepsUsed,
+        };
+        return;
+      }
+
+      if (textOutput.length > 0) {
+        accumulatedBlocks.push({ type: "text", text: textOutput });
+      }
+
+      const hasToolCalls = toolCalls.length > 0;
+      if (!hasToolCalls || finishReason !== "tool_use") {
+        yield {
+          type: "done",
+          usage,
+          finishReason,
+          terminationReason: "text_only_response",
+          content: finalizeLoopContent(accumulatedBlocks),
+          limitReached: false,
+          stepsUsed,
+        };
+        return;
+      }
+
+      const assistantToolUseBlocks: ContentBlock[] = toolCalls.map((toolCall) => ({
+        type: "tool_use",
+        id: toolCall.id,
+        name: toolCall.name,
+        input: toolCall.arguments,
+      }));
+
+      accumulatedBlocks.push(...assistantToolUseBlocks);
+      messages.push(createAssistantMessage([...assistantToolUseBlocks]));
+
+      if (stepsUsed >= this.maxSteps) {
+        yield {
+          type: "done",
+          usage,
+          finishReason: "step_limit",
+          terminationReason: "max_steps_reached",
+          content: finalizeLoopContent(accumulatedBlocks),
+          limitReached: true,
+          stepsUsed,
+        };
+        return;
+      }
+
+      stepsUsed += 1;
+
+      this.options.doomLoopGuard?.track(toolCalls);
       if (this.options.doomLoopGuard?.shouldEscalate()) {
-        const escalationMessage = await this.forceTextOnlyCompletion(messages, stepFn);
-        messages.push({ role: "assistant", content: escalationMessage });
-        return { messages, stepsUsed, limitReached, aborted: false };
+        yield {
+          type: "done",
+          usage,
+          finishReason: "doom_loop",
+          terminationReason: "doom_loop_detected",
+          content: finalizeLoopContent(accumulatedBlocks),
+          limitReached: true,
+          stepsUsed,
+        };
+        return;
+      }
+
+      if (this.isAbortedSignal(loopSignal)) {
+        yield {
+          type: "done",
+          usage,
+          finishReason: "aborted",
+          terminationReason: "aborted",
+          content: finalizeLoopContent(accumulatedBlocks),
+          limitReached: false,
+          stepsUsed,
+        };
+        return;
+      }
+
+      const executionContext: ToolContext = {
+        ...options.toolContext,
+        abortSignal: options.toolContext.abortSignal ?? loopSignal,
+      };
+
+      const toolResults: ToolResult[] = [];
+      if (!executionContext.abortSignal) {
+        for (const toolCall of toolCalls) {
+          yield {
+            type: "tool_call_start",
+            toolCall,
+          };
+        }
+
+        toolResults.push(
+          ...(await options.toolExecutor.executeMany(toolCalls, executionContext, {
+            abortSignal: loopSignal,
+          })),
+        );
+      } else {
+        for (const toolCall of toolCalls) {
+          if (executionContext.abortSignal.aborted) {
+            break;
+          }
+
+          yield {
+            type: "tool_call_start",
+            toolCall,
+          };
+
+          toolResults.push(
+            await options.toolExecutor.execute(toolCall, executionContext, {
+              abortSignal: executionContext.abortSignal,
+            }),
+          );
+
+          if (executionContext.abortSignal.aborted) {
+            break;
+          }
+        }
+      }
+      const toolResultBlocks: ContentBlock[] = [];
+
+      for (const toolResult of toolResults) {
+        yield {
+          type: "tool_call_end",
+          result: toolResult,
+        };
+
+        toolResultBlocks.push({
+          type: "tool_result",
+          tool_use_id: toolResult.callId,
+          content: serializeToolResult(toolResult),
+          ...(toolResult.error ? { is_error: true } : {}),
+        });
+      }
+
+      accumulatedBlocks.push(...toolResultBlocks);
+      messages.push(createUserMessage(toolResultBlocks));
+
+      if (this.isAbortedSignal(loopSignal)) {
+        yield {
+          type: "done",
+          usage,
+          finishReason: "aborted",
+          terminationReason: "aborted",
+          content: finalizeLoopContent(accumulatedBlocks),
+          limitReached: false,
+          stepsUsed,
+        };
+        return;
       }
     }
   }
@@ -140,37 +442,58 @@ export class AgentLoop {
     messages: AgentMessage[],
     delegation?: DelegationContract,
   ): Promise<ToolPipelineResult[]> {
-    const results: ToolPipelineResult[] = [];
+    const results: Array<ToolPipelineResult | undefined> = Array.from({ length: toolCalls.length });
+    const executableCalls: ToolCall[] = [];
+    const executableIndices: number[] = [];
 
-    for (const toolCall of toolCalls) {
+    for (const [index, toolCall] of toolCalls.entries()) {
       if (this.isDelegationToolCall(toolCall, delegation)) {
         const delegatedResult = await this.executeDelegation(toolCall, messages, context, delegation);
-        this.recordGuardOutcome(toolCall.name, delegatedResult);
-        results.push(delegatedResult);
+        results[index] = delegatedResult;
         continue;
       }
 
       const allowed = await this.isToolAllowed(toolCall);
       if (!allowed) {
         const deniedResult = this.createErrorResult(toolCall, `Permission denied for tool: ${toolCall.name}`);
-        this.recordGuardOutcome(toolCall.name, deniedResult);
-        results.push(deniedResult);
+        results[index] = deniedResult;
         continue;
       }
 
       if (!this.options.toolPipeline) {
         const missingPipelineResult = this.createErrorResult(toolCall, "Tool pipeline is not configured");
-        this.recordGuardOutcome(toolCall.name, missingPipelineResult);
-        results.push(missingPipelineResult);
+        results[index] = missingPipelineResult;
         continue;
       }
 
-      const pipelineResult = await this.options.toolPipeline.execute(toolCall, context);
-      this.recordGuardOutcome(toolCall.name, pipelineResult);
-      results.push(pipelineResult);
+      executableCalls.push(toolCall);
+      executableIndices.push(index);
     }
 
-    return results;
+    if (executableCalls.length > 0 && this.options.toolPipeline) {
+      const pipelineResults = await this.options.toolPipeline.executeMany(executableCalls, context);
+      for (const [resultIndex, pipelineResult] of pipelineResults.entries()) {
+        const originalIndex = executableIndices[resultIndex];
+        if (originalIndex === undefined) {
+          continue;
+        }
+
+        results[originalIndex] = pipelineResult;
+      }
+    }
+
+    for (const [index, toolCall] of toolCalls.entries()) {
+      if (results[index]) {
+        this.recordGuardOutcome(toolCall.name, results[index]);
+        continue;
+      }
+
+      const fallbackResult = this.createErrorResult(toolCall, "Tool execution failed");
+      this.recordGuardOutcome(toolCall.name, fallbackResult);
+      results[index] = fallbackResult;
+    }
+
+    return results as ToolPipelineResult[];
   }
 
   private async executeDelegation(
@@ -327,6 +650,10 @@ export class AgentLoop {
     return Boolean(this.options.signal?.aborted);
   }
 
+  private isAbortedSignal(signal?: AbortSignal): boolean {
+    return Boolean(signal?.aborted);
+  }
+
   private resolveMaxSteps(value: number | undefined): number {
     if (typeof value !== "number" || !Number.isFinite(value)) {
       return DEFAULT_MAX_STEPS;
@@ -346,4 +673,61 @@ export class AgentLoop {
 
     return "Unknown error";
   }
+}
+
+function createAssistantMessage(content: ContentBlock[]): Message {
+  return {
+    id: crypto.randomUUID(),
+    role: "assistant",
+    content,
+    createdAt: new Date(),
+  };
+}
+
+function createUserMessage(content: ContentBlock[]): Message {
+  return {
+    id: crypto.randomUUID(),
+    role: "user",
+    content,
+    createdAt: new Date(),
+  };
+}
+
+function serializeToolResult(result: ToolResult): string {
+  if (typeof result.error === "string" && result.error.length > 0) {
+    return result.error;
+  }
+
+  if (typeof result.result === "string") {
+    return result.result;
+  }
+
+  try {
+    return JSON.stringify(result.result);
+  } catch {
+    return String(result.result);
+  }
+}
+
+function finalizeLoopContent(blocks: ContentBlock[]): string | ContentBlock[] {
+  if (blocks.length === 0) {
+    return "";
+  }
+
+  const hasNonText = blocks.some((block) => block.type !== "text");
+  if (!hasNonText) {
+    return blocks
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("");
+  }
+
+  return blocks;
+}
+
+function cloneContentBlocks(content: Message["content"]): Message["content"] {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content.map((block) => ({ ...block }));
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { MockProvider } from "../../src/providers";
+import { MockProvider } from "../../src/providers/mock";
 import { StreamingResponse } from "../../src/streaming";
 import type { ChatRequest, StreamEvent, ToolCall } from "../../src/types";
 

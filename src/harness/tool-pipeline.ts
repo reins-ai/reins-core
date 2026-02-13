@@ -81,6 +81,10 @@ export class ToolPipeline {
   }
 
   public async executeBatch(toolCalls: ToolCall[], context: ToolContext): Promise<ToolPipelineResult[]> {
+    return this.executeMany(toolCalls, context);
+  }
+
+  public async executeMany(toolCalls: ToolCall[], context: ToolContext): Promise<ToolPipelineResult[]> {
     const settledResults = await Promise.allSettled(
       toolCalls.map((toolCall) => this.execute(toolCall, context)),
     );

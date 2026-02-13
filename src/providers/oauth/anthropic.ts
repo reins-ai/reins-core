@@ -31,6 +31,15 @@ import type {
   ProviderMetadata,
 } from "./types";
 import { persistOAuthTokens, type OAuthTokenStore } from "./token-store";
+import {
+  claudeCodeHeaders,
+  transformUrl,
+  transformSystemPrompt,
+  prefixToolDefinitions,
+  prefixMessageToolNames,
+  stripToolPrefixFromPayload,
+  createStrippingStream,
+} from "./claude-code-transform";
 
 interface AnthropicContentBlock {
   type: "text" | "tool_use" | "tool_result";
@@ -64,8 +73,6 @@ interface PendingOAuthSession {
 }
 
 const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
-const OAUTH_BETA_HEADERS = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
-const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -155,20 +162,8 @@ function mapFinishReason(value: unknown): ChatResponse["finishReason"] {
   return "stop";
 }
 
-function oauthHeaders(token: string, withJsonContentType = true): Record<string, string> {
-  const headers: Record<string, string> = {
-    authorization: `Bearer ${token}`,
-    "anthropic-version": "2023-06-01",
-    "anthropic-beta": OAUTH_BETA_HEADERS,
-    "user-agent": OAUTH_USER_AGENT,
-  };
-
-  if (withJsonContentType) {
-    headers["content-type"] = "application/json";
-  }
-
-  return headers;
-}
+// claudeCodeHeaders() from claude-code-transform.ts replaces the old oauthHeaders().
+// It includes the full set of beta flags required for Claude Code credential acceptance.
 
 function resolveAnthropicApiModelId(model: string): string {
   return model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
@@ -539,16 +534,23 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   public async chat(request: ChatRequest): Promise<ChatResponse> {
     const token = await this.getAccessToken();
     const apiModel = resolveAnthropicApiModelId(request.model);
-    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+
+    // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
+    const mappedTools = mapTools(request.tools);
+    const url = transformUrl(`${this.baseUrl}/v1/messages`);
+
+    const response = await fetch(url, {
       method: "POST",
-      headers: oauthHeaders(token),
+      headers: claudeCodeHeaders(token),
       body: JSON.stringify({
         model: apiModel,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: request.maxTokens ?? 1024,
+        system: transformSystemPrompt(request.systemPrompt),
+        messages: prefixMessageToolNames(mapMessages(request)),
+        max_tokens: request.maxTokens ?? 16_384,
         temperature: request.temperature,
-        ...(mapTools(request.tools) ? { tools: mapTools(request.tools) } : {}),
+        ...(prefixToolDefinitions(mappedTools)
+          ? { tools: prefixToolDefinitions(mappedTools) }
+          : {}),
       }),
     });
 
@@ -558,10 +560,13 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       );
     }
 
-    const payload = (await response.json()) as unknown;
-    if (!isRecord(payload)) {
+    const rawPayload = (await response.json()) as unknown;
+    if (!isRecord(rawPayload)) {
       throw new ProviderError("Anthropic chat response payload is invalid");
     }
+
+    // Strip mcp_ prefix from tool names in response
+    const payload = stripToolPrefixFromPayload(rawPayload);
 
     const finishReason = mapFinishReason(payload.stop_reason);
     const usage = parseUsage(payload.usage);
@@ -581,17 +586,24 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   public async *stream(request: ChatRequest): AsyncIterable<StreamEvent> {
     const token = await this.getAccessToken();
     const apiModel = resolveAnthropicApiModelId(request.model);
-    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+
+    // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
+    const mappedTools = mapTools(request.tools);
+    const url = transformUrl(`${this.baseUrl}/v1/messages`);
+
+    const response = await fetch(url, {
       method: "POST",
-      headers: oauthHeaders(token),
+      headers: claudeCodeHeaders(token),
       body: JSON.stringify({
         model: apiModel,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: request.maxTokens ?? 1024,
+        system: transformSystemPrompt(request.systemPrompt),
+        messages: prefixMessageToolNames(mapMessages(request)),
+        max_tokens: request.maxTokens ?? 16_384,
         temperature: request.temperature,
         stream: true,
-        ...(mapTools(request.tools) ? { tools: mapTools(request.tools) } : {}),
+        ...(prefixToolDefinitions(mappedTools)
+          ? { tools: prefixToolDefinitions(mappedTools) }
+          : {}),
       }),
     });
 
@@ -601,7 +613,9 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       );
     }
 
-    for await (const event of StreamTransformer.fromSSE(response.body)) {
+    // Wrap the SSE stream to strip mcp_ prefix from tool names
+    const strippedStream = createStrippingStream(response.body);
+    for await (const event of StreamTransformer.fromSSE(strippedStream)) {
       yield event;
     }
   }
@@ -615,7 +629,7 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
       const token = await this.getAccessToken();
       const response = await fetch(`${this.baseUrl}/v1/models`, {
         method: "GET",
-        headers: oauthHeaders(token, false),
+        headers: claudeCodeHeaders(token, false),
       });
       return response.ok;
     } catch {

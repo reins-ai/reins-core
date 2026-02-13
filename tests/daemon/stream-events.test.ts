@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { createHarnessEventBus, EventTransportAdapter } from "../../src/harness";
 import { StreamTransformer } from "../../src/streaming/transformer";
+import { WsStreamRegistry } from "../../src/daemon/ws-stream-registry";
 
 function toReadableStream(value: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -179,5 +180,138 @@ describe("StreamTransformer SSE compatibility", () => {
     }
 
     expect(events).toEqual(["message_start", "token", "compaction", "done"]);
+  });
+});
+
+describe("WsStreamRegistry tool lifecycle delivery", () => {
+  it("delivers interleaved token and tool lifecycle events in publish order", () => {
+    const registry = new WsStreamRegistry();
+    const sent: string[] = [];
+
+    const socket = {
+      data: { connectionId: "conn-1" },
+      send(message: string) {
+        sent.push(message);
+      },
+      close() {
+        // no-op for test
+      },
+    };
+
+    registry.subscribe(socket, {
+      conversationId: "conv-1",
+      assistantMessageId: "msg-1",
+    });
+
+    registry.publish(
+      { conversationId: "conv-1", assistantMessageId: "msg-1" },
+      { type: "token", content: "A", sequence: 0 },
+    );
+    registry.publish(
+      { conversationId: "conv-1", assistantMessageId: "msg-1" },
+      {
+        type: "tool_call_start",
+        tool_use_id: "tool-1",
+        name: "read",
+        input: { filePath: "README.md" },
+        timestamp: "2026-02-12T00:00:00.000Z",
+        sequence: 1,
+      },
+    );
+    registry.publish(
+      { conversationId: "conv-1", assistantMessageId: "msg-1" },
+      {
+        type: "tool_call_end",
+        tool_use_id: "tool-1",
+        name: "read",
+        result_summary: "Read 42 lines",
+        is_error: false,
+        result: { callId: "tool-1", name: "read", result: "..." },
+        timestamp: "2026-02-12T00:00:01.000Z",
+        sequence: 2,
+      },
+    );
+    registry.publish(
+      { conversationId: "conv-1", assistantMessageId: "msg-1" },
+      { type: "token", content: "B", sequence: 3 },
+    );
+
+    const parsed = sent.map((entry) => JSON.parse(entry) as { type: string; sequence: number });
+    expect(parsed.map((entry) => entry.type)).toEqual([
+      "token",
+      "tool_call_start",
+      "tool_call_end",
+      "token",
+    ]);
+    expect(parsed.map((entry) => entry.sequence)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("preserves structured tool payload fields", () => {
+    const registry = new WsStreamRegistry();
+    const sent: string[] = [];
+
+    const socket = {
+      data: { connectionId: "conn-2" },
+      send(message: string) {
+        sent.push(message);
+      },
+      close() {
+        // no-op for test
+      },
+    };
+
+    registry.subscribe(socket, {
+      conversationId: "conv-2",
+      assistantMessageId: "msg-2",
+    });
+
+    registry.publish(
+      { conversationId: "conv-2", assistantMessageId: "msg-2" },
+      {
+        type: "tool_call_start",
+        tool_use_id: "tool-start-1",
+        name: "glob",
+        input: { pattern: "**/*.ts" },
+        timestamp: "2026-02-12T10:00:00.000Z",
+      },
+    );
+    registry.publish(
+      { conversationId: "conv-2", assistantMessageId: "msg-2" },
+      {
+        type: "tool_call_end",
+        tool_use_id: "tool-start-1",
+        name: "glob",
+        result_summary: "Found 12 files",
+        is_error: false,
+        result: { callId: "tool-start-1", name: "glob", result: ["a.ts"] },
+        timestamp: "2026-02-12T10:00:01.000Z",
+      },
+    );
+
+    expect(sent).toHaveLength(2);
+
+    const startPayload = JSON.parse(sent[0] ?? "{}") as {
+      tool_use_id: string;
+      name: string;
+      input: Record<string, unknown>;
+      timestamp: string;
+    };
+    expect(startPayload.tool_use_id).toBe("tool-start-1");
+    expect(startPayload.name).toBe("glob");
+    expect(startPayload.input).toEqual({ pattern: "**/*.ts" });
+    expect(startPayload.timestamp).toBe("2026-02-12T10:00:00.000Z");
+
+    const endPayload = JSON.parse(sent[1] ?? "{}") as {
+      tool_use_id: string;
+      name: string;
+      result_summary: string;
+      is_error: boolean;
+      timestamp: string;
+    };
+    expect(endPayload.tool_use_id).toBe("tool-start-1");
+    expect(endPayload.name).toBe("glob");
+    expect(endPayload.result_summary).toBe("Found 12 files");
+    expect(endPayload.is_error).toBe(false);
+    expect(endPayload.timestamp).toBe("2026-02-12T10:00:01.000Z");
   });
 });

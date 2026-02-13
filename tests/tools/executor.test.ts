@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { ToolError } from "../../src/errors";
+import { SystemToolExecutionError } from "../../src/tools/system/types";
 import {
   ToolExecutor,
   ToolRegistry,
@@ -78,10 +79,17 @@ describe("ToolExecutor", () => {
       toolContext,
     );
 
-    expect(result.callId).toBe("call-missing");
-    expect(result.name).toBe("calendar.create");
-    expect(result.result).toBeNull();
-    expect(result.error).toBe("Tool not found: calendar.create");
+    expect(result).toMatchObject({
+      callId: "call-missing",
+      name: "calendar.create",
+      result: null,
+      error: "Tool not found: calendar.create",
+      errorDetail: {
+        code: "TOOL_NOT_FOUND",
+        message: "Tool not found: calendar.create",
+        retryable: false,
+      },
+    });
   });
 
   it("catches execution errors and returns an error result", async () => {
@@ -102,10 +110,17 @@ describe("ToolExecutor", () => {
       toolContext,
     );
 
-    expect(result.callId).toBe("call-error");
-    expect(result.name).toBe("reminders.create");
-    expect(result.result).toBeNull();
-    expect(result.error).toBe("Failed to create reminder");
+    expect(result).toMatchObject({
+      callId: "call-error",
+      name: "reminders.create",
+      result: null,
+      error: "Failed to create reminder",
+      errorDetail: {
+        code: "TOOL_EXECUTION_FAILED",
+        message: "Failed to create reminder",
+        retryable: false,
+      },
+    });
   });
 
   it("executes many tool calls in parallel and keeps input order", async () => {
@@ -142,6 +157,36 @@ describe("ToolExecutor", () => {
     expect(elapsedMs).toBeLessThan(150);
   });
 
+  it("executeMany preserves deterministic input ordering for mixed durations", async () => {
+    const registry = new ToolRegistry();
+    const executor = new ToolExecutor(registry);
+
+    registry.register(
+      createMockTool("tool.slow", async (args) => {
+        await sleep(60);
+        return { tool: "slow", value: args.value };
+      }),
+    );
+    registry.register(
+      createMockTool("tool.fast", async (args) => {
+        await sleep(5);
+        return { tool: "fast", value: args.value };
+      }),
+    );
+
+    const results = await executor.executeMany(
+      [
+        { id: "slow", name: "tool.slow", arguments: { value: "A" } },
+        { id: "fast", name: "tool.fast", arguments: { value: "B" } },
+      ],
+      toolContext,
+    );
+
+    expect(results.map((result) => result.callId)).toEqual(["slow", "fast"]);
+    expect(results[0]?.result).toEqual({ tool: "slow", value: "A" });
+    expect(results[1]?.result).toEqual({ tool: "fast", value: "B" });
+  });
+
   it("executeMany returns both successes and failures", async () => {
     const registry = new ToolRegistry();
     const executor = new ToolExecutor(registry);
@@ -166,11 +211,58 @@ describe("ToolExecutor", () => {
       name: "tool.success",
       result: { ok: true },
     });
-    expect(results[1]).toEqual({
+    expect(results[1]).toMatchObject({
       callId: "bad",
       name: "tool.fail",
       result: null,
       error: "Boom",
+      errorDetail: {
+        code: "TOOL_EXECUTION_FAILED",
+        message: "Boom",
+        retryable: false,
+      },
+    });
+  });
+
+  it("executeMany normalizes known system tool errors", async () => {
+    const registry = new ToolRegistry();
+    const executor = new ToolExecutor(registry);
+
+    registry.register(
+      createMockTool("tool.denied", () => {
+        throw SystemToolExecutionError.permissionDenied("Permission denied: path outside sandbox", {
+          attemptedPath: "../outside",
+        });
+      }),
+    );
+
+    const results = await executor.executeMany(
+      [
+        { id: "missing", name: "tool.missing", arguments: {} },
+        { id: "denied", name: "tool.denied", arguments: {} },
+      ],
+      toolContext,
+    );
+
+    expect(results[0]).toMatchObject({
+      callId: "missing",
+      name: "tool.missing",
+      error: "Tool not found: tool.missing",
+      errorDetail: {
+        code: "TOOL_NOT_FOUND",
+        retryable: false,
+      },
+    });
+
+    expect(results[1]).toMatchObject({
+      callId: "denied",
+      name: "tool.denied",
+      error: "Permission denied: path outside sandbox",
+      errorDetail: {
+        code: "TOOL_PERMISSION_DENIED",
+        retryable: false,
+        details: { attemptedPath: "../outside" },
+      },
     });
   });
 
@@ -220,10 +312,17 @@ describe("ToolExecutor", () => {
       10,
     );
 
-    expect(result.callId).toBe("timeout-fail");
-    expect(result.name).toBe("calendar.list");
-    expect(result.result).toBeNull();
-    expect(result.error).toBe("Tool execution timed out after 10ms");
+    expect(result).toMatchObject({
+      callId: "timeout-fail",
+      name: "calendar.list",
+      result: null,
+      error: "Tool execution timed out after 10ms",
+      errorDetail: {
+        code: "TOOL_TIMEOUT",
+        message: "Tool execution timed out after 10ms",
+        retryable: true,
+      },
+    });
   });
 });
 

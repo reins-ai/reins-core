@@ -6,10 +6,13 @@
 
 import { DaemonRuntime } from "./runtime";
 import { DaemonHttpServer } from "./server";
+import { getBuiltinToolDefinitions } from "../tools/builtins";
 
 async function main() {
   const runtime = new DaemonRuntime();
-  const httpServer = new DaemonHttpServer();
+  const httpServer = new DaemonHttpServer({
+    toolDefinitions: getBuiltinToolDefinitions(),
+  });
 
   // Register HTTP server as managed service
   runtime.registerService(httpServer);

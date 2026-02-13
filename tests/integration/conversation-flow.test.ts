@@ -4,7 +4,8 @@ import { ConversationManager, InMemoryConversationStore } from "../../src/conver
 import { ContextManager, DropOldestStrategy } from "../../src/context";
 import { ProviderError } from "../../src/errors";
 import { DEFAULT_PERSONA, PersonaRegistry, SystemPromptBuilder } from "../../src/persona";
-import { MockProvider, ModelRouter, ProviderRegistry } from "../../src/providers";
+import { MockProvider } from "../../src/providers/mock";
+import { ModelRouter, ProviderRegistry } from "../../src/providers";
 import type { ChatRequest, Model } from "../../src/types";
 
 const createModel = (providerId: string): Model => ({

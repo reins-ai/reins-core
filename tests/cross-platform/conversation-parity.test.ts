@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { ConversationManager, InMemoryConversationStore } from "../../src/conversation";
-import { MockProvider } from "../../src/providers";
+import { MockProvider } from "../../src/providers/mock";
 import { StreamingResponse } from "../../src/streaming";
 import type { ChatRequest, Model, StreamEvent, ToolCall } from "../../src/types";
 

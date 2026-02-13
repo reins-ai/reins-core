@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { ProviderError } from "../../src/errors";
-import { MockProvider } from "../../src/providers";
+import { MockProvider } from "../../src/providers/mock";
 import { ProviderRegistry } from "../../src/providers/registry";
 
 describe("ProviderRegistry", () => {
