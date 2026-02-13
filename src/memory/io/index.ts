@@ -8,3 +8,16 @@ export {
   type MemorySource,
   type FrontmatterData,
 } from "./frontmatter-schema";
+export {
+  MemoryFileIngestor,
+  MemoryIngestError,
+  type IngestResult,
+  type ScanReport,
+  type MemoryFileIngestorOptions,
+} from "./memory-file-ingestor";
+export {
+  MemoryFileWatcher,
+  MemoryWatcherError,
+  type RescanReport,
+  type MemoryFileWatcherOptions,
+} from "./memory-file-watcher";
