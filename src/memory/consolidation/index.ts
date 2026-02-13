@@ -14,3 +14,22 @@ export {
   type StmRecordSource,
   type StmSelectorOptions,
 } from "./stm-selector";
+export {
+  DISTILLED_FACT_TYPES,
+  DEFAULT_DISTILLATION_CONFIG,
+  DEFAULT_DISTILLATION_PROMPT_TEMPLATE,
+  DistillationSchemaError,
+  validateDistilledFact,
+  validateDistillationPayload,
+  type DistillationConfig,
+  type DistillationResult,
+  type DistillationValidationResult,
+  type DistilledFact,
+  type DistilledFactType,
+} from "./distillation-schema";
+export {
+  DistillationEngine,
+  DistillationEngineError,
+  type DistillationEngineOptions,
+  type DistillationProvider,
+} from "./distillation-engine";
