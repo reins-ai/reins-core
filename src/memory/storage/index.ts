@@ -13,3 +13,9 @@ export {
   type UpdateMemoryInput,
 } from "./memory-repository";
 export { MemoryDbError, SqliteMemoryDb, type SqliteMemoryDbOptions } from "./sqlite-memory-db";
+export {
+  MemoryProvenanceRepository,
+  ProvenanceRepositoryError,
+  type ProvenanceRepository,
+  type MemoryProvenanceRepositoryOptions,
+} from "./memory-provenance-repository";

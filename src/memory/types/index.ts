@@ -22,3 +22,11 @@ export {
   type MemoryRecord,
   type StmMemoryRecord,
 } from "./memory-record";
+export {
+  EXTRACTION_EVENTS,
+  ProvenanceValidationError,
+  validateProvenance,
+  type ExtractionEvent,
+  type ProvenanceFilter,
+  type ProvenanceRecord,
+} from "./provenance";
