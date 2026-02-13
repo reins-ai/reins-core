@@ -28,3 +28,9 @@ export {
   type RankingPolicy,
 } from "./ranking-policy";
 export { parseSearchQuery } from "./search-query-parser";
+export {
+  ConversationRetrievalService,
+  ConversationRetrievalError,
+  type ConversationRetrievalServiceOptions,
+  type Logger as ConversationRetrievalLogger,
+} from "./conversation-retrieval-service";

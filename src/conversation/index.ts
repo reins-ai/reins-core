@@ -23,3 +23,10 @@ export type { TranscriptEntry, TranscriptMessageRole } from "./transcript-types"
 export type { TranscriptStoreOptions } from "./transcript-store";
 export type { SQLiteConversationStoreOptions } from "./sqlite-store";
 export type { ConversationStore, ConversationStoreResult, ListOptions } from "./store";
+export type {
+  MemoryPrimingContract,
+  MemoryPrimingItem,
+  PrimingContext,
+  TurnContextParams,
+  PreferenceOptions,
+} from "./memory-priming-contract";
