@@ -1,6 +1,6 @@
 import { validateConfigDraft, type ConfigValidationResult } from "./format-decision";
 
-const ENVIRONMENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-_]{0,31}$/;
+const ENVIRONMENT_NAME_PATTERN = /^[a-z][a-z0-9-_]{0,31}$/;
 
 export function validateGlobalConfig(input: unknown): ConfigValidationResult {
   return validateConfigDraft(input);

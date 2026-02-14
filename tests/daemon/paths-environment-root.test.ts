@@ -40,28 +40,10 @@ describe("platform-specific install root derivation", () => {
       expect(root).toBe("/home/alice/.reins");
     });
 
-    it("resolves to XDG_DATA_HOME/reins when XDG_DATA_HOME is set", () => {
+    it("ignores XDG_DATA_HOME and always uses ~/.reins", () => {
       const root = resolveInstallRoot({
         platform: "linux",
         env: { XDG_DATA_HOME: "/custom/data" },
-        homeDirectory: "/home/alice",
-      });
-      expect(root).toBe("/custom/data/reins");
-    });
-
-    it("ignores XDG_DATA_HOME when it is empty string", () => {
-      const root = resolveInstallRoot({
-        platform: "linux",
-        env: { XDG_DATA_HOME: "" },
-        homeDirectory: "/home/alice",
-      });
-      expect(root).toBe("/home/alice/.reins");
-    });
-
-    it("ignores XDG_DATA_HOME when it is whitespace-only", () => {
-      const root = resolveInstallRoot({
-        platform: "linux",
-        env: { XDG_DATA_HOME: "   " },
         homeDirectory: "/home/alice",
       });
       expect(root).toBe("/home/alice/.reins");
@@ -166,13 +148,14 @@ describe("daemon paths and bootstrap paths consistency", () => {
     expect(getDataRoot(options)).toBe(resolveInstallRoot(options));
   });
 
-  it("daemon getDataRoot and bootstrap resolveInstallRoot agree with XDG_DATA_HOME", () => {
+  it("daemon getDataRoot and bootstrap resolveInstallRoot agree even with XDG_DATA_HOME set", () => {
     const options = {
       platform: "linux" as const,
       env: { XDG_DATA_HOME: "/custom/xdg" },
       homeDirectory: "/home/user",
     };
     expect(getDataRoot(options)).toBe(resolveInstallRoot(options));
+    expect(getDataRoot(options)).toBe("/home/user/.reins");
   });
 });
 
@@ -292,13 +275,13 @@ describe("path edge cases", () => {
     expect(root.length).toBeGreaterThan(200);
   });
 
-  it("handles unicode in XDG_DATA_HOME", () => {
+  it("ignores XDG_DATA_HOME with unicode path on Linux", () => {
     const root = resolveInstallRoot({
       platform: "linux",
       env: { XDG_DATA_HOME: "/données/locales" },
       homeDirectory: "/home/user",
     });
-    expect(root).toBe("/données/locales/reins");
+    expect(root).toBe("/home/user/.reins");
   });
 
   it("handles spaces in APPDATA on Windows", () => {
@@ -317,8 +300,8 @@ describe("path edge cases", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: unicodeHome },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: unicodeHome,
     });
 
     expect(result.ok).toBe(true);
@@ -335,8 +318,8 @@ describe("path edge cases", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: spacedHome },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: spacedHome,
     });
 
     expect(result.ok).toBe(true);
@@ -373,8 +356,8 @@ describe("error and permission edge cases", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: blockingPath },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: blockingPath,
     });
 
     expect(result.ok).toBe(false);
@@ -390,8 +373,8 @@ describe("error and permission edge cases", () => {
 
     const result = await ensureDataDirectories({
       platform: "linux",
-      env: { XDG_DATA_HOME: blockingPath },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: blockingPath,
     });
 
     expect(result.ok).toBe(false);
@@ -408,8 +391,8 @@ describe("error and permission edge cases", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: join(readOnlyDir, "nested", "deep") },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: join(readOnlyDir, "nested", "deep"),
     });
 
     // Restore permissions for cleanup
@@ -428,8 +411,8 @@ describe("error and permission edge cases", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: blockingPath },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: blockingPath,
     });
 
     expect(result.ok).toBe(false);
@@ -446,8 +429,8 @@ describe("error and permission edge cases", () => {
 
     const result = await ensureDataDirectories({
       platform: "linux",
-      env: { XDG_DATA_HOME: blockingPath },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: blockingPath,
     });
 
     expect(result.ok).toBe(false);
@@ -475,7 +458,7 @@ describe("concurrent bootstrap calls", () => {
     const tempRoot = await createTempDirectory();
     const options = {
       platform: "linux" as const,
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     };
 
@@ -500,7 +483,7 @@ describe("concurrent bootstrap calls", () => {
     const tempRoot = await createTempDirectory();
     const options = {
       platform: "linux" as const,
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     };
 
@@ -519,7 +502,7 @@ describe("concurrent bootstrap calls", () => {
     const tempRoot = await createTempDirectory();
     const options = {
       platform: "linux" as const,
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     };
 
@@ -574,14 +557,13 @@ describe("regression guards — known path contracts", () => {
     expect(root).toEndWith("\\reins");
   });
 
-  it("Linux XDG root uses lowercase reins (no dot prefix)", () => {
+  it("Linux always uses ~/.reins even when XDG_DATA_HOME is set", () => {
     const root = resolveInstallRoot({
       platform: "linux",
       env: { XDG_DATA_HOME: "/custom/data" },
       homeDirectory: "/home/user",
     });
-    expect(root).toEndWith("/reins");
-    expect(root).not.toContain(".reins");
+    expect(root).toBe("/home/user/.reins");
   });
 
   it("config file name is always config.json5", () => {
@@ -685,7 +667,7 @@ describe("filesystem bootstrap regression", () => {
     const tempRoot = await createTempDirectory();
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -715,7 +697,7 @@ describe("filesystem bootstrap regression", () => {
     const tempRoot = await createTempDirectory();
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -734,7 +716,7 @@ describe("filesystem bootstrap regression", () => {
     const tempRoot = await createTempDirectory();
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -749,7 +731,7 @@ describe("filesystem bootstrap regression", () => {
     const tempRoot = await createTempDirectory();
     const result = await ensureDataDirectories({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -777,7 +759,7 @@ describe("filesystem bootstrap regression", () => {
     const tempRoot = await createTempDirectory();
     const result = await ensureDataDirectories({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 

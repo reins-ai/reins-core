@@ -11,6 +11,7 @@ import { CompactionManager, MemoryPreservationHook } from "../conversation/compa
 import { SessionRepository } from "../conversation/session-repository";
 import { SQLiteConversationStore } from "../conversation/sqlite-store";
 import { TranscriptStore } from "../conversation/transcript-store";
+import { ConfigStore } from "../config/store";
 import { ProviderAuthService } from "../providers/auth-service";
 import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strategy";
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
@@ -20,11 +21,23 @@ import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store"
 import { ProviderRegistry } from "../providers/registry";
 import { ModelRouter } from "../providers/router";
 import { AuthError, ConversationError, ProviderError } from "../errors";
+import {
+  EnvironmentNotFoundError,
+  EnvironmentSwitchService,
+  FileEnvironmentResolver,
+  InvalidEnvironmentNameError,
+  bootstrapInstallRoot,
+  buildInstallPaths,
+  resolveInstallRoot,
+} from "../environment";
 import { err, ok, type Result } from "../result";
 import type { MemoryService, ExplicitMemoryInput, MemoryListOptions, UpdateMemoryInput } from "../memory/services/memory-service";
 import type { MemoryRecord } from "../memory/types/memory-record";
 import { LocalFileMemoryStore } from "../memory/local-store";
 import { SessionExtractor } from "../memory/capture";
+import { EnvironmentContextProvider } from "../persona/environment-context";
+import { SystemPromptBuilder } from "../persona/builder";
+import { PersonaRegistry } from "../persona/registry";
 
 import {
   parseListMemoryQueryParams,
@@ -33,6 +46,16 @@ import {
   validateUpdateMemoryRequest,
   type MemoryRecordDto,
 } from "./types/memory-routes";
+import type { DaemonPathOptions } from "./paths";
+import {
+  toOverlayResolutionDto,
+  type EnvironmentErrorResponse,
+  type EnvironmentListResponse,
+  type EnvironmentStatusResponse,
+  type EnvironmentSummaryDto,
+  type EnvironmentSwitchRequest,
+  type EnvironmentSwitchResponse,
+} from "./environment-api";
 import { getTextContent, serializeContent, type Conversation, type Message } from "../types";
 import { AgentLoop } from "../harness/agent-loop";
 import { ToolExecutor, ToolRegistry } from "../tools";
@@ -273,6 +296,9 @@ interface ServerOptions {
   authService?: ProviderAuthService;
   modelRouter?: ModelRouter;
   conversation?: ConversationServiceOptions;
+  environment?: {
+    daemonPathOptions?: DaemonPathOptions;
+  };
   toolDefinitions?: ToolDefinition[];
   toolExecutor?: ToolExecutor;
   memoryService?: MemoryService;
@@ -443,6 +469,12 @@ const CONVERSATIONS_ROUTE = {
   compatibility: "/conversations",
 } as const;
 
+const ENVIRONMENTS_ROUTE = {
+  list: "/api/environments",
+  switch: "/api/environments/switch",
+  status: "/api/environments/status",
+} as const;
+
 const WEBSOCKET_ROUTE = "/ws";
 const WS_HEARTBEAT_INTERVAL_MS = 15_000;
 const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -606,7 +638,7 @@ function createDefaultServices(): DefaultServices {
 }
 
 function createDefaultToolExecutor(memoryService?: MemoryService | null): ToolExecutor {
-  const sandboxRoot = process.cwd();
+  const sandboxRoot = resolveInstallRoot();
   const toolRegistry = new ToolRegistry();
 
   toolRegistry.register(new BashTool(sandboxRoot));
@@ -708,11 +740,20 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly toolExecutor: ToolExecutor;
   private readonly memoryService: MemoryService | null;
   private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
+  private readonly environmentOptions: {
+    daemonPathOptions?: DaemonPathOptions;
+  };
+  private configStore: ConfigStore | null = null;
+  private environmentResolver: FileEnvironmentResolver | null = null;
+  private environmentSwitchService: EnvironmentSwitchService | null = null;
+  private environmentContextProvider: EnvironmentContextProvider | null = null;
+  private personaRegistry: PersonaRegistry | null = null;
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
     this.conversationOptions = options.conversation ?? {};
+    this.environmentOptions = options.environment ?? {};
     this.toolDefinitions = options.toolDefinitions ?? [];
     this.memoryService = options.memoryService ?? null;
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
@@ -756,6 +797,19 @@ export class DaemonHttpServer implements DaemonManagedService {
         code: "SERVER_ALREADY_RUNNING",
         message: "HTTP server already running",
       });
+    }
+
+    try {
+      await this.initializeEnvironmentServices();
+    } catch (error) {
+      log("warn", "Environment services failed to initialize; daemon will start without them", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.configStore = null;
+      this.environmentResolver = null;
+      this.environmentSwitchService = null;
+      this.environmentContextProvider = null;
+      this.personaRegistry = null;
     }
 
     try {
@@ -886,6 +940,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Models endpoint
       if (url.pathname === "/api/models" && method === "GET") {
         return this.handleModelsRequest(corsHeaders);
+      }
+
+      const environmentRoute = this.matchEnvironmentRoute(url.pathname);
+      if (environmentRoute) {
+        return this.handleEnvironmentRequest(environmentRoute, method, request, corsHeaders);
       }
 
       // Provider auth endpoints
@@ -1361,6 +1420,207 @@ export class DaemonHttpServer implements DaemonManagedService {
     return pathname === MESSAGE_ROUTE.canonical || pathname === MESSAGE_ROUTE.compatibility;
   }
 
+  private matchEnvironmentRoute(pathname: string):
+    | { type: "list" }
+    | { type: "switch" }
+    | { type: "status" }
+    | null {
+    if (pathname === ENVIRONMENTS_ROUTE.list) {
+      return { type: "list" };
+    }
+
+    if (pathname === ENVIRONMENTS_ROUTE.switch) {
+      return { type: "switch" };
+    }
+
+    if (pathname === ENVIRONMENTS_ROUTE.status) {
+      return { type: "status" };
+    }
+
+    return null;
+  }
+
+  private async handleEnvironmentRequest(
+    route: { type: "list" } | { type: "switch" } | { type: "status" },
+    method: string,
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.environmentSwitchService || !this.environmentResolver) {
+      return Response.json(
+        { error: "Environment services are not available", code: "SWITCH_FAILED" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    const url = new URL(request.url);
+
+    if (route.type === "list") {
+      if (method !== "GET") {
+        return Response.json(
+          { error: `Method ${method} not allowed on environments collection` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      return this.handleListEnvironments(url, corsHeaders);
+    }
+
+    if (route.type === "switch") {
+      if (method !== "POST") {
+        return Response.json(
+          { error: `Method ${method} not allowed on environment switch` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      return this.handleSwitchEnvironment(request, corsHeaders);
+    }
+
+    if (method !== "GET") {
+      return Response.json(
+        { error: `Method ${method} not allowed on environment status` },
+        { status: 405, headers: corsHeaders },
+      );
+    }
+
+    return this.handleEnvironmentStatus(url, corsHeaders);
+  }
+
+  private async handleListEnvironments(
+    url: URL,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const includeDocumentTypes = url.searchParams.get("includeDocumentTypes") === "true";
+    const activeEnvironmentResult = await this.environmentSwitchService!.getCurrentEnvironment();
+    if (!activeEnvironmentResult.ok) {
+      return this.mapEnvironmentInternalErrorToResponse(
+        "Unable to determine active environment",
+        corsHeaders,
+      );
+    }
+
+    const environmentsResult = await this.environmentResolver!.listEnvironments();
+    if (!environmentsResult.ok) {
+      return this.mapEnvironmentErrorToResponse(environmentsResult.error, corsHeaders);
+    }
+
+    const environments: EnvironmentSummaryDto[] = environmentsResult.value.map((environment) => ({
+      name: environment.name,
+      path: environment.path,
+      availableDocumentTypes: includeDocumentTypes
+        ? Object.keys(environment.documents) as EnvironmentSummaryDto["availableDocumentTypes"]
+        : [],
+    }));
+
+    const response: EnvironmentListResponse = {
+      activeEnvironment: activeEnvironmentResult.value,
+      environments,
+    };
+
+    return Response.json(response, { headers: corsHeaders });
+  }
+
+  private async handleSwitchEnvironment(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    let body: EnvironmentSwitchRequest;
+
+    try {
+      body = (await request.json()) as EnvironmentSwitchRequest;
+    } catch {
+      const response: EnvironmentErrorResponse = {
+        error: "Invalid JSON in request body",
+        code: "SWITCH_FAILED",
+      };
+      return Response.json(response, { status: 400, headers: corsHeaders });
+    }
+
+    if (typeof body.name !== "string" || body.name.trim().length === 0) {
+      const response: EnvironmentErrorResponse = {
+        error: "Environment name is required",
+        code: "INVALID_ENVIRONMENT_NAME",
+      };
+      return Response.json(response, { status: 400, headers: corsHeaders });
+    }
+
+    const switchResult = await this.environmentSwitchService!.switchEnvironment(body.name.trim());
+    if (!switchResult.ok) {
+      return this.mapEnvironmentErrorToResponse(switchResult.error, corsHeaders);
+    }
+
+    const response: EnvironmentSwitchResponse = {
+      activeEnvironment: switchResult.value.activeEnvironment,
+      previousEnvironment: switchResult.value.previousEnvironment,
+      switchedAt: switchResult.value.switchedAt.toISOString(),
+      resolution: toOverlayResolutionDto(switchResult.value.resolvedDocuments),
+    };
+
+    return Response.json(response, { headers: corsHeaders });
+  }
+
+  private async handleEnvironmentStatus(
+    url: URL,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const requestedEnvironmentName = url.searchParams.get("environmentName")?.trim();
+    const resolvedResult = await this.environmentSwitchService!.getResolvedDocuments(
+      requestedEnvironmentName && requestedEnvironmentName.length > 0
+        ? requestedEnvironmentName
+        : undefined,
+    );
+
+    if (!resolvedResult.ok) {
+      return this.mapEnvironmentErrorToResponse(resolvedResult.error, corsHeaders);
+    }
+
+    const response: EnvironmentStatusResponse = {
+      activeEnvironment: resolvedResult.value.activeEnvironment,
+      resolution: toOverlayResolutionDto(resolvedResult.value),
+    };
+
+    return Response.json(response, { headers: corsHeaders });
+  }
+
+  private mapEnvironmentErrorToResponse(
+    error: unknown,
+    corsHeaders: Record<string, string>,
+  ): Response {
+    if (error instanceof InvalidEnvironmentNameError) {
+      const response: EnvironmentErrorResponse = {
+        error: error.message,
+        code: "INVALID_ENVIRONMENT_NAME",
+      };
+      return Response.json(response, { status: 400, headers: corsHeaders });
+    }
+
+    if (error instanceof EnvironmentNotFoundError) {
+      const response: EnvironmentErrorResponse = {
+        error: error.message,
+        code: "ENVIRONMENT_NOT_FOUND",
+      };
+      return Response.json(response, { status: 404, headers: corsHeaders });
+    }
+
+    return this.mapEnvironmentInternalErrorToResponse(
+      error instanceof Error ? error.message : "Environment request failed",
+      corsHeaders,
+    );
+  }
+
+  private mapEnvironmentInternalErrorToResponse(
+    message: string,
+    corsHeaders: Record<string, string>,
+  ): Response {
+    const response: EnvironmentErrorResponse = {
+      error: message,
+      code: "SWITCH_FAILED",
+    };
+
+    return Response.json(response, { status: 500, headers: corsHeaders });
+  }
+
   /**
    * POST /api/messages — accept user content, persist immediately, and return
    * stream identifiers while provider completion runs asynchronously.
@@ -1495,6 +1755,9 @@ export class DaemonHttpServer implements DaemonManagedService {
       const conversation = await this.conversationManager.load(context.conversationId);
       const requestedProvider = context.requestedProvider ?? conversation.provider;
       const requestedModel = context.requestedModel ?? conversation.model;
+      const runtimeSystemPrompt = await this.conversationManager.getEnvironmentSystemPrompt(
+        conversation.personaId,
+      );
 
       const authResult = await this.authService.checkConversationReady(requestedProvider);
       if (!authResult.ok) {
@@ -1532,6 +1795,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       const anthropicContext = this.mapConversationToAnthropicContext(
         conversation.messages,
         context.assistantMessageId,
+        runtimeSystemPrompt,
       );
 
       const generation = await this.generateAndStream({
@@ -1846,16 +2110,17 @@ export class DaemonHttpServer implements DaemonManagedService {
   private mapConversationToAnthropicContext(
     messages: Message[],
     assistantMessageId: string,
+    runtimeSystemPrompt?: string,
   ): { systemPrompt?: string; messages: Message[] } {
     const orderedMessages = [...messages].sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
-    const systemParts: string[] = [];
+    let latestSystemPrompt: string | undefined;
     const chatMessages: Message[] = [];
 
     for (const message of orderedMessages) {
       if (message.role === "system") {
         const systemText = getTextContent(message.content).trim();
         if (systemText.length > 0) {
-          systemParts.push(systemText);
+          latestSystemPrompt = systemText;
         }
         continue;
       }
@@ -1883,9 +2148,13 @@ export class DaemonHttpServer implements DaemonManagedService {
     //   user:      [tool_result blocks]
     //   assistant: [remaining text blocks]
     const expandedMessages = this.expandToolResultMessages(chatMessages);
+    const effectiveSystemPrompt = runtimeSystemPrompt?.trim() || latestSystemPrompt;
 
     return {
-      systemPrompt: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
+      systemPrompt:
+        typeof effectiveSystemPrompt === "string" && effectiveSystemPrompt.length > 0
+          ? effectiveSystemPrompt
+          : undefined,
       messages: expandedMessages,
     };
   }
@@ -2417,6 +2686,31 @@ export class DaemonHttpServer implements DaemonManagedService {
   }
 
   /**
+   * Initialize environment services used for prompt context and /api/environments routes.
+   */
+  private async initializeEnvironmentServices(): Promise<void> {
+    const bootstrapResult = await bootstrapInstallRoot(this.environmentOptions.daemonPathOptions);
+    if (!bootstrapResult.ok) {
+      throw bootstrapResult.error;
+    }
+
+    const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
+
+    this.configStore = new ConfigStore(paths.globalConfigPath);
+    this.environmentResolver = new FileEnvironmentResolver(paths.environmentsDir);
+    this.environmentSwitchService = new EnvironmentSwitchService(
+      this.configStore,
+      this.environmentResolver,
+    );
+    this.personaRegistry = new PersonaRegistry();
+    this.environmentContextProvider = new EnvironmentContextProvider(
+      this.environmentSwitchService,
+      new SystemPromptBuilder(),
+      this.environmentSwitchService,
+    );
+  }
+
+  /**
    * Initialize conversation services (SQLite store + manager).
    * If a ConversationManager was injected via options, use it directly.
    * Otherwise, create a SQLiteConversationStore and wrap it in a new manager.
@@ -2442,7 +2736,17 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
     }
 
-    this.conversationManager = new ConversationManager(store, compactionOptions?.sessionRepository, compactionOptions?.options);
+    this.conversationManager = new ConversationManager(
+      store,
+      compactionOptions?.sessionRepository,
+      compactionOptions?.options,
+      this.personaRegistry && this.environmentContextProvider
+        ? {
+            personaRegistry: this.personaRegistry,
+            environmentContextProvider: this.environmentContextProvider,
+          }
+        : undefined,
+    );
     log("info", "Conversation services initialized (SQLite store)", {
       path: store.path,
     });

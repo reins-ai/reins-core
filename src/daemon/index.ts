@@ -19,6 +19,7 @@ import { MemoryConsolidationJob } from "../cron/jobs/memory-consolidation-job";
 import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
 import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
 import { MemoryCapabilitiesResolver } from "./memory-capabilities";
+import { bootstrapInstallRoot } from "../environment";
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryService;
@@ -137,6 +138,13 @@ function createStubBriefingJob(): MorningBriefingJob {
 
 async function main() {
   const runtime = new DaemonRuntime();
+
+  const bootstrapResult = await bootstrapInstallRoot();
+  if (!bootstrapResult.ok) {
+    console.error("Failed to bootstrap install root:", bootstrapResult.error.message);
+    process.exit(1);
+  }
+
   const dataRoot = getDataRoot();
   const memoryDataDir = join(dataRoot, "memory");
   const memoryDbPath = join(memoryDataDir, "memory.db");
@@ -149,10 +157,14 @@ async function main() {
 
   const memoryRuntime = memoryRuntimeResult.value;
   const memoryCapabilitiesResolver = new MemoryCapabilitiesResolver({ dataRoot });
+  const conversationDbPath = join(dataRoot, "conversation.db");
   const httpServer = new DaemonHttpServer({
     toolDefinitions: getBuiltinToolDefinitions(),
     memoryService: memoryRuntime.memoryService,
     memoryCapabilitiesResolver,
+    conversation: {
+      sqliteStorePath: conversationDbPath,
+    },
   });
 
   const memoryService = new MemoryDaemonService({

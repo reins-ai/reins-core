@@ -10,6 +10,7 @@ import {
   type ReinsGlobalConfig,
 } from "../config/format-decision";
 import { EnvironmentBootstrapFailedError } from "./errors";
+import { getAllTemplates } from "./templates";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -32,7 +33,7 @@ export interface BootstrapResult {
  * Resolve the install root path for the current platform.
  *
  * Uses the same platform logic as daemon paths:
- * - Linux: ~/.reins/ (or $XDG_DATA_HOME/reins/)
+ * - Linux: ~/.reins/
  * - macOS: ~/Library/Application Support/reins/
  * - Windows: %APPDATA%\reins\
  */
@@ -51,11 +52,6 @@ export function resolveInstallRoot(options: DaemonPathOptions = {}): string {
   }
 
   if (platform === "linux") {
-    const xdgDataHome = env.XDG_DATA_HOME;
-    if (xdgDataHome && xdgDataHome.trim().length > 0) {
-      return platformJoin(platform, xdgDataHome, "reins");
-    }
-
     return platformJoin(platform, homeDirectory, ".reins");
   }
 
@@ -112,6 +108,7 @@ export async function bootstrapInstallRoot(
     }
 
     const configCreated = await ensureDefaultConfig(paths.globalConfigPath, platform);
+    await ensureDefaultEnvironmentDocuments(paths.defaultEnvironmentDir, platform);
 
     return ok({
       paths,
@@ -186,6 +183,25 @@ async function ensureDefaultConfig(configPath: string, platform: NodeJS.Platform
   }
 
   return true;
+}
+
+async function ensureDefaultEnvironmentDocuments(
+  defaultEnvironmentDir: string,
+  platform: NodeJS.Platform,
+): Promise<void> {
+  const templates = getAllTemplates();
+
+  for (const [name, content] of templates) {
+    const documentPath = platformJoin(platform, defaultEnvironmentDir, name);
+    if (await fileExists(documentPath)) {
+      continue;
+    }
+
+    await writeFile(documentPath, content, { encoding: "utf8", mode: FILE_MODE });
+    if (platform !== "win32") {
+      await chmod(documentPath, FILE_MODE);
+    }
+  }
 }
 
 async function directoryExists(path: string): Promise<boolean> {
