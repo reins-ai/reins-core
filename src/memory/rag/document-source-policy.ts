@@ -1,3 +1,5 @@
+import { isAbsolute, relative, resolve } from "node:path";
+
 /**
  * Policy configuration for document source indexing.
  * Controls which files are included/excluded, size limits, and watch behavior.
@@ -89,16 +91,45 @@ function normalizePath(filePath: string): string {
 }
 
 /**
+ * Check whether a file path is safely contained within a source root.
+ * Returns false if the path escapes the root via traversal or is an external absolute path.
+ */
+export function isContainedInRoot(filePath: string, sourceRoot: string): boolean {
+  const canonicalRoot = resolve(sourceRoot);
+  const canonicalPath = resolve(sourceRoot, filePath);
+  const rel = relative(canonicalRoot, canonicalPath);
+
+  // Path escapes root if relative path starts with ".." or is absolute
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Check whether a file path matches the include/exclude rules of a policy.
  *
  * A path matches if:
- * 1. It matches at least one include pattern (or includePaths is empty)
- * 2. It does NOT match any exclude pattern
+ * 1. It is contained within the source root (no traversal escape)
+ * 2. It matches at least one include pattern (or includePaths is empty)
+ * 3. It does NOT match any exclude pattern
+ *
+ * When sourceRoot is provided, canonical path containment is enforced before
+ * include/exclude matching.
  */
 export function matchesPolicy(
   filePath: string,
   policy: DocumentSourcePolicy,
+  sourceRoot?: string,
 ): boolean {
+  // Enforce root containment when sourceRoot is provided
+  if (sourceRoot !== undefined) {
+    if (!isContainedInRoot(filePath, sourceRoot)) {
+      return false;
+    }
+  }
+
   const normalized = normalizePath(filePath);
 
   // Check excludes first — any match means rejected

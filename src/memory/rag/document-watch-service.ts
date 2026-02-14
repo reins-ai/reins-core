@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import { MemoryError } from "../services/memory-error";
 import { err, ok, type Result } from "../../result";
@@ -328,6 +328,15 @@ export class DocumentWatchService {
     }
 
     const source = sourceResult.value;
+
+    // Enforce root boundary — reject paths that escape the source root
+    const canonicalRoot = resolve(source.rootPath);
+    const canonicalPath = resolve(source.rootPath, event.filePath);
+    const rel = relative(canonicalRoot, canonicalPath);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return false;
+    }
+
     const relativePath = normalizeForPolicy(source.rootPath, event.filePath);
     return matchesPolicy(relativePath, source.policy);
   }

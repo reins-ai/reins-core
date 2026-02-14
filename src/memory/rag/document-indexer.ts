@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import type { EmbeddingProvider } from "../embeddings/embedding-provider";
 import { MemoryError } from "../services/memory-error";
@@ -243,6 +243,22 @@ export class DocumentIndexer {
   }
 
   async indexFile(filePath: string, sourceId: string): Promise<Result<DocumentChunk[], MemoryError>> {
+    // Defense-in-depth: enforce that filePath is contained within its source root
+    const sourceResult = this.registry.get(sourceId);
+    if (sourceResult.ok && sourceResult.value) {
+      const sourceRoot = resolve(sourceResult.value.rootPath);
+      const canonicalPath = resolve(sourceRoot, filePath);
+      const rel = relative(sourceRoot, canonicalPath);
+      if (rel.startsWith("..") || isAbsolute(rel)) {
+        return err(
+          new MemoryError(
+            "Path outside registered source root",
+            "MEMORY_DB_ERROR",
+          ),
+        );
+      }
+    }
+
     const contentResult = await this.retry(async () => this.fileSystem.readFile(filePath));
     if (!contentResult.ok) {
       return err(contentResult.error);
