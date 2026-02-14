@@ -1,3 +1,4 @@
+export * from "./error-mapper";
 export * from "./errors";
 export * from "./provider-factory";
 export * from "./provider-contract";
