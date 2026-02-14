@@ -5,10 +5,29 @@
  */
 
 export {
+  OnboardingEngine,
+  type EngineState,
+  type OnboardingEngineOptions,
+  type OnboardingEvent,
+  type OnboardingEventListener,
+  type OnboardingStepHandler,
+  type StepDefaults,
+  type StepExecutionContext,
+  type StepResult,
+} from "./engine";
+
+export {
   OnboardingCheckpointService,
   OnboardingError,
   type CheckpointServiceOptions,
 } from "./checkpoint-service";
+
+export {
+  FirstRunDetector,
+  type FirstRunDetectionResult,
+  type FirstRunDetectorOptions,
+  type FirstRunStatus,
+} from "./first-run-detector";
 
 export {
   ONBOARDING_STEPS,
