@@ -125,6 +125,16 @@ const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     userConfigurable: true,
     baseUrl: "http://localhost:1234",
   },
+  brave_search: {
+    authModes: ["api_key"],
+    requiresAuth: true,
+    userConfigurable: false,
+  },
+  exa: {
+    authModes: ["api_key"],
+    requiresAuth: true,
+    userConfigurable: false,
+  },
 };
 
 export class ProviderRegistry {

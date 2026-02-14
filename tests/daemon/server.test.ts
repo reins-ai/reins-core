@@ -582,6 +582,105 @@ describe("DaemonHttpServer health endpoint with conversation services", () => {
     expect(response.status).toBe(200);
   });
 
+  it("auth configure returns configured true when credential is persisted", async () => {
+    const dbPath = uniqueDbPath();
+    dbPaths.push(dbPath);
+    const port = testPort++;
+    const authService = createStubAuthService();
+
+    (authService as any).handleCommand = async () => ok({
+      action: "configure",
+      provider: "brave_search",
+      source: "tui",
+      credential: {
+        id: "auth_brave_search_api_key",
+        provider: "brave_search",
+        type: "api_key",
+      },
+    });
+
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      conversation: { sqliteStorePath: dbPath },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const response = await fetch(`http://localhost:${port}/api/providers/auth/configure`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "brave_search",
+        mode: "api_key",
+        key: "brv-test-key",
+        source: "tui",
+      }),
+    });
+    expect(response.status).toBe(200);
+
+    const payload = await response.json() as {
+      configured?: boolean;
+      valid?: boolean;
+      provider?: string;
+    };
+    expect(payload.configured).toBe(true);
+    expect(payload.valid).toBe(true);
+    expect(payload.provider).toBe("brave_search");
+  });
+
+  it("auth configure returns configured false when command returns guidance", async () => {
+    const dbPath = uniqueDbPath();
+    dbPaths.push(dbPath);
+    const port = testPort++;
+    const authService = createStubAuthService();
+
+    (authService as any).handleCommand = async () => ok({
+      action: "configure",
+      provider: "brave_search",
+      source: "tui",
+      guidance: {
+        provider: "brave_search",
+        action: "retry",
+        message: "Provider brave_search does not support api_key authentication",
+        supportedModes: [],
+      },
+    });
+
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      conversation: { sqliteStorePath: dbPath },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const response = await fetch(`http://localhost:${port}/api/providers/auth/configure`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "brave_search",
+        mode: "api_key",
+        key: "brv-test-key",
+        source: "tui",
+      }),
+    });
+    expect(response.status).toBe(200);
+
+    const payload = await response.json() as {
+      configured?: boolean;
+      valid?: boolean;
+      error?: string;
+    };
+    expect(payload.configured).toBe(false);
+    expect(payload.valid).toBe(false);
+    expect(payload.error).toContain("does not support api_key authentication");
+  });
+
   it("models endpoint remains functional", async () => {
     const dbPath = uniqueDbPath();
     dbPaths.push(dbPath);

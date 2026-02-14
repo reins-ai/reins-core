@@ -186,6 +186,54 @@ describe("integration/provider-auth-flow", () => {
     }
   });
 
+  it("persists API key credentials for search providers", async () => {
+    const fixture = await createAuthService();
+
+    try {
+      const braveResult = await fixture.service.setApiKey("brave_search", "brv-test-key");
+      const exaResult = await fixture.service.setApiKey("exa", "exa-test-key");
+
+      expect(braveResult.ok).toBe(true);
+      expect(exaResult.ok).toBe(true);
+
+      const braveCredential = await fixture.service.getCredential("brave_search");
+      const exaCredential = await fixture.service.getCredential("exa");
+
+      expect(braveCredential.ok).toBe(true);
+      expect(exaCredential.ok).toBe(true);
+      if (!braveCredential.ok || !braveCredential.value || !exaCredential.ok || !exaCredential.value) {
+        return;
+      }
+
+      expect(braveCredential.value.type).toBe("api_key");
+      expect(exaCredential.value.type).toBe("api_key");
+
+      const bravePayload = await fixture.store.decryptPayload<Record<string, string>>(braveCredential.value);
+      const exaPayload = await fixture.store.decryptPayload<Record<string, string>>(exaCredential.value);
+
+      expect(bravePayload.ok).toBe(true);
+      expect(exaPayload.ok).toBe(true);
+      if (!bravePayload.ok || !exaPayload.ok) {
+        return;
+      }
+
+      expect(bravePayload.value.key).toBe("brv-test-key");
+      expect(exaPayload.value.key).toBe("exa-test-key");
+
+      const providersResult = await fixture.service.listProviders();
+      expect(providersResult.ok).toBe(true);
+      if (!providersResult.ok) {
+        return;
+      }
+
+      const listedProviderIds = providersResult.value.map((status) => status.provider);
+      expect(listedProviderIds).not.toContain("brave_search");
+      expect(listedProviderIds).not.toContain("exa");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("marks local providers as no-auth in auth helpers", async () => {
     const fixture = await createAuthService();
 
