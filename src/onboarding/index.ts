@@ -30,6 +30,19 @@ export {
 } from "./first-run-detector";
 
 export {
+  PERSONALITY_PRESETS,
+  getPresetPromptModifier,
+  type PersonalityPromptDefinition,
+} from "./personality-prompts";
+
+export {
+  DaemonInstallStep,
+  type DaemonInstallStepOptions,
+  WelcomeStep,
+  type WelcomeStepOptions,
+} from "./steps";
+
+export {
   ONBOARDING_STEPS,
   type CompletedStepRecord,
   type OnboardingConfig,
