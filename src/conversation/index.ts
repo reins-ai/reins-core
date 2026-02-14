@@ -1,6 +1,8 @@
 export { ConversationManager } from "./manager";
 export { CompactionService } from "./compaction";
 export type {
+  CompactionMemoryLogger,
+  CompactionMemoryWriteThrough,
   ConversationManagerCompactionOptions,
   CreateOptions,
   ForkOptions,
