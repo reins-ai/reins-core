@@ -15,6 +15,9 @@ import { join } from "node:path";
 import { MemoryError, type MemoryServiceContract } from "../memory/services";
 import { MemoryService } from "../memory/services/memory-service";
 import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
+import { MemoryConsolidationJob } from "../cron/jobs/memory-consolidation-job";
+import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
+import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryServiceContract;
@@ -87,6 +90,50 @@ function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<Initia
   }
 }
 
+function createStubConsolidationJob(): MemoryConsolidationJob {
+  const stubRunner = {
+    run: async () => ok({
+      runId: crypto.randomUUID(),
+      timestamp: new Date(),
+      stats: { candidatesProcessed: 0, factsDistilled: 0, created: 0, updated: 0, superseded: 0, skipped: 0 },
+      mergeResult: null,
+      errors: [],
+      durationMs: 0,
+    }),
+  } as unknown as import("../memory/consolidation/consolidation-runner").ConsolidationRunner;
+
+  return new MemoryConsolidationJob({
+    runner: stubRunner,
+    onComplete: (result) => {
+      console.info(`[cron] Consolidation completed: ${result.stats.factsDistilled} facts distilled`);
+    },
+    onError: (error) => {
+      console.error(`[cron] Consolidation failed: ${error.message}`);
+    },
+  });
+}
+
+function createStubBriefingJob(): MorningBriefingJob {
+  const stubService = {
+    generateBriefing: async () => ok({
+      timestamp: new Date(),
+      sections: [],
+      totalItems: 0,
+      generatedInMs: 0,
+    }),
+  } as unknown as import("../memory/proactive/morning-briefing-service").MorningBriefingService;
+
+  return new MorningBriefingJob({
+    service: stubService,
+    onComplete: (briefing) => {
+      console.info(`[cron] Morning briefing generated: ${briefing.totalItems} items`);
+    },
+    onError: (error) => {
+      console.error(`[cron] Morning briefing failed: ${error.message}`);
+    },
+  });
+}
+
 async function main() {
   const runtime = new DaemonRuntime();
   const httpServer = new DaemonHttpServer({
@@ -132,17 +179,40 @@ async function main() {
     process.exit(1);
   }
 
+  // Register memory cron jobs after memory service is confirmed ready.
+  // Consolidation and briefing runners use stub implementations until
+  // the full pipeline (embedding provider, LLM) is configured in Wave 5.
+  let cronHandle: MemoryCronHandle | undefined;
+  if (memoryService.isReady()) {
+    const cronResult = registerMemoryCronJobs({
+      consolidationJob: createStubConsolidationJob(),
+      briefingJob: createStubBriefingJob(),
+      isMemoryReady: () => memoryService.isReady(),
+    });
+
+    if (cronResult.ok) {
+      cronHandle = cronResult.value;
+      console.log("Memory cron jobs registered successfully");
+    } else {
+      console.warn("Failed to register memory cron jobs:", cronResult.error.message);
+    }
+  } else {
+    console.warn("Memory service not ready — skipping cron job registration");
+  }
+
   console.log("Daemon started successfully");
 
   // Handle shutdown signals
   process.on("SIGTERM", async () => {
     console.log("Received SIGTERM, shutting down...");
+    cronHandle?.stopAll();
     await runtime.stop({ signal: "SIGTERM" });
     process.exit(0);
   });
 
   process.on("SIGINT", async () => {
     console.log("Received SIGINT, shutting down...");
+    cronHandle?.stopAll();
     await runtime.stop({ signal: "SIGINT" });
     process.exit(0);
   });
