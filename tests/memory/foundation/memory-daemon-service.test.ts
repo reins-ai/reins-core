@@ -75,6 +75,10 @@ describe("MemoryDaemonService", () => {
         events.push("flush");
         return ok(undefined);
       },
+      closeStorage: async () => {
+        events.push("close");
+        return ok(undefined);
+      },
     });
 
     await service.start();
@@ -82,7 +86,39 @@ describe("MemoryDaemonService", () => {
 
     expect(stopResult.ok).toBe(true);
     expect(service.getState()).toBe("stopped");
-    expect(events).toEqual(["flush", "shutdown"]);
+    expect(events).toEqual(["flush", "shutdown", "close"]);
+  });
+
+  it("closes storage even when shutdown steps fail", async () => {
+    const events: string[] = [];
+    const service = new MemoryDaemonService({
+      dbPath: "/tmp/reins/memory.db",
+      dataDir: "/tmp/reins/memory",
+      memoryService: createMemoryServiceContract({
+        shutdown: async () => {
+          events.push("shutdown");
+          return err(new MemoryError("shutdown failed", "MEMORY_SHUTDOWN_FAILED"));
+        },
+      }),
+      flushPendingWrites: async () => {
+        events.push("flush");
+        return err(new MemoryError("flush failed", "MEMORY_SHUTDOWN_FAILED"));
+      },
+      closeStorage: async () => {
+        events.push("close");
+        return ok(undefined);
+      },
+    });
+
+    await service.start();
+    const stopResult = await service.stop();
+
+    expect(stopResult.ok).toBe(false);
+    if (!stopResult.ok) {
+      expect(stopResult.error.code).toBe("MEMORY_SHUTDOWN_FAILED");
+    }
+    expect(service.getState()).toBe("error");
+    expect(events).toEqual(["flush", "shutdown", "close"]);
   });
 
   it("enters error state when initialization fails", async () => {
@@ -146,6 +182,29 @@ describe("MemoryDaemonService", () => {
       expect(health.value.memoryCount).toBe(4);
       expect(health.value.embeddingProvider).toBe("openai");
       expect(health.value.lastConsolidation?.toISOString()).toBe("2026-02-13T00:00:00.000Z");
+    }
+  });
+
+  it("includes storage connectivity in health status", async () => {
+    const service = new MemoryDaemonService({
+      dbPath: "/tmp/reins/memory.db",
+      dataDir: "/tmp/reins/memory",
+      memoryService: createMemoryServiceContract({
+        healthCheck: async () =>
+          ok({
+            dbConnected: true,
+            memoryCount: 2,
+          }),
+      }),
+      checkStorageHealth: async () => ok(false),
+    });
+
+    await service.start();
+    const health = await service.healthCheck();
+
+    expect(health.ok).toBe(true);
+    if (health.ok) {
+      expect(health.value.dbConnected).toBe(false);
     }
   });
 

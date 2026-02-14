@@ -20,11 +20,15 @@ export interface MemoryDaemonServiceOptions {
   initializeStorage?: (dbPath: string) => Promise<Result<void, MemoryError>>;
   scanDataDirectory?: (dataDir: string) => Promise<Result<number, MemoryError>>;
   flushPendingWrites?: () => Promise<Result<void, MemoryError>>;
+  checkStorageHealth?: () => Promise<Result<boolean, MemoryError>>;
+  closeStorage?: () => Promise<Result<void, MemoryError>>;
 }
 
 const defaultInitializeStorage = async (): Promise<Result<void, MemoryError>> => ok(undefined);
 const defaultScanDataDirectory = async (): Promise<Result<number, MemoryError>> => ok(0);
 const defaultFlushPendingWrites = async (): Promise<Result<void, MemoryError>> => ok(undefined);
+const defaultCheckStorageHealth = async (): Promise<Result<boolean, MemoryError>> => ok(true);
+const defaultCloseStorage = async (): Promise<Result<void, MemoryError>> => ok(undefined);
 
 const defaultLogger: MemoryDaemonServiceLogger = {
   info: (...args) => {
@@ -54,6 +58,8 @@ export class MemoryDaemonService implements DaemonManagedService {
   private readonly initializeStorage: (dbPath: string) => Promise<Result<void, MemoryError>>;
   private readonly scanDataDirectory: (dataDir: string) => Promise<Result<number, MemoryError>>;
   private readonly flushPendingWrites: () => Promise<Result<void, MemoryError>>;
+  private readonly checkStorageHealth: () => Promise<Result<boolean, MemoryError>>;
+  private readonly closeStorage: () => Promise<Result<void, MemoryError>>;
   private readonly memoryService: MemoryServiceContract;
   private readonly dbPath: string;
   private readonly dataDir: string;
@@ -70,6 +76,8 @@ export class MemoryDaemonService implements DaemonManagedService {
     this.initializeStorage = options.initializeStorage ?? defaultInitializeStorage;
     this.scanDataDirectory = options.scanDataDirectory ?? defaultScanDataDirectory;
     this.flushPendingWrites = options.flushPendingWrites ?? defaultFlushPendingWrites;
+    this.checkStorageHealth = options.checkStorageHealth ?? defaultCheckStorageHealth;
+    this.closeStorage = options.closeStorage ?? defaultCloseStorage;
   }
 
   getState(): MemoryDaemonServiceState {
@@ -77,7 +85,7 @@ export class MemoryDaemonService implements DaemonManagedService {
   }
 
   isReady(): boolean {
-    return this.state === "ready";
+    return this.state === "ready" && this.memoryService.isReady();
   }
 
   async start(): Promise<DaemonResult<void>> {
@@ -118,17 +126,32 @@ export class MemoryDaemonService implements DaemonManagedService {
     this.state = "stopping";
     this.logger.info("Stopping memory daemon service");
 
+    const errors: MemoryError[] = [];
+
     const flushResult = await this.flushPendingWrites();
     if (!flushResult.ok) {
-      this.state = "error";
-      return err(this.toDaemonError(flushResult.error));
+      errors.push(flushResult.error);
     }
 
     const shutdownResult = await this.memoryService.shutdown();
     if (!shutdownResult.ok) {
-      const memoryError = this.toMemoryError(shutdownResult.error, "MEMORY_SHUTDOWN_FAILED");
+      errors.push(this.toMemoryError(shutdownResult.error, "MEMORY_SHUTDOWN_FAILED"));
+    }
+
+    const closeStorageResult = await this.closeStorage();
+    if (!closeStorageResult.ok) {
+      errors.push(closeStorageResult.error);
+    }
+
+    if (errors.length > 0) {
+      const primaryError = errors[0];
       this.state = "error";
-      return err(this.toDaemonError(memoryError));
+      this.logger.error("Memory daemon service failed to stop cleanly", {
+        code: primaryError.code,
+        message: primaryError.message,
+        errorCount: errors.length,
+      });
+      return err(this.toDaemonError(primaryError));
     }
 
     this.state = "stopped";
@@ -137,6 +160,11 @@ export class MemoryDaemonService implements DaemonManagedService {
   }
 
   async healthCheck(): Promise<Result<MemoryHealthStatus, MemoryError>> {
+    const storageHealthResult = await this.checkStorageHealth();
+    if (!storageHealthResult.ok) {
+      return err(this.toMemoryError(storageHealthResult.error, "MEMORY_DB_ERROR"));
+    }
+
     if (!this.isReady() || !this.memoryService.isReady()) {
       return err(this.createMemoryError("Memory service is not ready", "MEMORY_NOT_READY"));
     }
@@ -148,6 +176,7 @@ export class MemoryDaemonService implements DaemonManagedService {
 
     return ok({
       ...healthResult.value,
+      dbConnected: healthResult.value.dbConnected && storageHealthResult.value,
       memoryCount: Math.max(healthResult.value.memoryCount, this.memoryCount),
       lastConsolidation: healthResult.value.lastConsolidation ?? this.lastConsolidation,
       embeddingProvider: healthResult.value.embeddingProvider ?? this.embeddingProvider,

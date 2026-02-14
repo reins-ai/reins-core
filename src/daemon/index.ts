@@ -12,11 +12,17 @@ import { getDataRoot } from "./paths";
 import { DaemonError } from "./types";
 import { err, ok, type Result } from "../result";
 import { join } from "node:path";
-import type { MemoryServiceContract } from "../memory/services";
+import { MemoryError, type MemoryServiceContract } from "../memory/services";
 import { MemoryService } from "../memory/services/memory-service";
 import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
 
-function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<MemoryServiceContract, DaemonError> {
+interface InitializedMemoryRuntime {
+  memoryService: MemoryServiceContract;
+  checkStorageHealth: () => Promise<Result<boolean, MemoryError>>;
+  closeStorage: () => Promise<Result<void, MemoryError>>;
+}
+
+function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<InitializedMemoryRuntime, DaemonError> {
   const db = new SqliteMemoryDb({ dbPath });
   const initializeResult = db.initialize();
   if (!initializeResult.ok) {
@@ -44,8 +50,39 @@ function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<Memory
       },
     });
 
-    return ok(memoryService);
+    return ok({
+      memoryService,
+      checkStorageHealth: async () => {
+        try {
+          db.getDb().query("SELECT 1").get();
+          return ok(true);
+        } catch (error) {
+          return err(
+            new MemoryError(
+              "Failed to verify memory SQLite connectivity",
+              "MEMORY_DB_ERROR",
+              error instanceof Error ? error : undefined,
+            ),
+          );
+        }
+      },
+      closeStorage: async () => {
+        try {
+          db.close();
+          return ok(undefined);
+        } catch (error) {
+          return err(
+            new MemoryError(
+              "Failed to close memory SQLite storage",
+              "MEMORY_SHUTDOWN_FAILED",
+              error instanceof Error ? error : undefined,
+            ),
+          );
+        }
+      },
+    });
   } catch (error) {
+    db.close();
     return err(new DaemonError("Failed to initialize memory runtime", "DAEMON_MEMORY_INIT_FAILED", error instanceof Error ? error : undefined));
   }
 }
@@ -65,12 +102,14 @@ async function main() {
     process.exit(1);
   }
 
-  const memoryServiceContract = memoryRuntimeResult.value;
+  const memoryRuntime = memoryRuntimeResult.value;
 
   const memoryService = new MemoryDaemonService({
     dbPath: memoryDbPath,
     dataDir: memoryDataDir,
-    memoryService: memoryServiceContract,
+    memoryService: memoryRuntime.memoryService,
+    checkStorageHealth: memoryRuntime.checkStorageHealth,
+    closeStorage: memoryRuntime.closeStorage,
   });
 
   // Register HTTP server as managed service
