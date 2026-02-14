@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { createHarnessEventBus, ToolPipeline } from "../../src/harness";
-import { ToolExecutor, ToolRegistry } from "../../src/tools";
+import { getBuiltinToolDefinitions, ToolExecutor, ToolRegistry } from "../../src/tools";
 import type { Tool, ToolCall, ToolContext, ToolResult } from "../../src/types";
 
 const toolContext: ToolContext = {
@@ -168,5 +168,13 @@ describe("ToolPipeline", () => {
     expect(result.output).toBe("Tool execution timed out after 10ms");
     expect(result.metadata.truncated).toBe(false);
     expect(result.metadata.callId).toBe("timeout-call");
+  });
+
+  it("includes web_search in builtin tool definitions", () => {
+    const definitions = getBuiltinToolDefinitions();
+    const webSearch = definitions.find((d) => d.name === "web_search");
+    expect(webSearch).toBeDefined();
+    expect(webSearch?.parameters.required).toContain("action");
+    expect(webSearch?.parameters.required).toContain("query");
   });
 });

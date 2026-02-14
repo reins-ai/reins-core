@@ -10,3 +10,5 @@ export type {
   ModelDefaultsConfig,
   ReinsGlobalConfig,
 } from "./types";
+export { readUserConfig, writeUserConfig } from "./user-config";
+export type { SearchProviderPreference, UserConfig, UserProviderMode } from "./user-config";

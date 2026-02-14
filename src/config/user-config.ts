@@ -9,11 +9,16 @@ const DEFAULT_DAEMON_PORT = 7433;
 
 export type UserProviderMode = "byok" | "gateway" | "none";
 
+export type SearchProviderPreference = "exa" | "brave";
+
 export interface UserConfig {
   name: string;
   provider: {
     mode: UserProviderMode;
     activeProvider?: string;
+    search?: {
+      provider: SearchProviderPreference;
+    };
   };
   daemon: {
     host: string;
@@ -77,11 +82,19 @@ function normalizeProviderMode(value: unknown): UserProviderMode {
   return "none";
 }
 
+function normalizeSearchProviderPreference(value: unknown): SearchProviderPreference {
+  if (value === "exa" || value === "brave") {
+    return value;
+  }
+
+  return "brave";
+}
+
 function normalizeConfig(value: unknown): UserConfig {
   if (!isRecord(value)) {
     return {
       name: "",
-      provider: { mode: "none" },
+      provider: { mode: "none", search: { provider: "brave" } },
       daemon: { host: DEFAULT_DAEMON_HOST, port: DEFAULT_DAEMON_PORT },
       setupComplete: false,
     };
@@ -93,12 +106,17 @@ function normalizeConfig(value: unknown): UserConfig {
   const activeProvider = typeof providerCandidate.activeProvider === "string" && providerCandidate.activeProvider.trim().length > 0
     ? providerCandidate.activeProvider
     : undefined;
+  const searchCandidate = isRecord(providerCandidate.search) ? providerCandidate.search : {};
+  const searchProvider = normalizeSearchProviderPreference(searchCandidate.provider);
 
   return {
     name: typeof value.name === "string" ? value.name : "",
     provider: {
       mode,
       activeProvider,
+      search: {
+        provider: searchProvider,
+      },
     },
     daemon: {
       host: typeof daemonCandidate.host === "string" && daemonCandidate.host.length > 0
@@ -116,12 +134,18 @@ function mergeUserConfig(existing: UserConfig | null, updates: Partial<UserConfi
   const base = existing ?? normalizeConfig(undefined);
   const nextProviderMode = normalizeProviderMode(updates.provider?.mode ?? base.provider.mode);
   const nextActiveProvider = updates.provider?.activeProvider ?? base.provider.activeProvider;
+  const nextSearchProvider = normalizeSearchProviderPreference(
+    updates.provider?.search?.provider ?? base.provider.search?.provider ?? "brave",
+  );
 
   return {
     name: updates.name ?? base.name,
     provider: {
       mode: nextProviderMode,
       activeProvider: nextActiveProvider,
+      search: {
+        provider: nextSearchProvider,
+      },
     },
     daemon: {
       host: updates.daemon?.host ?? base.daemon.host,
