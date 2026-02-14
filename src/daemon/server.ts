@@ -17,7 +17,14 @@ import { AuthError, ConversationError, ProviderError } from "../errors";
 import { err, ok, type Result } from "../result";
 import type { MemoryService, ExplicitMemoryInput, MemoryListOptions, UpdateMemoryInput } from "../memory/services/memory-service";
 import type { MemoryRecord } from "../memory/types/memory-record";
-import { isValidMemoryType, isValidPersistedMemoryLayer, type MemoryLayer } from "../memory/types/memory-types";
+
+import {
+  parseListMemoryQueryParams,
+  validateCreateMemoryRequest,
+  validateSearchMemoryRequest,
+  validateUpdateMemoryRequest,
+  type MemoryRecordDto,
+} from "./types/memory-routes";
 import { getTextContent, serializeContent, type Conversation, type Message } from "../types";
 import { AgentLoop } from "../harness/agent-loop";
 import { ToolExecutor, ToolRegistry } from "../tools";
@@ -2510,21 +2517,22 @@ export class DaemonHttpServer implements DaemonManagedService {
       );
     }
 
-    const payload = body.value as Record<string, unknown>;
-    if (typeof payload.content !== "string" || payload.content.trim().length === 0) {
+    const validated = validateCreateMemoryRequest(body.value);
+    if (!validated.ok) {
       return Response.json(
-        { error: "content is required and must be a non-empty string" },
+        { error: validated.error },
         { status: 400, headers: corsHeaders },
       );
     }
 
+    const dto = validated.value;
     const input: ExplicitMemoryInput = {
-      content: payload.content,
-      type: typeof payload.type === "string" && isValidMemoryType(payload.type) ? payload.type : undefined,
-      tags: Array.isArray(payload.tags) ? payload.tags.filter((t): t is string => typeof t === "string") : undefined,
-      entities: Array.isArray(payload.entities) ? payload.entities.filter((e): e is string => typeof e === "string") : undefined,
-      conversationId: typeof payload.conversationId === "string" ? payload.conversationId : undefined,
-      messageId: typeof payload.messageId === "string" ? payload.messageId : undefined,
+      content: dto.content,
+      type: dto.type,
+      tags: dto.tags,
+      entities: dto.entities,
+      conversationId: dto.conversationId,
+      messageId: dto.messageId,
     };
 
     const result = await this.memoryService!.rememberExplicit(input);
@@ -2552,43 +2560,16 @@ export class DaemonHttpServer implements DaemonManagedService {
     corsHeaders: Record<string, string>,
   ): Promise<Response> {
     const url = new URL(request.url);
-    const options: MemoryListOptions = {};
+    const params = parseListMemoryQueryParams(url);
 
-    const typeParam = url.searchParams.get("type");
-    if (typeParam && isValidMemoryType(typeParam)) {
-      options.type = typeParam;
-    }
-
-    const layerParam = url.searchParams.get("layer");
-    if (layerParam && isValidPersistedMemoryLayer(layerParam)) {
-      options.layer = layerParam as MemoryLayer;
-    }
-
-    const limitParam = url.searchParams.get("limit");
-    if (limitParam) {
-      const parsed = parseInt(limitParam, 10);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        options.limit = parsed;
-      }
-    }
-
-    const offsetParam = url.searchParams.get("offset");
-    if (offsetParam) {
-      const parsed = parseInt(offsetParam, 10);
-      if (!Number.isNaN(parsed) && parsed >= 0) {
-        options.offset = parsed;
-      }
-    }
-
-    const sortByParam = url.searchParams.get("sortBy");
-    if (sortByParam === "createdAt" || sortByParam === "importance" || sortByParam === "accessedAt") {
-      options.sortBy = sortByParam;
-    }
-
-    const sortOrderParam = url.searchParams.get("sortOrder");
-    if (sortOrderParam === "asc" || sortOrderParam === "desc") {
-      options.sortOrder = sortOrderParam;
-    }
+    const options: MemoryListOptions = {
+      type: params.type,
+      layer: params.layer,
+      limit: params.limit,
+      offset: params.offset,
+      sortBy: params.sortBy,
+      sortOrder: params.sortOrder,
+    };
 
     const result = await this.memoryService!.list(options);
     if (!result.ok) {
@@ -2651,28 +2632,22 @@ export class DaemonHttpServer implements DaemonManagedService {
       );
     }
 
-    const payload = body.value as Record<string, unknown>;
-    const input: UpdateMemoryInput = {};
-
-    if (typeof payload.content === "string") {
-      input.content = payload.content;
+    const validated = validateUpdateMemoryRequest(body.value);
+    if (!validated.ok) {
+      return Response.json(
+        { error: validated.error },
+        { status: 400, headers: corsHeaders },
+      );
     }
 
-    if (typeof payload.importance === "number") {
-      input.importance = payload.importance;
-    }
-
-    if (typeof payload.confidence === "number") {
-      input.confidence = payload.confidence;
-    }
-
-    if (Array.isArray(payload.tags)) {
-      input.tags = payload.tags.filter((t): t is string => typeof t === "string");
-    }
-
-    if (Array.isArray(payload.entities)) {
-      input.entities = payload.entities.filter((e): e is string => typeof e === "string");
-    }
+    const dto = validated.value;
+    const input: UpdateMemoryInput = {
+      content: dto.content,
+      importance: dto.importance,
+      confidence: dto.confidence,
+      tags: dto.tags,
+      entities: dto.entities,
+    };
 
     const result = await this.memoryService!.update(id, input);
     if (!result.ok) {
@@ -2745,23 +2720,22 @@ export class DaemonHttpServer implements DaemonManagedService {
       );
     }
 
-    const payload = body.value as Record<string, unknown>;
-    const query = typeof payload.query === "string" ? payload.query.trim() : "";
-
-    const listOptions: MemoryListOptions = {};
-
-    const typeFilter = payload.type;
-    if (typeof typeFilter === "string" && isValidMemoryType(typeFilter)) {
-      listOptions.type = typeFilter;
+    const validated = validateSearchMemoryRequest(body.value);
+    if (!validated.ok) {
+      return Response.json(
+        { error: validated.error },
+        { status: 400, headers: corsHeaders },
+      );
     }
 
-    const layerFilter = payload.layer;
-    if (typeof layerFilter === "string" && isValidPersistedMemoryLayer(layerFilter)) {
-      listOptions.layer = layerFilter as MemoryLayer;
-    }
+    const dto = validated.value;
+    const query = dto.query ?? "";
 
-    const limit = typeof payload.limit === "number" && payload.limit > 0 ? payload.limit : 50;
-    listOptions.limit = limit;
+    const listOptions: MemoryListOptions = {
+      type: dto.type,
+      layer: dto.layer,
+      limit: dto.limit ?? 50,
+    };
 
     const result = await this.memoryService!.list(listOptions);
     if (!result.ok) {
@@ -2815,7 +2789,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   /**
    * Serialize a MemoryRecord to a JSON-safe DTO with ISO date strings.
    */
-  private memoryRecordToDto(record: MemoryRecord): Record<string, unknown> {
+  private memoryRecordToDto(record: MemoryRecord): MemoryRecordDto {
     return {
       id: record.id,
       content: record.content,

@@ -15,6 +15,12 @@ import type {
 } from "../../src/memory/storage/memory-repository";
 import type { MemoryRecord } from "../../src/memory/types/memory-record";
 import type { MemoryLayer, MemoryType } from "../../src/memory/types/memory-types";
+import {
+  validateCreateMemoryRequest,
+  validateUpdateMemoryRequest,
+  validateSearchMemoryRequest,
+  parseListMemoryQueryParams,
+} from "../../src/daemon/types/memory-routes";
 
 /**
  * In-memory MemoryRepository for testing daemon memory routes
@@ -791,5 +797,542 @@ describe("DaemonHttpServer memory routes", () => {
     const listResponse = await fetch(`http://localhost:${port}/api/memory`);
     const listBody = await listResponse.json();
     expect(listBody.memories.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DTO validation unit tests
+// ---------------------------------------------------------------------------
+
+describe("validateCreateMemoryRequest", () => {
+  it("accepts valid minimal request", () => {
+    const result = validateCreateMemoryRequest({ content: "Hello world" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.content).toBe("Hello world");
+      expect(result.value.type).toBeUndefined();
+      expect(result.value.tags).toBeUndefined();
+    }
+  });
+
+  it("accepts valid full request", () => {
+    const result = validateCreateMemoryRequest({
+      content: "Full memory",
+      type: "fact",
+      tags: ["tag1", "tag2"],
+      entities: ["entity1"],
+      conversationId: "conv-123",
+      messageId: "msg-456",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.content).toBe("Full memory");
+      expect(result.value.type).toBe("fact");
+      expect(result.value.tags).toEqual(["tag1", "tag2"]);
+      expect(result.value.entities).toEqual(["entity1"]);
+      expect(result.value.conversationId).toBe("conv-123");
+      expect(result.value.messageId).toBe("msg-456");
+    }
+  });
+
+  it("rejects non-object body", () => {
+    const result = validateCreateMemoryRequest("not an object");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("JSON object");
+    }
+  });
+
+  it("rejects missing content", () => {
+    const result = validateCreateMemoryRequest({ type: "fact" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("content");
+    }
+  });
+
+  it("rejects empty content", () => {
+    const result = validateCreateMemoryRequest({ content: "   " });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("content");
+    }
+  });
+
+  it("rejects invalid type", () => {
+    const result = validateCreateMemoryRequest({ content: "test", type: "invalid_type" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("type");
+    }
+  });
+
+  it("rejects non-string-array tags", () => {
+    const result = validateCreateMemoryRequest({ content: "test", tags: [1, 2, 3] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("tags");
+    }
+  });
+
+  it("rejects non-string-array entities", () => {
+    const result = validateCreateMemoryRequest({ content: "test", entities: "not-array" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("entities");
+    }
+  });
+
+  it("rejects non-string conversationId", () => {
+    const result = validateCreateMemoryRequest({ content: "test", conversationId: 123 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("conversationId");
+    }
+  });
+
+  it("rejects non-string messageId", () => {
+    const result = validateCreateMemoryRequest({ content: "test", messageId: true });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("messageId");
+    }
+  });
+});
+
+describe("validateUpdateMemoryRequest", () => {
+  it("accepts valid content update", () => {
+    const result = validateUpdateMemoryRequest({ content: "Updated" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.content).toBe("Updated");
+    }
+  });
+
+  it("accepts valid importance update", () => {
+    const result = validateUpdateMemoryRequest({ importance: 0.8 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.importance).toBe(0.8);
+    }
+  });
+
+  it("accepts valid confidence update", () => {
+    const result = validateUpdateMemoryRequest({ confidence: 0.5 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.confidence).toBe(0.5);
+    }
+  });
+
+  it("accepts valid tags update", () => {
+    const result = validateUpdateMemoryRequest({ tags: ["new-tag"] });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tags).toEqual(["new-tag"]);
+    }
+  });
+
+  it("accepts multiple fields", () => {
+    const result = validateUpdateMemoryRequest({
+      content: "Updated",
+      importance: 0.9,
+      tags: ["a", "b"],
+      entities: ["e1"],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.content).toBe("Updated");
+      expect(result.value.importance).toBe(0.9);
+      expect(result.value.tags).toEqual(["a", "b"]);
+      expect(result.value.entities).toEqual(["e1"]);
+    }
+  });
+
+  it("rejects empty update (no fields)", () => {
+    const result = validateUpdateMemoryRequest({});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("At least one field");
+    }
+  });
+
+  it("rejects non-object body", () => {
+    const result = validateUpdateMemoryRequest(null);
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects importance out of range (> 1)", () => {
+    const result = validateUpdateMemoryRequest({ importance: 1.5 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("importance");
+    }
+  });
+
+  it("rejects importance out of range (< 0)", () => {
+    const result = validateUpdateMemoryRequest({ importance: -0.1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("importance");
+    }
+  });
+
+  it("rejects confidence out of range", () => {
+    const result = validateUpdateMemoryRequest({ confidence: 2 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("confidence");
+    }
+  });
+
+  it("rejects non-string content", () => {
+    const result = validateUpdateMemoryRequest({ content: 42 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("content");
+    }
+  });
+
+  it("rejects non-string-array tags", () => {
+    const result = validateUpdateMemoryRequest({ tags: "not-array" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("tags");
+    }
+  });
+});
+
+describe("validateSearchMemoryRequest", () => {
+  it("accepts empty object (all optional)", () => {
+    const result = validateSearchMemoryRequest({});
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts valid query", () => {
+    const result = validateSearchMemoryRequest({ query: "find this" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.query).toBe("find this");
+    }
+  });
+
+  it("trims query whitespace", () => {
+    const result = validateSearchMemoryRequest({ query: "  padded  " });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.query).toBe("padded");
+    }
+  });
+
+  it("accepts valid type filter", () => {
+    const result = validateSearchMemoryRequest({ type: "preference" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.type).toBe("preference");
+    }
+  });
+
+  it("accepts valid layer filter", () => {
+    const result = validateSearchMemoryRequest({ layer: "stm" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.layer).toBe("stm");
+    }
+  });
+
+  it("accepts valid limit", () => {
+    const result = validateSearchMemoryRequest({ limit: 10 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.limit).toBe(10);
+    }
+  });
+
+  it("rejects non-object body", () => {
+    const result = validateSearchMemoryRequest([1, 2, 3]);
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects non-string query", () => {
+    const result = validateSearchMemoryRequest({ query: 42 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("query");
+    }
+  });
+
+  it("rejects invalid type", () => {
+    const result = validateSearchMemoryRequest({ type: "bogus" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("type");
+    }
+  });
+
+  it("rejects invalid layer", () => {
+    const result = validateSearchMemoryRequest({ layer: "working" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("layer");
+    }
+  });
+
+  it("rejects non-positive limit", () => {
+    const result = validateSearchMemoryRequest({ limit: 0 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("limit");
+    }
+  });
+
+  it("rejects non-integer limit", () => {
+    const result = validateSearchMemoryRequest({ limit: 1.5 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("limit");
+    }
+  });
+});
+
+describe("parseListMemoryQueryParams", () => {
+  it("returns empty params for no query string", () => {
+    const url = new URL("http://localhost/api/memory");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.type).toBeUndefined();
+    expect(params.layer).toBeUndefined();
+    expect(params.limit).toBeUndefined();
+    expect(params.offset).toBeUndefined();
+    expect(params.sortBy).toBeUndefined();
+    expect(params.sortOrder).toBeUndefined();
+  });
+
+  it("parses valid type", () => {
+    const url = new URL("http://localhost/api/memory?type=fact");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.type).toBe("fact");
+  });
+
+  it("ignores invalid type", () => {
+    const url = new URL("http://localhost/api/memory?type=bogus");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.type).toBeUndefined();
+  });
+
+  it("parses valid layer", () => {
+    const url = new URL("http://localhost/api/memory?layer=ltm");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.layer).toBe("ltm");
+  });
+
+  it("ignores invalid layer", () => {
+    const url = new URL("http://localhost/api/memory?layer=working");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.layer).toBeUndefined();
+  });
+
+  it("parses valid limit and offset", () => {
+    const url = new URL("http://localhost/api/memory?limit=10&offset=5");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.limit).toBe(10);
+    expect(params.offset).toBe(5);
+  });
+
+  it("ignores non-numeric limit", () => {
+    const url = new URL("http://localhost/api/memory?limit=abc");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.limit).toBeUndefined();
+  });
+
+  it("ignores negative limit", () => {
+    const url = new URL("http://localhost/api/memory?limit=-5");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.limit).toBeUndefined();
+  });
+
+  it("parses valid sortBy and sortOrder", () => {
+    const url = new URL("http://localhost/api/memory?sortBy=importance&sortOrder=asc");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.sortBy).toBe("importance");
+    expect(params.sortOrder).toBe("asc");
+  });
+
+  it("ignores invalid sortBy", () => {
+    const url = new URL("http://localhost/api/memory?sortBy=name");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.sortBy).toBeUndefined();
+  });
+
+  it("ignores invalid sortOrder", () => {
+    const url = new URL("http://localhost/api/memory?sortOrder=random");
+    const params = parseListMemoryQueryParams(url);
+    expect(params.sortOrder).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTTP-level validation tests (through the server)
+// ---------------------------------------------------------------------------
+
+describe("DaemonHttpServer memory route validation", () => {
+  const servers: DaemonHttpServer[] = [];
+  let testPort = 19433;
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+  });
+
+  it("rejects create with invalid type field", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    const response = await fetch(`http://localhost:${port}/api/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "test", type: "not_a_real_type" }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("type");
+  });
+
+  it("rejects create with non-string-array tags", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    const response = await fetch(`http://localhost:${port}/api/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "test", tags: [1, 2, 3] }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("tags");
+  });
+
+  it("rejects update with empty body (no fields)", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    // Create a memory first
+    const createResponse = await fetch(`http://localhost:${port}/api/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "test memory" }),
+    });
+    const created = await createResponse.json();
+
+    const response = await fetch(`http://localhost:${port}/api/memory/${created.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("At least one field");
+  });
+
+  it("rejects update with out-of-range importance", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    const createResponse = await fetch(`http://localhost:${port}/api/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "test memory" }),
+    });
+    const created = await createResponse.json();
+
+    const response = await fetch(`http://localhost:${port}/api/memory/${created.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ importance: 1.5 }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("importance");
+  });
+
+  it("rejects search with invalid type filter", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    const response = await fetch(`http://localhost:${port}/api/memory/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "test", type: "bogus" }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("type");
+  });
+
+  it("rejects search with invalid layer filter", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    const response = await fetch(`http://localhost:${port}/api/memory/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "test", layer: "working" }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("layer");
+  });
+
+  it("rejects search with non-positive limit", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    const response = await fetch(`http://localhost:${port}/api/memory/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "test", limit: 0 }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("limit");
+  });
+
+  it("rejects create with non-JSON body", async () => {
+    const port = testPort++;
+    const server = await createTestServer(port);
+    await server.start();
+    servers.push(server);
+
+    const response = await fetch(`http://localhost:${port}/api/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: "not json",
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain("Invalid JSON");
   });
 });
