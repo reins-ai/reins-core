@@ -10,6 +10,7 @@ export * from "./daemon/runtime";
 export * from "./daemon/service-installer";
 export * from "./daemon/paths";
 export * from "./daemon/types";
+export * from "./environment";
 export * from "./errors";
 export * from "./harness";
 export * from "./memory";
