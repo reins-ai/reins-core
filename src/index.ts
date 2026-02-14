@@ -37,3 +37,48 @@ export * from "./tools/schedule";
 export * from "./types";
 export * from "./utils";
 export * from "./voice";
+
+// Onboarding — explicit re-exports to avoid StepResult collision with harness
+export {
+  OnboardingEngine,
+  type EngineState,
+  type OnboardingEngineOptions,
+  type OnboardingEvent,
+  type OnboardingEventListener,
+  type OnboardingStepHandler,
+  type StepDefaults,
+  type StepExecutionContext,
+  type StepResult as OnboardingStepResult,
+} from "./onboarding/engine";
+export {
+  OnboardingCheckpointService,
+  OnboardingError,
+  type CheckpointServiceOptions,
+} from "./onboarding/checkpoint-service";
+export {
+  FirstRunDetector,
+  type FirstRunDetectionResult,
+  type FirstRunDetectorOptions,
+  type FirstRunStatus,
+} from "./onboarding/first-run-detector";
+export {
+  PERSONALITY_PRESETS,
+  getPresetPromptModifier,
+  type PersonalityPromptDefinition,
+} from "./onboarding/personality-prompts";
+export {
+  DaemonInstallStep,
+  type DaemonInstallStepOptions,
+  WelcomeStep,
+  type WelcomeStepOptions,
+} from "./onboarding/steps";
+export {
+  ONBOARDING_STEPS,
+  type CompletedStepRecord,
+  type OnboardingConfig,
+  type OnboardingMode,
+  type OnboardingStep,
+  type OnboardingStepStatus,
+  type PersonalityConfig,
+  type PersonalityPreset,
+} from "./onboarding/types";
