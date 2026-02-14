@@ -19,6 +19,7 @@ export type { EnvironmentErrorCode } from "./errors";
 export { ENVIRONMENT_ERROR_CODES } from "./errors";
 
 export { FileEnvironmentResolver } from "./file-resolver";
+export { DocumentLoader } from "./document-loader";
 
 export { EnvironmentSwitchService } from "./switch-service";
 export type {
