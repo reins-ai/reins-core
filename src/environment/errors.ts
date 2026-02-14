@@ -6,6 +6,7 @@ export const ENVIRONMENT_ERROR_CODES = [
   "INVALID_ENVIRONMENT_NAME",
   "BOOTSTRAP_FAILED",
   "SCOPE_VIOLATION",
+  "SWITCH_FAILED",
 ] as const;
 
 export type EnvironmentErrorCode = (typeof ENVIRONMENT_ERROR_CODES)[number];
@@ -53,5 +54,12 @@ export class EnvironmentScopeViolationError extends EnvironmentError {
   constructor(message: string, cause?: Error) {
     super(message, "SCOPE_VIOLATION", cause);
     this.name = "EnvironmentScopeViolationError";
+  }
+}
+
+export class EnvironmentSwitchFailedError extends EnvironmentError {
+  constructor(message: string, cause?: Error) {
+    super(message, "SWITCH_FAILED", cause);
+    this.name = "EnvironmentSwitchFailedError";
   }
 }

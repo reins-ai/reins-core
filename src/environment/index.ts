@@ -12,12 +12,20 @@ export {
   EnvironmentError,
   EnvironmentNotFoundError,
   EnvironmentScopeViolationError,
+  EnvironmentSwitchFailedError,
   InvalidEnvironmentNameError,
 } from "./errors";
 export type { EnvironmentErrorCode } from "./errors";
 export { ENVIRONMENT_ERROR_CODES } from "./errors";
 
 export { FileEnvironmentResolver } from "./file-resolver";
+
+export { EnvironmentSwitchService } from "./switch-service";
+export type {
+  EnvironmentSwitchEvent,
+  EnvironmentSwitchListener,
+  EnvironmentSwitchResult,
+} from "./switch-service";
 
 export type { EnvironmentResolver } from "./resolver";
 
