@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "../../result";
+import type { Result } from "../../result";
 import type {
   SearchProviderName,
   SearchType,
@@ -15,31 +15,26 @@ export interface SearchProviderCapabilities {
   readonly news: boolean;
 }
 
-export const BRAVE_CAPABILITIES = {
+export const BRAVE_CAPABILITIES: SearchProviderCapabilities = {
   name: "brave",
   text: true,
   image: true,
   video: true,
   news: true,
-} as const satisfies SearchProviderCapabilities;
+};
 
-export const EXA_CAPABILITIES = {
+export const EXA_CAPABILITIES: SearchProviderCapabilities = {
   name: "exa",
   text: true,
   image: false,
   video: false,
   news: true,
-} as const satisfies SearchProviderCapabilities;
+};
 
 export interface SearchProviderAdapter {
   readonly capabilities: SearchProviderCapabilities;
   search(query: WebSearchQuery): Promise<Result<WebSearchResponse, WebSearchError>>;
 }
-
-export type SearchProviderResultFactories = {
-  readonly ok: typeof ok;
-  readonly err: typeof err;
-};
 
 export function supportsSearchType(
   capabilities: SearchProviderCapabilities,
