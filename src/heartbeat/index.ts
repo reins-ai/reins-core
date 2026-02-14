@@ -19,3 +19,6 @@ export {
   evaluateDue,
 } from "./routines";
 export type { Routine, RoutineFrequency, DueRoutine } from "./routines";
+
+export { HeartbeatSkipEvaluator } from "./skip-evaluator";
+export type { SkipEvaluationContext, SkipDecision } from "./skip-evaluator";

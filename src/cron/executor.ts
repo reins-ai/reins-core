@@ -7,6 +7,7 @@ export type CronAuditEventType =
   | "cron.deleted"
   | "cron.executed"
   | "cron.failed"
+  | "cron.skipped"
   | "cron.paused"
   | "cron.resumed"
   | "cron.rate_limited";
@@ -62,7 +63,14 @@ export interface CronExecutorOptions {
   rateLimiter: CronRateLimiter;
   auditLog: CronAuditLog;
   handler: (job: CronJobDefinition) => Promise<void>;
+  preExecute?: (job: CronJobDefinition) => Promise<CronPreExecutionDecision | void>;
   now?: () => Date;
+}
+
+export interface CronPreExecutionDecision {
+  skip: boolean;
+  reason: string;
+  metadata?: Record<string, unknown>;
 }
 
 export class CronExecutor {
@@ -70,6 +78,26 @@ export class CronExecutor {
 
   async execute(job: CronJobDefinition): Promise<void> {
     const startedAt = this.now().getTime();
+
+    const preExecutionDecision = await this.options.preExecute?.(job);
+    if (preExecutionDecision?.skip) {
+      const endedAt = this.now().getTime();
+      this.options.auditLog.record({
+        timestamp: endedAt,
+        eventType: "cron.skipped",
+        jobId: job.id,
+        jobName: job.name,
+        action: job.payload.action,
+        success: true,
+        durationMs: Math.max(0, endedAt - startedAt),
+        metadata: {
+          reason: preExecutionDecision.reason,
+          ...(preExecutionDecision.metadata ?? {}),
+        },
+      });
+      return;
+    }
+
     const rateLimitResult = this.options.rateLimiter.tryAcquire(startedAt);
     if (!rateLimitResult.ok) {
       this.options.auditLog.record({
