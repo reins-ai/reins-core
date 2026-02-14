@@ -333,6 +333,37 @@ describe("CronExecutor", () => {
     expect(auditLog.getEntriesByType("cron.executed")).toHaveLength(2);
   });
 
+  test("execute supports pre-execution skip hook", async () => {
+    const auditLog = new InMemoryCronAuditLog();
+    const rateLimiter = new CronRateLimiter({
+      maxExecutionsPerMinute: 2,
+      maxExecutionsPerHour: 2,
+    });
+    const executedJobIds: string[] = [];
+    const executor = new CronExecutor({
+      rateLimiter,
+      auditLog,
+      now: () => new Date("2026-02-11T10:00:00.000Z"),
+      preExecute: async () => ({
+        skip: true,
+        reason: "skip.no_due_routines_and_no_heartbeat_checks",
+      }),
+      handler: async (job) => {
+        executedJobIds.push(job.id);
+      },
+    });
+
+    await executor.execute(createJob({ id: "job-skip", name: "skip-job" }));
+
+    expect(executedJobIds).toHaveLength(0);
+    expect(auditLog.getEntriesByType("cron.executed")).toHaveLength(0);
+    expect(auditLog.getEntriesByType("cron.skipped")).toHaveLength(1);
+    expect(auditLog.getEntriesByType("cron.skipped")[0]?.metadata?.reason).toBe(
+      "skip.no_due_routines_and_no_heartbeat_checks",
+    );
+    expect(rateLimiter.getUsage(Date.parse("2026-02-11T10:00:00.000Z")).minuteCount).toBe(0);
+  });
+
   test("lifecycle methods record create/update/delete/pause/resume events", () => {
     const auditLog = new InMemoryCronAuditLog();
     const executor = new CronExecutor({

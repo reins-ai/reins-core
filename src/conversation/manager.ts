@@ -1,5 +1,7 @@
 import { ConversationError } from "../errors";
 import type { MemoryStore } from "../memory";
+import type { EnvironmentContextProvider } from "../persona/environment-context";
+import type { PersonaRegistry } from "../persona/registry";
 import { err, ok, type Result } from "../result";
 import type {
   ContentBlock,
@@ -94,26 +96,39 @@ export interface ConversationManagerCompactionOptions {
   memoryWriteThrough?: CompactionMemoryWriteThrough;
 }
 
+export interface ConversationManagerEnvironmentOptions {
+  personaRegistry?: PersonaRegistry;
+  environmentContextProvider?: EnvironmentContextProvider;
+}
+
 export class ConversationManager {
   private readonly compactionOptions?: ConversationManagerCompactionOptions;
+  private readonly environmentOptions?: ConversationManagerEnvironmentOptions;
 
   constructor(
     private readonly store: ConversationStore,
     private readonly sessionRepository?: SessionRepository,
     compactionOptions?: ConversationManagerCompactionOptions,
+    environmentOptions?: ConversationManagerEnvironmentOptions,
   ) {
     this.compactionOptions = compactionOptions;
+    this.environmentOptions = environmentOptions;
   }
 
   async create(options: CreateOptions): Promise<Conversation> {
     const now = new Date();
     const messages: Message[] = [];
+    const hasExplicitSystemPrompt = Object.prototype.hasOwnProperty.call(options, "systemPrompt");
+    const environmentSystemPrompt = hasExplicitSystemPrompt
+      ? undefined
+      : await this.buildEnvironmentSystemPrompt(options);
+    const systemPrompt = hasExplicitSystemPrompt ? options.systemPrompt : environmentSystemPrompt;
 
-    if (options.systemPrompt) {
+    if (typeof systemPrompt === "string") {
       messages.push({
         id: generateId("msg"),
         role: "system",
-        content: options.systemPrompt,
+        content: systemPrompt,
         createdAt: now,
       });
     }
@@ -526,6 +541,40 @@ export class ConversationManager {
     await this.runMemoryWriteThrough(conversation, session, compactResult.value);
 
     return ok(compactResult.value.session ?? session);
+  }
+
+  private async buildEnvironmentSystemPrompt(options: CreateOptions): Promise<string | undefined> {
+    const provider = this.environmentOptions?.environmentContextProvider;
+    const registry = this.environmentOptions?.personaRegistry;
+
+    if (!provider || !registry) {
+      return undefined;
+    }
+
+    const persona = this.resolvePersonaForPrompt(options.personaId);
+    if (!persona) {
+      return undefined;
+    }
+
+    const promptResult = await provider.buildEnvironmentPrompt(persona);
+    if (!promptResult.ok) {
+      return persona.systemPrompt;
+    }
+
+    return promptResult.value;
+  }
+
+  private resolvePersonaForPrompt(personaId?: string) {
+    const registry = this.environmentOptions?.personaRegistry;
+    if (!registry) {
+      return undefined;
+    }
+
+    if (personaId) {
+      return registry.get(personaId);
+    }
+
+    return registry.getDefault();
   }
 
   private async runMemoryWriteThrough(

@@ -9,8 +9,120 @@ import { ConversationManager } from "../../src/conversation/manager";
 import { SessionRepository } from "../../src/conversation/session-repository";
 import { TranscriptStore } from "../../src/conversation/transcript-store";
 import { InMemoryConversationStore } from "../../src/conversation/memory-store";
+import { ok } from "../../src/result";
+import { SystemPromptBuilder } from "../../src/persona/builder";
+import { EnvironmentContextProvider } from "../../src/persona/environment-context";
+import { PersonaRegistry } from "../../src/persona/registry";
 import { LocalFileMemoryStore } from "../../src/memory/local-store";
 import type { ContentBlock, ToolUseBlock, ToolResultBlock, TextBlock } from "../../src/types";
+import type { OverlayResolution } from "../../src/environment/types";
+
+function createOverlayResolution(personality: string, user: string): OverlayResolution {
+  const now = new Date();
+
+  return {
+    activeEnvironment: "work",
+    fallbackEnvironment: "default",
+    documents: {
+      PERSONALITY: {
+        type: "PERSONALITY",
+        source: "active",
+        sourceEnvironment: "work",
+        document: {
+          type: "PERSONALITY",
+          path: "work/PERSONALITY.md",
+          content: personality,
+          environmentName: "work",
+          loadedAt: now,
+        },
+      },
+      USER: {
+        type: "USER",
+        source: "active",
+        sourceEnvironment: "work",
+        document: {
+          type: "USER",
+          path: "work/USER.md",
+          content: user,
+          environmentName: "work",
+          loadedAt: now,
+        },
+      },
+      HEARTBEAT: {
+        type: "HEARTBEAT",
+        source: "default",
+        sourceEnvironment: "default",
+        document: {
+          type: "HEARTBEAT",
+          path: "default/HEARTBEAT.md",
+          content: "",
+          environmentName: "default",
+          loadedAt: now,
+        },
+      },
+      ROUTINES: {
+        type: "ROUTINES",
+        source: "default",
+        sourceEnvironment: "default",
+        document: {
+          type: "ROUTINES",
+          path: "default/ROUTINES.md",
+          content: "",
+          environmentName: "default",
+          loadedAt: now,
+        },
+      },
+      GOALS: {
+        type: "GOALS",
+        source: "default",
+        sourceEnvironment: "default",
+        document: {
+          type: "GOALS",
+          path: "default/GOALS.md",
+          content: "",
+          environmentName: "default",
+          loadedAt: now,
+        },
+      },
+      KNOWLEDGE: {
+        type: "KNOWLEDGE",
+        source: "default",
+        sourceEnvironment: "default",
+        document: {
+          type: "KNOWLEDGE",
+          path: "default/KNOWLEDGE.md",
+          content: "",
+          environmentName: "default",
+          loadedAt: now,
+        },
+      },
+      TOOLS: {
+        type: "TOOLS",
+        source: "default",
+        sourceEnvironment: "default",
+        document: {
+          type: "TOOLS",
+          path: "default/TOOLS.md",
+          content: "",
+          environmentName: "default",
+          loadedAt: now,
+        },
+      },
+      BOUNDARIES: {
+        type: "BOUNDARIES",
+        source: "default",
+        sourceEnvironment: "default",
+        document: {
+          type: "BOUNDARIES",
+          path: "default/BOUNDARIES.md",
+          content: "",
+          environmentName: "default",
+          loadedAt: now,
+        },
+      },
+    },
+  };
+}
 
 describe("ConversationManager", () => {
   test("creates conversations with system prompt and options", async () => {
@@ -34,6 +146,91 @@ describe("ConversationManager", () => {
     expect(conversation.messages).toHaveLength(1);
     expect(conversation.messages[0]?.role).toBe("system");
     expect(conversation.messages[0]?.content).toBe("You are helpful");
+  });
+
+  test("uses environment-aware system prompt when context provider is configured", async () => {
+    const personaRegistry = new PersonaRegistry();
+    const provider = new EnvironmentContextProvider(
+      {
+        getResolvedDocuments: async () =>
+          ok(
+            createOverlayResolution(
+              "You are an environment-specific assistant.",
+              "User profile from USER.md",
+            ),
+          ),
+      },
+      new SystemPromptBuilder(),
+    );
+    const manager = new ConversationManager(
+      new InMemoryConversationStore(),
+      undefined,
+      undefined,
+      {
+        personaRegistry,
+        environmentContextProvider: provider,
+      },
+    );
+
+    const conversation = await manager.create({
+      title: "Env Session",
+      model: "gpt-4o-mini",
+      provider: "openai",
+    });
+
+    expect(conversation.messages).toHaveLength(1);
+    expect(conversation.messages[0]?.role).toBe("system");
+    expect(conversation.messages[0]?.content).toContain(
+      "## Identity\nYou are an environment-specific assistant.",
+    );
+    expect(conversation.messages[0]?.content).toContain("## User Context\nUser profile from USER.md");
+  });
+
+  test("preserves explicit system prompt when provided", async () => {
+    const personaRegistry = new PersonaRegistry();
+    const provider = new EnvironmentContextProvider(
+      {
+        getResolvedDocuments: async () =>
+          ok(
+            createOverlayResolution(
+              "Environment personality should not override explicit prompt",
+              "Environment user context",
+            ),
+          ),
+      },
+      new SystemPromptBuilder(),
+    );
+    const manager = new ConversationManager(
+      new InMemoryConversationStore(),
+      undefined,
+      undefined,
+      {
+        personaRegistry,
+        environmentContextProvider: provider,
+      },
+    );
+
+    const conversation = await manager.create({
+      title: "Explicit Session",
+      model: "gpt-4o-mini",
+      provider: "openai",
+      systemPrompt: "Explicit prompt wins",
+    });
+
+    expect(conversation.messages).toHaveLength(1);
+    expect(conversation.messages[0]?.content).toBe("Explicit prompt wins");
+  });
+
+  test("keeps previous behavior when no environment context provider is configured", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+
+    const conversation = await manager.create({
+      title: "Legacy Session",
+      model: "gpt-4o-mini",
+      provider: "openai",
+    });
+
+    expect(conversation.messages).toHaveLength(0);
   });
 
   test("loads existing conversations and throws for missing ones", async () => {

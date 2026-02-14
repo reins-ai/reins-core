@@ -3,6 +3,7 @@ export { CompactionService } from "./compaction";
 export type {
   CompactionMemoryLogger,
   CompactionMemoryWriteThrough,
+  ConversationManagerEnvironmentOptions,
   ConversationManagerCompactionOptions,
   CreateOptions,
   ForkOptions,

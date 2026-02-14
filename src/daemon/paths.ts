@@ -97,12 +97,12 @@ function resolveDataRoot(options: DaemonPathOptions): string {
   const homeDirectory = options.homeDirectory ?? homedir();
 
   if (platform === "darwin") {
-    return platformJoin(platform, homeDirectory, "Library", "Application Support", "Reins");
+    return platformJoin(platform, homeDirectory, "Library", "Application Support", "reins");
   }
 
   if (platform === "win32") {
     const appData = env.APPDATA ?? platformJoin(platform, homeDirectory, "AppData", "Roaming");
-    return platformJoin(platform, appData, "Reins");
+    return platformJoin(platform, appData, "reins");
   }
 
   if (platform === "linux") {
