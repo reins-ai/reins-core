@@ -3,8 +3,14 @@
  * Listens on localhost:7433
  */
 
-import { ConversationManager } from "../conversation/manager";
+import { dirname, join, parse } from "node:path";
+
+import { ConversationManager, type ConversationManagerCompactionOptions } from "../conversation/manager";
+import { CompactionService } from "../conversation/compaction";
+import { CompactionManager, MemoryPreservationHook } from "../conversation/compaction/index";
+import { SessionRepository } from "../conversation/session-repository";
 import { SQLiteConversationStore } from "../conversation/sqlite-store";
+import { TranscriptStore } from "../conversation/transcript-store";
 import { ProviderAuthService } from "../providers/auth-service";
 import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strategy";
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
@@ -17,6 +23,8 @@ import { AuthError, ConversationError, ProviderError } from "../errors";
 import { err, ok, type Result } from "../result";
 import type { MemoryService, ExplicitMemoryInput, MemoryListOptions, UpdateMemoryInput } from "../memory/services/memory-service";
 import type { MemoryRecord } from "../memory/types/memory-record";
+import { LocalFileMemoryStore } from "../memory/local-store";
+import { SessionExtractor } from "../memory/capture";
 
 import {
   parseListMemoryQueryParams,
@@ -58,6 +66,7 @@ import {
   resolveMemoryConfigPath,
 } from "./memory-capabilities";
 import type { MemoryCapabilities } from "./types/memory-config";
+import type { MemoryConfig } from "./types/memory-config";
 
 interface ActiveExecution {
   conversationId: string;
@@ -243,6 +252,19 @@ interface DefaultServices {
 interface ConversationServiceOptions {
   conversationManager?: ConversationManager;
   sqliteStorePath?: string;
+  compactionConfig?: {
+    tokenThreshold?: number;
+    keepRecentMessages?: number;
+    contextWindowTokens?: number;
+    summaryMaxTokens?: number;
+  };
+}
+
+interface MemoryCapabilitiesSaveRequest {
+  embedding: {
+    provider: string;
+    model: string;
+  };
 }
 
 interface ServerOptions {
@@ -884,14 +906,18 @@ export class DaemonHttpServer implements DaemonManagedService {
 
       // Memory CRUD, search, and consolidation endpoints
       if (url.pathname === "/api/memory/capabilities") {
-        if (method !== "GET") {
-          return Response.json(
-            { error: `Method ${method} not allowed on memory capabilities` },
-            { status: 405, headers: corsHeaders },
-          );
+        if (method === "GET") {
+          return this.handleMemoryCapabilities(corsHeaders);
         }
 
-        return this.handleMemoryCapabilities(corsHeaders);
+        if (method === "POST") {
+          return this.handleMemoryCapabilitiesSave(request, corsHeaders);
+        }
+
+        return Response.json(
+          { error: `Method ${method} not allowed on memory capabilities` },
+          { status: 405, headers: corsHeaders },
+        );
       }
 
       const memoryRoute = this.matchMemoryRoute(url.pathname);
@@ -2406,10 +2432,82 @@ export class DaemonHttpServer implements DaemonManagedService {
       path: this.conversationOptions.sqliteStorePath,
     });
     this.ownedSqliteStore = store;
-    this.conversationManager = new ConversationManager(store);
+
+    let compactionOptions;
+    try {
+      compactionOptions = this.buildCompactionOptions(store.path);
+    } catch (error) {
+      log("warn", "Failed to initialize compaction dependencies; continuing without write-through", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    this.conversationManager = new ConversationManager(store, compactionOptions?.sessionRepository, compactionOptions?.options);
     log("info", "Conversation services initialized (SQLite store)", {
       path: store.path,
     });
+  }
+
+  private buildCompactionOptions(
+    sqliteStorePath: string,
+  ): {
+    sessionRepository: SessionRepository;
+    options: ConversationManagerCompactionOptions;
+  } {
+    const runtimeRoot = join(
+      dirname(sqliteStorePath),
+      `.reins-runtime-${parse(sqliteStorePath).name}`,
+    );
+
+    const sessionRepository = new SessionRepository({
+      sessionsDir: join(runtimeRoot, "sessions"),
+    });
+    const transcriptStore = new TranscriptStore({
+      transcriptsDir: join(runtimeRoot, "transcripts"),
+    });
+
+    const compactionService = new CompactionService({
+      config: this.conversationOptions.compactionConfig,
+    });
+    const memoryStore = new LocalFileMemoryStore(join(runtimeRoot, "memory", "compaction-store.json"));
+
+    if (!this.memoryService) {
+      return {
+        sessionRepository,
+        options: {
+          compactionService,
+          memoryStore,
+          transcriptStore,
+        },
+      };
+    }
+
+    const sessionExtractor = new SessionExtractor({
+      memoryService: this.memoryService,
+    });
+    const compactionManager = new CompactionManager();
+    compactionManager.addPreCompactionHook(
+      new MemoryPreservationHook({
+        sessionExtractor,
+      }),
+    );
+
+    return {
+      sessionRepository,
+      options: {
+        compactionService,
+        memoryStore,
+        transcriptStore,
+        memoryWriteThrough: {
+          compactionManager,
+          logger: {
+            info: (message: string) => log("info", message),
+            warn: (message: string) => log("warn", message),
+            error: (message: string) => log("error", message),
+          },
+        },
+      },
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -2588,7 +2686,48 @@ export class DaemonHttpServer implements DaemonManagedService {
     corsHeaders: Record<string, string>,
   ): Promise<Response> {
     const capabilities = await this.resolveMemoryCapabilitiesState();
+    return this.memoryCapabilitiesResponse(capabilities, corsHeaders);
+  }
 
+  private async handleMemoryCapabilitiesSave(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const body = await this.parseJsonBody(request);
+    if (!body.ok) {
+      return Response.json(
+        { error: body.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const validated = this.validateMemoryCapabilitiesSaveRequest(body.value);
+    if (!validated.ok) {
+      return Response.json(
+        { error: validated.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const config: MemoryConfig = {
+      embedding: validated.value.embedding,
+    };
+    const saveResult = await this.memoryCapabilitiesResolver.saveConfig(config);
+    if (!saveResult.ok) {
+      return Response.json(
+        { error: saveResult.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    const capabilities = await this.resolveMemoryCapabilitiesState();
+    return this.memoryCapabilitiesResponse(capabilities, corsHeaders);
+  }
+
+  private memoryCapabilitiesResponse(
+    capabilities: MemoryCapabilities,
+    corsHeaders: Record<string, string>,
+  ): Response {
     return Response.json(
       {
         ready: this.memoryService?.isReady() ?? false,
@@ -2596,6 +2735,47 @@ export class DaemonHttpServer implements DaemonManagedService {
       },
       { headers: corsHeaders },
     );
+  }
+
+  private validateMemoryCapabilitiesSaveRequest(
+    input: unknown,
+  ): { ok: true; value: MemoryCapabilitiesSaveRequest } | { ok: false; error: string } {
+    if (!isRecord(input)) {
+      return { ok: false, error: "Memory capabilities payload must be a JSON object" };
+    }
+
+    const keys = Object.keys(input);
+    if (keys.length !== 1 || !keys.includes("embedding")) {
+      return { ok: false, error: "Memory capabilities payload must include only an embedding object" };
+    }
+
+    if (!isRecord(input.embedding)) {
+      return { ok: false, error: "embedding must be an object" };
+    }
+
+    const embeddingKeys = Object.keys(input.embedding);
+    if (embeddingKeys.length !== 2 || !embeddingKeys.includes("provider") || !embeddingKeys.includes("model")) {
+      return { ok: false, error: "embedding must include only provider and model" };
+    }
+
+    const provider = typeof input.embedding.provider === "string" ? input.embedding.provider.trim() : "";
+    const model = typeof input.embedding.model === "string" ? input.embedding.model.trim() : "";
+    if (!provider) {
+      return { ok: false, error: "embedding.provider is required" };
+    }
+    if (!model) {
+      return { ok: false, error: "embedding.model is required" };
+    }
+
+    return {
+      ok: true,
+      value: {
+        embedding: {
+          provider,
+          model,
+        },
+      },
+    };
   }
 
   /**
@@ -2939,4 +3119,8 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
     this.conversationManager = null;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

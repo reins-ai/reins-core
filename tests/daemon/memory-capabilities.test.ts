@@ -546,4 +546,71 @@ describe("graceful degradation for embedding-dependent routes", () => {
     expect(after.features.semanticSearch.enabled).toBe(true);
     expect(after.features.consolidation.enabled).toBe(true);
   });
+
+  it("POST /api/memory/capabilities saves embedding config and GET returns updated state", async () => {
+    const port = testPort++;
+    const root = await createTempRoot();
+    const server = await createServerWithCapabilities(port, root);
+    await server.start();
+
+    const saveResponse = await fetch(`http://localhost:${port}/api/memory/capabilities`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        embedding: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+        },
+      }),
+    });
+
+    expect(saveResponse.status).toBe(200);
+    const saveBody = await saveResponse.json();
+    expect(saveBody.ready).toBe(true);
+    expect(saveBody.embeddingConfigured).toBe(true);
+    expect(saveBody.setupRequired).toBe(false);
+    expect(saveBody.features.semanticSearch.enabled).toBe(true);
+
+    const getResponse = await fetch(`http://localhost:${port}/api/memory/capabilities`);
+    expect(getResponse.status).toBe(200);
+
+    const getBody = await getResponse.json();
+    expect(getBody.embeddingConfigured).toBe(true);
+    expect(getBody.embedding).toEqual({
+      provider: "openai",
+      model: "text-embedding-3-small",
+    });
+    expect(getBody.features.semanticSearch.enabled).toBe(true);
+    expect(getBody.features.consolidation.enabled).toBe(true);
+  });
+
+  it("POST /api/memory/capabilities returns 400 for malformed payloads", async () => {
+    const port = testPort++;
+    const root = await createTempRoot();
+    const server = await createServerWithCapabilities(port, root);
+    await server.start();
+
+    const invalidPayloads: unknown[] = [
+      null,
+      {},
+      { embedding: {} },
+      { embedding: { provider: "", model: "text-embedding-3-small" } },
+      { embedding: { provider: "openai", model: "" } },
+      { embedding: { provider: "openai", model: "text-embedding-3-small", extra: true } },
+      { embedding: { provider: "openai", model: "text-embedding-3-small" }, extra: true },
+    ];
+
+    for (const payload of invalidPayloads) {
+      const response = await fetch(`http://localhost:${port}/api/memory/capabilities`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(typeof body.error).toBe("string");
+      expect(body.error.length).toBeGreaterThan(0);
+    }
+  });
 });
