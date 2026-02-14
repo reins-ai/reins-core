@@ -91,6 +91,8 @@ import {
 } from "./memory-capabilities";
 import type { MemoryCapabilities } from "./types/memory-config";
 import type { MemoryConfig } from "./types/memory-config";
+import { createAuthMiddleware } from "./auth-middleware";
+import { MachineAuthService } from "../security/machine-auth";
 
 interface ActiveExecution {
   conversationId: string;
@@ -292,10 +294,16 @@ interface MemoryCapabilitiesSaveRequest {
   };
 }
 
-interface ServerOptions {
+export interface DaemonHttpServerOptions {
   port?: number;
   host?: string;
-  authService?: ProviderAuthService;
+  /**
+   * Backward-compatible provider auth override.
+   * New code should prefer providerAuthService.
+   */
+  authService?: ProviderAuthService | MachineAuthService;
+  providerAuthService?: ProviderAuthService;
+  machineAuthService?: MachineAuthService;
   modelRouter?: ModelRouter;
   conversation?: ConversationServiceOptions;
   environment?: {
@@ -312,6 +320,32 @@ interface ProviderExecutionContext {
   assistantMessageId: string;
   requestedProvider?: string;
   requestedModel?: string;
+}
+
+function isProviderAuthService(value: unknown): value is ProviderAuthService {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<ProviderAuthService>;
+  return (
+    typeof candidate.listProviders === "function" &&
+    typeof candidate.getProviderAuthStatus === "function" &&
+    typeof candidate.handleCommand === "function"
+  );
+}
+
+function isMachineAuthService(value: unknown): value is MachineAuthService {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<MachineAuthService>;
+  return (
+    typeof candidate.bootstrap === "function" &&
+    typeof candidate.validate === "function" &&
+    typeof candidate.getToken === "function"
+  );
 }
 
 interface ProviderExecutionFailure extends DaemonConversationServiceError {
@@ -736,6 +770,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly port: number;
   private readonly host: string;
   private readonly authService: ProviderAuthService;
+  private readonly machineAuthService: MachineAuthService | null;
   private readonly modelRouter: ModelRouter;
   private readonly wsRegistry = new WsStreamRegistry<DaemonWebSocketData>();
   private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -758,7 +793,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private environmentContextProvider: EnvironmentContextProvider | null = null;
   private personaRegistry: PersonaRegistry | null = null;
 
-  constructor(options: ServerOptions = {}) {
+  constructor(options: DaemonHttpServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
     this.conversationOptions = options.conversation ?? {};
@@ -768,9 +803,15 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
 
     // Create auth services first so credential store is available for tool registration
+    const legacyService = options.authService;
+    const providerAuthService = options.providerAuthService
+      ?? (isProviderAuthService(legacyService) ? legacyService : undefined);
+    this.machineAuthService = options.machineAuthService
+      ?? (isMachineAuthService(legacyService) ? legacyService : null);
+
     let credentialStore: EncryptedCredentialStore | undefined;
-    if (options.authService) {
-      this.authService = options.authService;
+    if (providerAuthService) {
+      this.authService = providerAuthService;
       this.modelRouter = options.modelRouter ?? new ModelRouter(new ProviderRegistry());
     } else {
       const services = createDefaultServices();
@@ -834,10 +875,20 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
+      const requestHandler = this.machineAuthService
+        ? createAuthMiddleware({
+            authService: this.machineAuthService,
+            exemptPaths: ["/health"],
+            onAuthEvent: (event) => {
+              log(event.level, event.message, event.data);
+            },
+          }).wrapHandler(this.handleRequest.bind(this))
+        : this.handleRequest.bind(this);
+
       this.server = Bun.serve<DaemonWebSocketData>({
         port: this.port,
         hostname: this.host,
-        fetch: this.handleRequest.bind(this),
+        fetch: requestHandler,
         websocket: {
           open: this.handleWebSocketOpen.bind(this),
           message: this.handleWebSocketMessage.bind(this),
@@ -900,7 +951,8 @@ export class DaemonHttpServer implements DaemonManagedService {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Expose-Headers": "X-Reins-Token",
     };
 
     if (method === "OPTIONS") {
