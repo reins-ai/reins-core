@@ -1,4 +1,5 @@
 import { DEFAULT_PERSONA } from "./default";
+import type { OverlayResolution } from "../environment/types";
 import type { Persona } from "./persona";
 
 export class PersonaRegistry {
@@ -57,5 +58,30 @@ export class PersonaRegistry {
     }
 
     this.defaultPersonaId = id;
+  }
+
+  resolve(id?: string, environment?: OverlayResolution): Persona {
+    const basePersona = id ? this.getOrThrow(id) : this.getDefault();
+
+    if (!environment) {
+      return basePersona;
+    }
+
+    const personalityDocument = environment.documents.PERSONALITY.document.content.trim();
+    if (!personalityDocument) {
+      return basePersona;
+    }
+
+    return {
+      ...basePersona,
+      systemPrompt: personalityDocument,
+      metadata: {
+        ...(basePersona.metadata ?? {}),
+        environmentContext: {
+          activeEnvironment: environment.activeEnvironment,
+          personalitySource: environment.documents.PERSONALITY.sourceEnvironment,
+        },
+      },
+    };
   }
 }

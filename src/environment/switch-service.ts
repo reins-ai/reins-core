@@ -28,11 +28,21 @@ export interface EnvironmentSwitchEvent {
 export type EnvironmentSwitchListener = (event: EnvironmentSwitchEvent) => void;
 
 export class EnvironmentSwitchService {
+  private readonly listeners = new Set<EnvironmentSwitchListener>();
+
   constructor(
     private readonly configStore: ConfigStore,
     private readonly resolver: EnvironmentResolver,
     private readonly onSwitch?: EnvironmentSwitchListener,
   ) {}
+
+  onEnvironmentSwitch(listener: EnvironmentSwitchListener): () => void {
+    this.listeners.add(listener);
+
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
 
   async switchEnvironment(
     name: string,
@@ -74,14 +84,7 @@ export class EnvironmentSwitchService {
       switchedAt,
     };
 
-    if (this.onSwitch) {
-      this.onSwitch({
-        previousEnvironment: result.previousEnvironment,
-        activeEnvironment: result.activeEnvironment,
-        resolvedDocuments: result.resolvedDocuments,
-        switchedAt: result.switchedAt,
-      });
-    }
+    this.emitSwitch(result);
 
     return ok(result);
   }
@@ -106,6 +109,23 @@ export class EnvironmentSwitchService {
     }
 
     return this.resolver.resolveAll(targetEnvironmentNameResult.value);
+  }
+
+  private emitSwitch(result: EnvironmentSwitchResult): void {
+    const event: EnvironmentSwitchEvent = {
+      previousEnvironment: result.previousEnvironment,
+      activeEnvironment: result.activeEnvironment,
+      resolvedDocuments: result.resolvedDocuments,
+      switchedAt: result.switchedAt,
+    };
+
+    if (this.onSwitch) {
+      this.onSwitch(event);
+    }
+
+    for (const listener of this.listeners) {
+      listener(event);
+    }
   }
 }
 
