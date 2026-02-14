@@ -41,7 +41,7 @@ describe("resolveInstallRoot", () => {
 
   it("resolves macOS install root to Application Support", () => {
     expect(resolveInstallRoot({ platform: "darwin", homeDirectory: "/Users/reins" })).toBe(
-      "/Users/reins/Library/Application Support/Reins",
+      "/Users/reins/Library/Application Support/reins",
     );
   });
 
@@ -52,7 +52,7 @@ describe("resolveInstallRoot", () => {
         env: { APPDATA: "C:\\Users\\Reins\\AppData\\Roaming" },
         homeDirectory: "C:\\Users\\Reins",
       }),
-    ).toBe("C:\\Users\\Reins\\AppData\\Roaming\\Reins");
+    ).toBe("C:\\Users\\Reins\\AppData\\Roaming\\reins");
   });
 
   it("falls back to ~/.reins for unknown platforms", () => {
@@ -86,13 +86,13 @@ describe("buildInstallPaths", () => {
       homeDirectory: "C:\\Users\\Test",
     });
 
-    expect(paths.installRoot).toBe("C:\\Users\\Test\\AppData\\Roaming\\Reins");
-    expect(paths.environmentsDir).toBe("C:\\Users\\Test\\AppData\\Roaming\\Reins\\environments");
+    expect(paths.installRoot).toBe("C:\\Users\\Test\\AppData\\Roaming\\reins");
+    expect(paths.environmentsDir).toBe("C:\\Users\\Test\\AppData\\Roaming\\reins\\environments");
     expect(paths.defaultEnvironmentDir).toBe(
-      "C:\\Users\\Test\\AppData\\Roaming\\Reins\\environments\\default",
+      "C:\\Users\\Test\\AppData\\Roaming\\reins\\environments\\default",
     );
     expect(paths.globalConfigPath).toBe(
-      "C:\\Users\\Test\\AppData\\Roaming\\Reins\\config.json5",
+      "C:\\Users\\Test\\AppData\\Roaming\\reins\\config.json5",
     );
   });
 });

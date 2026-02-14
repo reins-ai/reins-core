@@ -69,12 +69,12 @@ describe("platform-specific install root derivation", () => {
   });
 
   describe("macOS", () => {
-    it("resolves to ~/Library/Application Support/Reins", () => {
+    it("resolves to ~/Library/Application Support/reins", () => {
       const root = resolveInstallRoot({
         platform: "darwin",
         homeDirectory: "/Users/bob",
       });
-      expect(root).toBe("/Users/bob/Library/Application Support/Reins");
+      expect(root).toBe("/Users/bob/Library/Application Support/reins");
     });
 
     it("uses provided homeDirectory, not process.env.HOME", () => {
@@ -82,27 +82,27 @@ describe("platform-specific install root derivation", () => {
         platform: "darwin",
         homeDirectory: "/custom/home",
       });
-      expect(root).toBe("/custom/home/Library/Application Support/Reins");
+      expect(root).toBe("/custom/home/Library/Application Support/reins");
     });
   });
 
   describe("Windows", () => {
-    it("resolves to %APPDATA%\\Reins when APPDATA is set", () => {
+    it("resolves to %APPDATA%\\reins when APPDATA is set", () => {
       const root = resolveInstallRoot({
         platform: "win32",
         env: { APPDATA: "C:\\Users\\Carol\\AppData\\Roaming" },
         homeDirectory: "C:\\Users\\Carol",
       });
-      expect(root).toBe("C:\\Users\\Carol\\AppData\\Roaming\\Reins");
+      expect(root).toBe("C:\\Users\\Carol\\AppData\\Roaming\\reins");
     });
 
-    it("falls back to homeDirectory\\AppData\\Roaming\\Reins when APPDATA is unset", () => {
+    it("falls back to homeDirectory\\AppData\\Roaming\\reins when APPDATA is unset", () => {
       const root = resolveInstallRoot({
         platform: "win32",
         env: {},
         homeDirectory: "C:\\Users\\Carol",
       });
-      expect(root).toBe("C:\\Users\\Carol\\AppData\\Roaming\\Reins");
+      expect(root).toBe("C:\\Users\\Carol\\AppData\\Roaming\\reins");
     });
 
     it("uses win32 path separators", () => {
@@ -111,7 +111,7 @@ describe("platform-specific install root derivation", () => {
         env: { APPDATA: "D:\\Data" },
         homeDirectory: "D:\\Users\\Test",
       });
-      expect(root).toBe("D:\\Data\\Reins");
+      expect(root).toBe("D:\\Data\\reins");
       expect(root).not.toContain("/");
     });
   });
@@ -307,7 +307,7 @@ describe("path edge cases", () => {
       env: { APPDATA: "C:\\Users\\My User\\App Data" },
       homeDirectory: "C:\\Users\\My User",
     });
-    expect(root).toBe("C:\\Users\\My User\\App Data\\Reins");
+    expect(root).toBe("C:\\Users\\My User\\App Data\\reins");
   });
 
   it("bootstrap succeeds with unicode directory names on disk", async () => {
@@ -556,22 +556,22 @@ describe("regression guards — known path contracts", () => {
     expect(root).not.toEndWith("/reins");
   });
 
-  it("macOS root uses capitalized Reins in Application Support", () => {
+  it("macOS root uses lowercase reins in Application Support", () => {
     const root = resolveInstallRoot({
       platform: "darwin",
       homeDirectory: "/Users/user",
     });
-    expect(root).toContain("/Reins");
-    expect(root).not.toContain("/reins");
+    expect(root).toContain("/reins");
+    expect(root).not.toContain("/Reins");
   });
 
-  it("Windows root uses capitalized Reins", () => {
+  it("Windows root uses lowercase reins", () => {
     const root = resolveInstallRoot({
       platform: "win32",
       env: { APPDATA: "C:\\Users\\User\\AppData\\Roaming" },
       homeDirectory: "C:\\Users\\User",
     });
-    expect(root).toEndWith("\\Reins");
+    expect(root).toEndWith("\\reins");
   });
 
   it("Linux XDG root uses lowercase reins (no dot prefix)", () => {

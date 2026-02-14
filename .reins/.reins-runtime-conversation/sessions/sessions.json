@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "mainSessionId": "sess_f8b57789-5886-45e7-b44d-a117b3b6a32f",
+  "sessions": {
+    "sess_f8b57789-5886-45e7-b44d-a117b3b6a32f": {
+      "id": "sess_f8b57789-5886-45e7-b44d-a117b3b6a32f",
+      "title": "Main Session",
+      "createdAt": "2026-02-14T05:49:18.875Z",
+      "updatedAt": "2026-02-14T05:49:18.875Z",
+      "model": "unknown-model",
+      "provider": "unknown-provider",
+      "messageCount": 0,
+      "tokenCount": 0,
+      "isMain": true,
+      "status": "active",
+      "transcriptPath": "transcripts/sess_f8b57789-5886-45e7-b44d-a117b3b6a32f.jsonl"
+    }
+  }
+}

@@ -33,8 +33,8 @@ export interface BootstrapResult {
  *
  * Uses the same platform logic as daemon paths:
  * - Linux: ~/.reins/ (or $XDG_DATA_HOME/reins/)
- * - macOS: ~/Library/Application Support/Reins/
- * - Windows: %APPDATA%\Reins\
+ * - macOS: ~/Library/Application Support/reins/
+ * - Windows: %APPDATA%\reins\
  */
 export function resolveInstallRoot(options: DaemonPathOptions = {}): string {
   const platform = options.platform ?? process.platform;
@@ -42,12 +42,12 @@ export function resolveInstallRoot(options: DaemonPathOptions = {}): string {
   const homeDirectory = options.homeDirectory ?? homeDir();
 
   if (platform === "darwin") {
-    return platformJoin(platform, homeDirectory, "Library", "Application Support", "Reins");
+    return platformJoin(platform, homeDirectory, "Library", "Application Support", "reins");
   }
 
   if (platform === "win32") {
     const appData = env.APPDATA ?? platformJoin(platform, homeDirectory, "AppData", "Roaming");
-    return platformJoin(platform, appData, "Reins");
+    return platformJoin(platform, appData, "reins");
   }
 
   if (platform === "linux") {
