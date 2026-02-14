@@ -12,7 +12,7 @@ import { getDataRoot } from "./paths";
 import { DaemonError } from "./types";
 import { err, ok, type Result } from "../result";
 import { join } from "node:path";
-import { MemoryError, type MemoryServiceContract } from "../memory/services";
+import { MemoryError } from "../memory/services";
 import { MemoryService } from "../memory/services/memory-service";
 import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
 import { MemoryConsolidationJob } from "../cron/jobs/memory-consolidation-job";
@@ -20,7 +20,7 @@ import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
 import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
 
 interface InitializedMemoryRuntime {
-  memoryService: MemoryServiceContract;
+  memoryService: MemoryService;
   checkStorageHealth: () => Promise<Result<boolean, MemoryError>>;
   closeStorage: () => Promise<Result<void, MemoryError>>;
 }
@@ -136,9 +136,6 @@ function createStubBriefingJob(): MorningBriefingJob {
 
 async function main() {
   const runtime = new DaemonRuntime();
-  const httpServer = new DaemonHttpServer({
-    toolDefinitions: getBuiltinToolDefinitions(),
-  });
   const dataRoot = getDataRoot();
   const memoryDataDir = join(dataRoot, "memory");
   const memoryDbPath = join(memoryDataDir, "memory.db");
@@ -150,6 +147,10 @@ async function main() {
   }
 
   const memoryRuntime = memoryRuntimeResult.value;
+  const httpServer = new DaemonHttpServer({
+    toolDefinitions: getBuiltinToolDefinitions(),
+    memoryService: memoryRuntime.memoryService,
+  });
 
   const memoryService = new MemoryDaemonService({
     dbPath: memoryDbPath,

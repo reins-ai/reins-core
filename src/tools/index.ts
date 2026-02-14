@@ -2,6 +2,7 @@ export * from "./builtins";
 export * from "./calendar";
 export * from "./date-parser";
 export * from "./executor";
+export * from "./memory-tool";
 export * from "./notes";
 export * from "./reminders";
 export * from "./registry";

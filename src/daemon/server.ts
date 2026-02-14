@@ -29,6 +29,7 @@ import { getTextContent, serializeContent, type Conversation, type Message } fro
 import { AgentLoop } from "../harness/agent-loop";
 import { ToolExecutor, ToolRegistry } from "../tools";
 import { EDIT_DEFINITION, GLOB_DEFINITION, GREP_DEFINITION, READ_DEFINITION, WRITE_DEFINITION } from "../tools/builtins";
+import { MemoryTool } from "../tools/memory-tool";
 import { BashTool } from "../tools/system/bash";
 import { executeEdit } from "../tools/system/edit";
 import { GlobTool } from "../tools/system/glob";
@@ -575,7 +576,7 @@ function createDefaultServices(): DefaultServices {
   return { authService, modelRouter };
 }
 
-function createDefaultToolExecutor(): ToolExecutor {
+function createDefaultToolExecutor(memoryService?: MemoryService | null): ToolExecutor {
   const sandboxRoot = process.cwd();
   const toolRegistry = new ToolRegistry();
 
@@ -626,6 +627,10 @@ function createDefaultToolExecutor(): ToolExecutor {
     parameters: EDIT_DEFINITION.input_schema,
     execute: async (args) => await executeEdit(args, sandboxRoot),
   }));
+
+  if (memoryService) {
+    toolRegistry.register(new MemoryTool(memoryService));
+  }
 
   return new ToolExecutor(toolRegistry);
 }
@@ -679,8 +684,8 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.host = options.host ?? DEFAULT_HOST;
     this.conversationOptions = options.conversation ?? {};
     this.toolDefinitions = options.toolDefinitions ?? [];
-    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor();
     this.memoryService = options.memoryService ?? null;
+    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService);
 
     if (options.authService) {
       this.authService = options.authService;

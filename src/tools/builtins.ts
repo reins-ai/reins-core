@@ -243,6 +243,42 @@ export const VOICE_DEFINITION: ToolDefinition = {
   },
 };
 
+export const MEMORY_DEFINITION: ToolDefinition = {
+  name: "memory",
+  description:
+    "Remember user details and recall relevant memories for better continuity across conversations.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        description: "The action to perform.",
+        enum: ["remember", "recall"],
+      },
+      content: {
+        type: "string",
+        description: "Memory content to persist when action is remember.",
+      },
+      tags: {
+        type: "array",
+        description: "Optional tags to attach to remembered content.",
+        items: {
+          type: "string",
+        },
+      },
+      query: {
+        type: "string",
+        description: "Search query used when action is recall.",
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of recall results to return.",
+      },
+    },
+    required: ["action"],
+  },
+};
+
 export const BASH_DEFINITION: SystemToolDefinition = {
   name: "bash",
   description:
@@ -425,6 +461,7 @@ export function getBuiltinToolDefinitions(): ToolDefinition[] {
     NOTES_DEFINITION,
     REMINDERS_DEFINITION,
     VOICE_DEFINITION,
+    MEMORY_DEFINITION,
     ...SYSTEM_TOOL_DEFINITIONS.map(toToolDefinition),
   ];
 }
