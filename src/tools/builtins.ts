@@ -279,6 +279,37 @@ export const MEMORY_DEFINITION: ToolDefinition = {
   },
 };
 
+export const WEB_SEARCH_DEFINITION: ToolDefinition = {
+  name: "web_search",
+  description:
+    "Search the web for current information. Supports text, image, video, and news searches using the configured search provider.",
+  parameters: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        description: "The action to perform.",
+        enum: ["search"],
+      },
+      query: {
+        type: "string",
+        description: "The search query string.",
+      },
+      searchType: {
+        type: "string",
+        description:
+          "Type of search to perform. Defaults to 'text' if not specified.",
+        enum: ["text", "image", "video", "news"],
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results to return.",
+      },
+    },
+    required: ["action", "query"],
+  },
+};
+
 export const BASH_DEFINITION: SystemToolDefinition = {
   name: "bash",
   description:
@@ -462,6 +493,7 @@ export function getBuiltinToolDefinitions(): ToolDefinition[] {
     REMINDERS_DEFINITION,
     VOICE_DEFINITION,
     MEMORY_DEFINITION,
+    WEB_SEARCH_DEFINITION,
     ...SYSTEM_TOOL_DEFINITIONS.map(toToolDefinition),
   ];
 }
