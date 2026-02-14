@@ -1,8 +1,14 @@
 /**
- * Onboarding wizard types and configuration.
+ * Onboarding wizard types, configuration, and services.
  *
- * Barrel export for all onboarding-related types.
+ * Barrel export for all onboarding-related modules.
  */
+
+export {
+  OnboardingCheckpointService,
+  OnboardingError,
+  type CheckpointServiceOptions,
+} from "./checkpoint-service";
 
 export {
   ONBOARDING_STEPS,

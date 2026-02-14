@@ -114,6 +114,16 @@ export interface OnboardingConfig {
   completedSteps: CompletedStepRecord[];
 
   /**
+   * ISO 8601 timestamp of when onboarding was started.
+   */
+  startedAt: string;
+
+  /**
+   * ISO 8601 timestamp of when onboarding was completed (null if incomplete).
+   */
+  completedAt: string | null;
+
+  /**
    * User's name captured during welcome step.
    */
   userName?: string;
