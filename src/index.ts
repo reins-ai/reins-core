@@ -1,4 +1,5 @@
 export * from "./context";
+export * from "./config";
 export * from "./conversation";
 export * from "./cron/scheduler";
 export * from "./cron/store";
