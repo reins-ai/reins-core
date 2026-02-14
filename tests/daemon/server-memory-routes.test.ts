@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { ok, err, type Result } from "../../src/result";
 import { DaemonHttpServer } from "../../src/daemon/server";
@@ -7,6 +10,10 @@ import { ProviderAuthService } from "../../src/providers/auth-service";
 import { ProviderRegistry } from "../../src/providers/registry";
 import { ModelRouter } from "../../src/providers/router";
 import { MemoryService } from "../../src/memory/services/memory-service";
+import {
+  MemoryCapabilitiesResolver,
+  writeMemoryConfig,
+} from "../../src/daemon/memory-capabilities";
 import type {
   CreateMemoryInput,
   ListMemoryOptions,
@@ -156,15 +163,45 @@ function createMemoryService(): MemoryService {
   return new MemoryService({ repository });
 }
 
+// ---------------------------------------------------------------------------
+// Shared temp directory with pre-configured embedding config so that
+// search and consolidation routes are not gated during these tests.
+// ---------------------------------------------------------------------------
+
+let sharedDataRoot: string | null = null;
+
+async function getSharedDataRoot(): Promise<string> {
+  if (sharedDataRoot) {
+    return sharedDataRoot;
+  }
+  sharedDataRoot = await mkdtemp(join(tmpdir(), "reins-memory-routes-"));
+  await writeMemoryConfig(
+    { embedding: { provider: "openai", model: "text-embedding-3-small" } },
+    { dataRoot: sharedDataRoot },
+  );
+  return sharedDataRoot;
+}
+
+afterAll(async () => {
+  if (sharedDataRoot) {
+    await rm(sharedDataRoot, { recursive: true, force: true }).catch(() => {});
+    sharedDataRoot = null;
+  }
+});
+
 async function createTestServer(port: number, memoryService?: MemoryService): Promise<DaemonHttpServer> {
   const service = memoryService ?? createMemoryService();
   await service.initialize();
+
+  const dataRoot = await getSharedDataRoot();
+  const resolver = new MemoryCapabilitiesResolver({ dataRoot });
 
   const server = new DaemonHttpServer({
     port,
     authService: createStubAuthService(),
     modelRouter: new ModelRouter(new ProviderRegistry()),
     memoryService: service,
+    memoryCapabilitiesResolver: resolver,
   });
 
   return server;

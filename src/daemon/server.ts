@@ -2447,6 +2447,10 @@ export class DaemonHttpServer implements DaemonManagedService {
    * Handle memory CRUD, search, and consolidation requests.
    * Routes: POST (create), GET (list/get), PUT (update), DELETE (remove),
    * POST /search, POST /consolidate.
+   *
+   * CRUD operations are always available when memory service is ready.
+   * Search and consolidation are gated on embedding provider configuration
+   * to enforce graceful degradation before setup.
    */
   private async handleMemoryRequest(
     route: { type: "list" } | { type: "detail"; id: string } | { type: "search" } | { type: "consolidate" },
@@ -2476,6 +2480,12 @@ export class DaemonHttpServer implements DaemonManagedService {
             { status: 405, headers: corsHeaders },
           );
         }
+
+        const capabilityGate = await this.checkEmbeddingCapability("semanticSearch", corsHeaders);
+        if (capabilityGate) {
+          return capabilityGate;
+        }
+
         return this.handleMemorySearch(request, corsHeaders);
       }
 
@@ -2486,6 +2496,12 @@ export class DaemonHttpServer implements DaemonManagedService {
             { status: 405, headers: corsHeaders },
           );
         }
+
+        const capabilityGate = await this.checkEmbeddingCapability("consolidation", corsHeaders);
+        if (capabilityGate) {
+          return capabilityGate;
+        }
+
         return this.handleMemoryConsolidate(corsHeaders);
       }
 
@@ -2534,6 +2550,38 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     const configPath = resolveMemoryConfigPath();
     return resolveMemoryCapabilities(null, configPath);
+  }
+
+  /**
+   * Check whether an embedding-dependent capability is enabled.
+   * Returns a 503 response when the feature is gated, or null when allowed.
+   */
+  private async checkEmbeddingCapability(
+    feature: "semanticSearch" | "consolidation",
+    corsHeaders: Record<string, string>,
+  ): Promise<Response | null> {
+    const capabilities = await this.resolveMemoryCapabilitiesState();
+    const featureState = capabilities.features[feature];
+
+    if (featureState.enabled) {
+      return null;
+    }
+
+    const featureLabel = feature === "semanticSearch" ? "Semantic search" : "Consolidation";
+    const reason = featureState.reason ?? "Embedding provider setup is required.";
+
+    log("info", `${featureLabel} gated: embedding not configured`, { feature });
+
+    return Response.json(
+      {
+        error: `${featureLabel} requires embedding provider configuration. Run /memory setup to configure.`,
+        code: "EMBEDDING_NOT_CONFIGURED",
+        feature,
+        reason,
+        setupRequired: true,
+      },
+      { status: 503, headers: corsHeaders },
+    );
   }
 
   private async handleMemoryCapabilities(
