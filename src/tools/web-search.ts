@@ -4,6 +4,7 @@ import { supportsSearchType } from "./web-search/provider-contract";
 import { isValidSearchType } from "./web-search/tool-contract";
 import { mapSearchErrorToToolError, createUnsupportedTypeError } from "./web-search/error-mapper";
 import type { SearchProviderResolver } from "./web-search/provider-resolver";
+import { readUserConfig } from "../config/user-config";
 
 export interface WebSearchToolOptions {
   resolver: SearchProviderResolver;
@@ -91,7 +92,12 @@ export class WebSearchTool implements Tool {
       "'limit' must be a positive integer.",
     );
 
-    const adapterResult = await this.resolver.resolveFromPreference();
+    const configResult = await readUserConfig();
+    const preference = configResult.ok && configResult.value
+      ? configResult.value.provider.search?.provider
+      : undefined;
+
+    const adapterResult = await this.resolver.resolveFromPreference(preference);
     if (!adapterResult.ok) {
       return this.errorResultWithDetail(
         callId,

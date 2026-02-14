@@ -69,6 +69,7 @@ import { LsTool } from "../tools/system/ls";
 import { ReadTool } from "../tools/system/read";
 import type { SystemToolArgs } from "../tools/system/types";
 import { executeWrite } from "../tools/system/write";
+import { createWebSearchToolFromCredentials } from "../tools/web-search/runtime";
 import type {
   DaemonConversationServiceError,
   DaemonConversationRecordDto,
@@ -270,6 +271,7 @@ const ANTHROPIC_OAUTH_CONFIG = {
 interface DefaultServices {
   authService: ProviderAuthService;
   modelRouter: ModelRouter;
+  credentialStore: EncryptedCredentialStore;
 }
 
 interface ConversationServiceOptions {
@@ -634,10 +636,13 @@ function createDefaultServices(): DefaultServices {
 
   const modelRouter = new ModelRouter(registry, authService);
 
-  return { authService, modelRouter };
+  return { authService, modelRouter, credentialStore: store };
 }
 
-function createDefaultToolExecutor(memoryService?: MemoryService | null): ToolExecutor {
+function createDefaultToolExecutor(
+  memoryService?: MemoryService | null,
+  credentialStore?: EncryptedCredentialStore,
+): ToolExecutor {
   const sandboxRoot = resolveInstallRoot();
   const toolRegistry = new ToolRegistry();
 
@@ -691,6 +696,10 @@ function createDefaultToolExecutor(memoryService?: MemoryService | null): ToolEx
 
   if (memoryService) {
     toolRegistry.register(new MemoryTool(memoryService));
+  }
+
+  if (credentialStore) {
+    toolRegistry.register(createWebSearchToolFromCredentials({ credentialStore }));
   }
 
   return new ToolExecutor(toolRegistry);
@@ -757,8 +766,9 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.toolDefinitions = options.toolDefinitions ?? [];
     this.memoryService = options.memoryService ?? null;
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
-    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService);
 
+    // Create auth services first so credential store is available for tool registration
+    let credentialStore: EncryptedCredentialStore | undefined;
     if (options.authService) {
       this.authService = options.authService;
       this.modelRouter = options.modelRouter ?? new ModelRouter(new ProviderRegistry());
@@ -766,7 +776,10 @@ export class DaemonHttpServer implements DaemonManagedService {
       const services = createDefaultServices();
       this.authService = services.authService;
       this.modelRouter = services.modelRouter;
+      credentialStore = services.credentialStore;
     }
+
+    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService, credentialStore);
   }
 
   /**
