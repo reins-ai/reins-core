@@ -400,16 +400,13 @@ describe("user config read/write", () => {
     expect(readResult.value?.provider.activeProvider).toBe("anthropic");
   });
 
-  it("resolves XDG config path", () => {
+  it("resolves config path under data root", () => {
     const path = resolveUserConfigPath({
       platform: "linux",
-      env: {
-        XDG_CONFIG_HOME: "/tmp/xdg-config",
-      } as NodeJS.ProcessEnv,
       homeDirectory: "/home/example",
     });
 
-    expect(path).toBe("/tmp/xdg-config/reins/config.json");
+    expect(path).toBe("/home/example/.reins/config.json");
   });
 });
 

@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 
+import { getDataRoot } from "../daemon/paths";
 import { err, ok, type Result } from "../result";
 
 const DEFAULT_DAEMON_HOST = "localhost";
@@ -49,6 +50,20 @@ export class UserConfigError extends Error {
 }
 
 export function resolveUserConfigDirectory(options: UserConfigPathOptions = {}): string {
+  return getDataRoot(options);
+}
+
+export function resolveUserConfigPath(options: UserConfigPathOptions = {}): string {
+  const platform = options.platform ?? process.platform;
+  const configDir = resolveUserConfigDirectory(options);
+  return platform === "win32" ? win32.join(configDir, "config.json") : join(configDir, "config.json");
+}
+
+/**
+ * Resolves the legacy config path (~/.config/reins/config.json) for migration fallback.
+ * Used to read config from the old location if it doesn't exist at the new data root.
+ */
+function resolveLegacyConfigPath(options: UserConfigPathOptions = {}): string {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const homeDirectory = options.homeDirectory ?? homedir();
@@ -61,13 +76,8 @@ export function resolveUserConfigDirectory(options: UserConfigPathOptions = {}):
         ? win32.join(homeDirectory, ".config")
         : join(homeDirectory, ".config");
 
-  return platform === "win32" ? win32.join(configRoot, "reins") : join(configRoot, "reins");
-}
-
-export function resolveUserConfigPath(options: UserConfigPathOptions = {}): string {
-  const platform = options.platform ?? process.platform;
-  const configDir = resolveUserConfigDirectory(options);
-  return platform === "win32" ? win32.join(configDir, "config.json") : join(configDir, "config.json");
+  const legacyDir = platform === "win32" ? win32.join(configRoot, "reins") : join(configRoot, "reins");
+  return platform === "win32" ? win32.join(legacyDir, "config.json") : join(legacyDir, "config.json");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -160,6 +170,22 @@ export async function readUserConfig(options: UserConfigReadOptions = {}): Promi
   const file = Bun.file(filePath);
 
   if (!(await file.exists())) {
+    // Migration fallback: check legacy ~/.config/reins/config.json
+    if (!options.filePath) {
+      const legacyPath = resolveLegacyConfigPath(options);
+      const legacyFile = Bun.file(legacyPath);
+
+      if (await legacyFile.exists()) {
+        try {
+          const raw = await legacyFile.json();
+          return ok(normalizeConfig(raw));
+        } catch {
+          // Legacy file is corrupt — treat as no config
+          return ok(null);
+        }
+      }
+    }
+
     return ok(null);
   }
 
