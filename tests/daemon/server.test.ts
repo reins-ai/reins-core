@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { rmSync, unlinkSync } from "node:fs";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -13,6 +14,7 @@ import { ProviderAuthService } from "../../src/providers/auth-service";
 import { MockProvider } from "../../src/providers/mock";
 import { ProviderRegistry } from "../../src/providers/registry";
 import { ModelRouter } from "../../src/providers/router";
+import { bootstrapInstallRoot } from "../../src/environment/bootstrap";
 import { ToolExecutor, ToolRegistry } from "../../src/tools";
 import type { DaemonManagedService } from "../../src/daemon/types";
 import type { ConversationAuthCheck } from "../../src/providers/auth-service";
@@ -600,6 +602,163 @@ describe("DaemonHttpServer health endpoint with conversation services", () => {
 
     const body = await response.json();
     expect(body).toHaveProperty("models");
+  });
+});
+
+describe("DaemonHttpServer environment routes", () => {
+  const servers: DaemonHttpServer[] = [];
+  const tempHomes: string[] = [];
+  let testPort = 17520;
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+
+    for (const home of tempHomes) {
+      await rm(home, { recursive: true, force: true });
+    }
+    tempHomes.length = 0;
+  });
+
+  it("lists environments from /api/environments", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "reins-env-routes-"));
+    tempHomes.push(tempHome);
+    const port = testPort++;
+
+    const server = new DaemonHttpServer({
+      port,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      environment: {
+        daemonPathOptions: {
+          platform: "linux",
+          homeDirectory: tempHome,
+          env: {},
+        },
+      },
+      conversation: {
+        conversationManager: new ConversationManager(new InMemoryConversationStore()),
+      },
+    });
+    servers.push(server);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    const response = await fetch(`http://localhost:${port}/api/environments`);
+    expect(response.status).toBe(200);
+
+    const payload = await response.json() as {
+      activeEnvironment: string;
+      environments: Array<{ name: string }>;
+    };
+
+    expect(payload.activeEnvironment).toBe("default");
+    expect(payload.environments.some((environment) => environment.name === "default")).toBe(true);
+  });
+
+  it("switches environments via /api/environments/switch", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "reins-env-routes-"));
+    tempHomes.push(tempHome);
+
+    await bootstrapInstallRoot({
+      platform: "linux",
+      homeDirectory: tempHome,
+      env: {},
+    });
+    await mkdir(join(tempHome, ".reins", "environments", "work"), { recursive: true });
+
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      environment: {
+        daemonPathOptions: {
+          platform: "linux",
+          homeDirectory: tempHome,
+          env: {},
+        },
+      },
+      conversation: {
+        conversationManager: new ConversationManager(new InMemoryConversationStore()),
+      },
+    });
+    servers.push(server);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    const switchResponse = await fetch(`http://localhost:${port}/api/environments/switch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "work" }),
+    });
+    expect(switchResponse.status).toBe(200);
+
+    const payload = await switchResponse.json() as {
+      activeEnvironment: string;
+      previousEnvironment: string;
+    };
+    expect(payload.previousEnvironment).toBe("default");
+    expect(payload.activeEnvironment).toBe("work");
+  });
+
+  it("reports active overlay resolution via /api/environments/status", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "reins-env-routes-"));
+    tempHomes.push(tempHome);
+
+    await bootstrapInstallRoot({
+      platform: "linux",
+      homeDirectory: tempHome,
+      env: {},
+    });
+    await mkdir(join(tempHome, ".reins", "environments", "work"), { recursive: true });
+
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      environment: {
+        daemonPathOptions: {
+          platform: "linux",
+          homeDirectory: tempHome,
+          env: {},
+        },
+      },
+      conversation: {
+        conversationManager: new ConversationManager(new InMemoryConversationStore()),
+      },
+    });
+    servers.push(server);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    const switchResponse = await fetch(`http://localhost:${port}/api/environments/switch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "work" }),
+    });
+    expect(switchResponse.status).toBe(200);
+
+    const statusResponse = await fetch(`http://localhost:${port}/api/environments/status`);
+    expect(statusResponse.status).toBe(200);
+
+    const payload = await statusResponse.json() as {
+      activeEnvironment: string;
+      resolution: {
+        activeEnvironment: string;
+        fallbackEnvironment: string;
+      };
+    };
+
+    expect(payload.activeEnvironment).toBe("work");
+    expect(payload.resolution.activeEnvironment).toBe("work");
+    expect(payload.resolution.fallbackEnvironment).toBe("default");
   });
 });
 

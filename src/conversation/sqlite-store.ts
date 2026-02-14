@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { Database } from "bun:sqlite";
@@ -62,7 +63,19 @@ function isInMemoryPath(path: string): boolean {
 }
 
 function resolveDefaultDbPath(): string {
-  return join(process.cwd(), ".reins", "conversation.db");
+  const home = homedir();
+  const platform = process.platform;
+  let root: string;
+
+  if (platform === "darwin") {
+    root = join(home, "Library", "Application Support", "reins");
+  } else if (platform === "win32") {
+    root = join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "reins");
+  } else {
+    root = join(home, ".reins");
+  }
+
+  return join(root, "conversation.db");
 }
 
 export class SQLiteConversationStore implements ConversationStore {

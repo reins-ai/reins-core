@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,7 @@ import {
   generateDefaultConfigContent,
   resolveInstallRoot,
 } from "../../src/environment/bootstrap";
+import { getAllTemplates } from "../../src/environment/templates";
 
 const createdDirectories: string[] = [];
 
@@ -27,7 +28,7 @@ describe("resolveInstallRoot", () => {
     );
   });
 
-  it("resolves linux install root to XDG_DATA_HOME/reins when set", () => {
+  it("ignores XDG_DATA_HOME on Linux and always uses ~/.reins", () => {
     const homeDirectory = "/tmp/reins-home-linux";
 
     expect(
@@ -36,7 +37,7 @@ describe("resolveInstallRoot", () => {
         env: { XDG_DATA_HOME: "/tmp/reins-data" },
         homeDirectory,
       }),
-    ).toBe("/tmp/reins-data/reins");
+    ).toBe("/tmp/reins-home-linux/.reins");
   });
 
   it("resolves macOS install root to Application Support", () => {
@@ -151,7 +152,7 @@ describe("bootstrapInstallRoot", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -175,7 +176,7 @@ describe("bootstrapInstallRoot", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -195,7 +196,7 @@ describe("bootstrapInstallRoot", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -213,12 +214,31 @@ describe("bootstrapInstallRoot", () => {
     expect(parsed.activeEnvironment).toBe("default");
   });
 
+  it("creates default environment markdown documents", async () => {
+    const tempRoot = await createTempDirectory();
+
+    const result = await bootstrapInstallRoot({
+      platform: "linux",
+      env: {},
+      homeDirectory: tempRoot,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    for (const [name, content] of getAllTemplates()) {
+      const path = join(result.value.paths.defaultEnvironmentDir, name);
+      const fileContent = await readFile(path, "utf8");
+      expect(fileContent).toBe(content);
+    }
+  });
+
   it("sets secure file permissions on config file", async () => {
     const tempRoot = await createTempDirectory();
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -233,7 +253,7 @@ describe("bootstrapInstallRoot", () => {
     const tempRoot = await createTempDirectory();
     const options = {
       platform: "linux" as const,
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     };
 
@@ -261,7 +281,7 @@ describe("bootstrapInstallRoot", () => {
     const tempRoot = await createTempDirectory();
     const options = {
       platform: "linux" as const,
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     };
 
@@ -282,12 +302,36 @@ describe("bootstrapInstallRoot", () => {
     expect(contentAfter).toBe(contentBefore);
   });
 
+  it("does not overwrite existing environment documents on second run", async () => {
+    const tempRoot = await createTempDirectory();
+    const options = {
+      platform: "linux" as const,
+      env: {},
+      homeDirectory: tempRoot,
+    };
+
+    const first = await bootstrapInstallRoot(options);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const personalityPath = join(first.value.paths.defaultEnvironmentDir, "PERSONALITY.md");
+    const customContent = "# Custom Personality\n\nDo not overwrite me.\n";
+    await writeFile(personalityPath, customContent, "utf8");
+
+    const second = await bootstrapInstallRoot(options);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+
+    const personalityAfter = await readFile(personalityPath, "utf8");
+    expect(personalityAfter).toBe(customContent);
+  });
+
   it("reports which directories were newly created", async () => {
     const tempRoot = await createTempDirectory();
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: tempRoot },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -307,8 +351,8 @@ describe("bootstrapInstallRoot", () => {
 
     const result = await bootstrapInstallRoot({
       platform: "linux",
-      env: { XDG_DATA_HOME: blockingPath },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: blockingPath,
     });
 
     expect(result.ok).toBe(false);

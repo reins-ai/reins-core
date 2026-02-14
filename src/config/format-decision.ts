@@ -1,4 +1,4 @@
-const ENVIRONMENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-_]{0,31}$/;
+const ENVIRONMENT_NAME_PATTERN = /^[a-z][a-z0-9-_]{0,31}$/;
 const CURRENCY_CODE_PATTERN = /^[A-Z]{3}$/;
 
 export const CONFIG_FORMAT_CANDIDATES = ["json", "json5", "toml"] as const;
@@ -161,7 +161,7 @@ function normalizeEnvironmentName(value: unknown, issues: ConfigValidationIssue[
     issues.push({
       path: "activeEnvironment",
       rule: "environment_slug",
-      message: "activeEnvironment must match /^[a-z0-9][a-z0-9-_]{0,31}$/.",
+      message: "activeEnvironment must match /^[a-z][a-z0-9-_]{0,31}$/.",
     });
   }
 

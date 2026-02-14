@@ -28,7 +28,7 @@ describe("daemon path resolution", () => {
     expect(getDataRoot({ platform: "linux", env: {}, homeDirectory })).toBe("/tmp/reins-home-linux/.reins");
   });
 
-  it("resolves linux data root to XDG_DATA_HOME/reins when set", () => {
+  it("ignores XDG_DATA_HOME on linux and always uses ~/.reins", () => {
     const homeDirectory = "/tmp/reins-home-linux";
 
     expect(
@@ -37,12 +37,12 @@ describe("daemon path resolution", () => {
         env: { XDG_DATA_HOME: "/tmp/reins-data" },
         homeDirectory,
       }),
-    ).toBe("/tmp/reins-data/reins");
+    ).toBe("/tmp/reins-home-linux/.reins");
   });
 
   it("resolves macOS and Windows data roots to platform defaults", () => {
     expect(getDataRoot({ platform: "darwin", homeDirectory: "/Users/reins" })).toBe(
-      "/Users/reins/Library/Application Support/Reins",
+      "/Users/reins/Library/Application Support/reins",
     );
 
     expect(
@@ -51,21 +51,21 @@ describe("daemon path resolution", () => {
         env: { APPDATA: "C:\\Users\\Reins\\AppData\\Roaming" },
         homeDirectory: "C:\\Users\\Reins",
       }),
-    ).toBe("C:\\Users\\Reins\\AppData\\Roaming\\Reins");
+    ).toBe("C:\\Users\\Reins\\AppData\\Roaming\\reins");
   });
 
   it("returns deterministic subdirectory paths", () => {
     const options = {
       platform: "linux" as const,
-      env: { XDG_DATA_HOME: "/tmp/reins-data" },
+      env: {},
       homeDirectory: "/tmp/reins-home",
     };
 
-    expect(getSessionsDir(options)).toBe("/tmp/reins-data/reins/sessions");
-    expect(getTranscriptsDir(options)).toBe("/tmp/reins-data/reins/transcripts");
-    expect(getCronDir(options)).toBe("/tmp/reins-data/reins/cron");
-    expect(getGatewayDir(options)).toBe("/tmp/reins-data/reins/gateway");
-    expect(getLogsDir(options)).toBe("/tmp/reins-data/reins/logs");
+    expect(getSessionsDir(options)).toBe("/tmp/reins-home/.reins/sessions");
+    expect(getTranscriptsDir(options)).toBe("/tmp/reins-home/.reins/transcripts");
+    expect(getCronDir(options)).toBe("/tmp/reins-home/.reins/cron");
+    expect(getGatewayDir(options)).toBe("/tmp/reins-home/.reins/gateway");
+    expect(getLogsDir(options)).toBe("/tmp/reins-home/.reins/logs");
   });
 });
 
@@ -83,11 +83,10 @@ describe("ensureDataDirectories", () => {
 
   it("creates daemon data directories with secure permissions", async () => {
     const tempRoot = await createTempDirectory();
-    const dataHome = join(tempRoot, "xdg-data");
 
     const result = await ensureDataDirectories({
       platform: "linux",
-      env: { XDG_DATA_HOME: dataHome },
+      env: {},
       homeDirectory: tempRoot,
     });
 
@@ -96,8 +95,9 @@ describe("ensureDataDirectories", () => {
       return;
     }
 
+    const expectedRoot = join(tempRoot, ".reins");
     const directories = Object.values(result.value);
-    expect(directories.every((directory) => directory.startsWith(dataHome))).toBe(true);
+    expect(directories.every((directory) => directory.startsWith(expectedRoot))).toBe(true);
 
     for (const directory of directories) {
       const metadata = await stat(directory);
@@ -113,8 +113,8 @@ describe("ensureDataDirectories", () => {
 
     const result = await ensureDataDirectories({
       platform: "linux",
-      env: { XDG_DATA_HOME: blockingPath },
-      homeDirectory: tempRoot,
+      env: {},
+      homeDirectory: blockingPath,
     });
 
     expect(result.ok).toBe(false);

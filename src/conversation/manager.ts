@@ -121,7 +121,7 @@ export class ConversationManager {
     const hasExplicitSystemPrompt = Object.prototype.hasOwnProperty.call(options, "systemPrompt");
     const environmentSystemPrompt = hasExplicitSystemPrompt
       ? undefined
-      : await this.buildEnvironmentSystemPrompt(options);
+      : await this.buildEnvironmentSystemPrompt(options.personaId);
     const systemPrompt = hasExplicitSystemPrompt ? options.systemPrompt : environmentSystemPrompt;
 
     if (typeof systemPrompt === "string") {
@@ -358,7 +358,8 @@ export class ConversationManager {
     let conversationId: string;
     if (options.conversationId) {
       // Verify the conversation exists (throws ConversationError if not found)
-      await this.load(options.conversationId);
+      const conversation = await this.load(options.conversationId);
+      await this.syncEnvironmentSystemPrompt(conversation);
       conversationId = options.conversationId;
     } else {
       const conversation = await this.create({
@@ -392,6 +393,10 @@ export class ConversationManager {
       assistantMessageId: assistantMessage.id,
       timestamp: now,
     };
+  }
+
+  async getEnvironmentSystemPrompt(personaId?: string): Promise<string | undefined> {
+    return this.buildEnvironmentSystemPrompt(personaId);
   }
 
   async completeAssistantMessage(options: CompleteAssistantMessageOptions): Promise<void> {
@@ -543,7 +548,7 @@ export class ConversationManager {
     return ok(compactResult.value.session ?? session);
   }
 
-  private async buildEnvironmentSystemPrompt(options: CreateOptions): Promise<string | undefined> {
+  private async buildEnvironmentSystemPrompt(personaId?: string): Promise<string | undefined> {
     const provider = this.environmentOptions?.environmentContextProvider;
     const registry = this.environmentOptions?.personaRegistry;
 
@@ -551,7 +556,7 @@ export class ConversationManager {
       return undefined;
     }
 
-    const persona = this.resolvePersonaForPrompt(options.personaId);
+    const persona = this.resolvePersonaForPrompt(personaId);
     if (!persona) {
       return undefined;
     }
@@ -562,6 +567,26 @@ export class ConversationManager {
     }
 
     return promptResult.value;
+  }
+
+  private async syncEnvironmentSystemPrompt(conversation: Conversation): Promise<void> {
+    const nextPrompt = await this.buildEnvironmentSystemPrompt(conversation.personaId);
+    if (typeof nextPrompt !== "string") {
+      return;
+    }
+
+    const latestSystemMessage = [...conversation.messages]
+      .reverse()
+      .find((message) => message.role === "system");
+
+    if (latestSystemMessage?.content === nextPrompt) {
+      return;
+    }
+
+    await this.addMessage(conversation.id, {
+      role: "system",
+      content: nextPrompt,
+    });
   }
 
   private resolvePersonaForPrompt(personaId?: string) {

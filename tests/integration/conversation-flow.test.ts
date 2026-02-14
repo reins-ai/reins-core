@@ -96,7 +96,9 @@ describe("integration/conversation-flow", () => {
       reloaded.messages[1]?.createdAt.getTime() ?? 0,
     );
 
-    const reloadedAgain = await conversationStore.load(conversation.id);
+    const reloadedAgainResult = await conversationStore.load(conversation.id);
+    expect(reloadedAgainResult.ok).toBe(true);
+    const reloadedAgain = reloadedAgainResult.ok ? reloadedAgainResult.value : null;
     expect(reloadedAgain?.messages.map((message) => message.role)).toEqual([
       "system",
       "user",

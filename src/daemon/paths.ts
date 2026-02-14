@@ -106,11 +106,6 @@ function resolveDataRoot(options: DaemonPathOptions): string {
   }
 
   if (platform === "linux") {
-    const xdgDataHome = env.XDG_DATA_HOME;
-    if (xdgDataHome && xdgDataHome.trim().length > 0) {
-      return platformJoin(platform, xdgDataHome, "reins");
-    }
-
     return platformJoin(platform, homeDirectory, ".reins");
   }
 
