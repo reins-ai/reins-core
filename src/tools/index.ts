@@ -11,3 +11,4 @@ export * from "./serialization";
 export * from "./system";
 export * from "./voice";
 export * from "./web-search";
+export * from "./web-search/index";
