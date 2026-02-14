@@ -21,6 +21,24 @@ export { ENVIRONMENT_ERROR_CODES } from "./errors";
 export { FileEnvironmentResolver } from "./file-resolver";
 export { DocumentLoader } from "./document-loader";
 
+export {
+  defaultBoundariesPolicy,
+  isGrayArea,
+  isProhibited,
+  parseBoundariesPolicy,
+  validateBoundariesPolicy,
+} from "./boundaries-policy";
+export type { BoundariesPolicy } from "./boundaries-policy";
+
+export {
+  defaultToolsPolicy,
+  getToolAggressiveness,
+  isToolEnabled,
+  parseToolsPolicy,
+  validateToolsPolicy,
+} from "./tools-policy";
+export type { AggressivenessLevel, ToolsPolicy } from "./tools-policy";
+
 export { KnowledgeService, parseKnowledgeDocument } from "./knowledge";
 export type { KnowledgeDocument, KnowledgeEntry } from "./knowledge";
 

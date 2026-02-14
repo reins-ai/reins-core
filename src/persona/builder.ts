@@ -1,6 +1,10 @@
 import type { ToolDefinition } from "../types";
+import { parseBoundariesPolicy } from "../environment/boundaries-policy";
+import { parseToolsPolicy } from "../environment/tools-policy";
 import type { EnvironmentDocumentMap } from "../environment/types";
 import type { Persona, ToolPermissionSet } from "./persona";
+import { DEFAULT_SECTION_BUDGETS } from "./prompt-budgets";
+import { truncateSection } from "./truncate";
 
 export interface BuildOptions {
   persona: Persona;
@@ -19,14 +23,24 @@ export class SystemPromptBuilder {
 
     const sections: string[] = [];
 
-    const identitySection = this.buildIdentitySection(options.persona, options.environmentDocuments);
+    const personalityDocument = this.readDocumentWithBudget(
+      options.environmentDocuments,
+      "PERSONALITY",
+    );
+    const boundariesDocument = this.readDocumentWithBudget(
+      options.environmentDocuments,
+      "BOUNDARIES",
+    );
+    const userDocument = this.readDocumentWithBudget(options.environmentDocuments, "USER");
+
+    const identitySection = this.buildIdentitySection(options.persona, personalityDocument);
     if (identitySection) {
       sections.push(identitySection);
     }
 
     const boundariesSection = this.buildEnvironmentDocumentSection(
       "## Boundaries",
-      options.environmentDocuments.BOUNDARIES,
+      boundariesDocument,
     );
     if (boundariesSection) {
       sections.push(boundariesSection);
@@ -34,7 +48,7 @@ export class SystemPromptBuilder {
 
     const userSection = this.buildEnvironmentDocumentSection(
       "## User Context",
-      options.environmentDocuments.USER,
+      userDocument,
     );
     if (userSection) {
       sections.push(userSection);
@@ -51,7 +65,10 @@ export class SystemPromptBuilder {
       sections.push(toolsSection);
     }
 
-    const dynamicContextSection = this.buildDynamicContextSection(options.environmentDocuments);
+    const dynamicContextSection = this.buildDynamicContextSection(
+      options.environmentDocuments,
+      boundariesDocument,
+    );
     if (dynamicContextSection) {
       sections.push(dynamicContextSection);
     }
@@ -94,9 +111,7 @@ export class SystemPromptBuilder {
     return sections.join("\n\n");
   }
 
-  private buildIdentitySection(persona: Persona, environmentDocuments: EnvironmentDocumentMap): string {
-    const personalityDocument = environmentDocuments.PERSONALITY?.trim();
-
+  private buildIdentitySection(persona: Persona, personalityDocument?: string): string {
     if (personalityDocument && personalityDocument.length > 0) {
       return ["## Identity", personalityDocument].join("\n");
     }
@@ -139,7 +154,10 @@ export class SystemPromptBuilder {
     return ["## Available Tools", ...lines].join("\n");
   }
 
-  private buildDynamicContextSection(environmentDocuments: EnvironmentDocumentMap): string | undefined {
+  private buildDynamicContextSection(
+    environmentDocuments: EnvironmentDocumentMap,
+    boundariesDocument?: string,
+  ): string | undefined {
     const lines: string[] = [];
 
     if (environmentDocuments.HEARTBEAT?.trim()) {
@@ -160,6 +178,11 @@ export class SystemPromptBuilder {
 
     if (environmentDocuments.TOOLS?.trim()) {
       lines.push("- Tool preferences available from TOOLS.md");
+      lines.push(...this.buildToolPreferenceHints(environmentDocuments.TOOLS));
+    }
+
+    if (boundariesDocument?.trim()) {
+      lines.push(...this.buildBoundaryHints(boundariesDocument));
     }
 
     if (lines.length === 0) {
@@ -167,6 +190,55 @@ export class SystemPromptBuilder {
     }
 
     return ["## Dynamic Context", ...lines].join("\n");
+  }
+
+  private buildToolPreferenceHints(toolsDocument: string): string[] {
+    const policy = parseToolsPolicy(toolsDocument);
+    const lines: string[] = [];
+
+    if (policy.enabled.length > 0) {
+      lines.push(`- Enabled tools policy: ${policy.enabled.slice(0, 6).join(", ")}`);
+    }
+
+    if (policy.disabled.length > 0) {
+      lines.push(`- Disabled tools policy: ${policy.disabled.slice(0, 6).join(", ")}`);
+    }
+
+    const aggressivenessHints = Object.entries(policy.aggressiveness)
+      .filter(([toolName]) => toolName !== "default")
+      .slice(0, 6)
+      .map(([toolName, level]) => `${toolName}=${level}`);
+
+    lines.push(`- Default tool aggressiveness: ${policy.aggressiveness.default}`);
+
+    if (aggressivenessHints.length > 0) {
+      lines.push(`- Tool aggressiveness hints: ${aggressivenessHints.join(", ")}`);
+    }
+
+    return lines;
+  }
+
+  private buildBoundaryHints(boundariesDocument: string): string[] {
+    const policy = parseBoundariesPolicy(boundariesDocument);
+    if (policy.willNotDo.length === 0) {
+      return [];
+    }
+
+    return [
+      `- Decline requests matching explicit will-not-do boundaries (${policy.willNotDo.length} loaded)`,
+    ];
+  }
+
+  private readDocumentWithBudget(
+    environmentDocuments: EnvironmentDocumentMap,
+    documentType: keyof typeof DEFAULT_SECTION_BUDGETS,
+  ): string | undefined {
+    const raw = environmentDocuments[documentType]?.trim();
+    if (!raw || raw.length === 0) {
+      return undefined;
+    }
+
+    return truncateSection(raw, DEFAULT_SECTION_BUDGETS[documentType].maxChars);
   }
 
   private buildAdditionalInstructionsSection(additionalInstructions: string[]): string {

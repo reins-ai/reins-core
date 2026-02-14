@@ -206,6 +206,40 @@ describe("SystemPromptBuilder", () => {
     expect(instructionsIndex).toBeGreaterThan(dynamicIndex);
   });
 
+  it("adds tool preference and boundary enforcement hints to dynamic context", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+
+    const prompt = builder.build({
+      persona,
+      environmentDocuments: {
+        PERSONALITY: "Environment identity.",
+        BOUNDARIES: [
+          "## Will Not Do",
+          "- financial transactions",
+        ].join("\n"),
+        TOOLS: [
+          "## Global Aggressiveness",
+          "**Default Mode:** moderate",
+          "",
+          "### Reminders",
+          "**Status:** enabled",
+          "**Aggressiveness:** proactive",
+          "",
+          "### Email",
+          "**Status:** disabled",
+        ].join("\n"),
+      },
+    });
+
+    expect(prompt).toContain("## Dynamic Context");
+    expect(prompt).toContain("Enabled tools policy: reminders");
+    expect(prompt).toContain("Disabled tools policy: email");
+    expect(prompt).toContain("Default tool aggressiveness: medium");
+    expect(prompt).toContain("Tool aggressiveness hints: reminders=high");
+    expect(prompt).toContain("Decline requests matching explicit will-not-do boundaries (1 loaded)");
+  });
+
   it("keeps legacy output unchanged when environment documents are not provided", () => {
     const builder = new SystemPromptBuilder();
     const persona = createPersona("all");
