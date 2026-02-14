@@ -10,6 +10,8 @@ import type {
   ToolUseBlock,
 } from "../types";
 import { CompactionService } from "./compaction";
+import type { CompactionManager } from "./compaction/compaction-manager";
+import type { CompactionContext } from "./compaction/memory-preservation-hook";
 import { generateId } from "./id";
 import type { SessionMetadata, SessionNewOptions, SessionRepository } from "./session-repository";
 import type { ConversationStore, ListOptions } from "./store";
@@ -74,10 +76,22 @@ export interface ForkOptions {
 
 export interface StartNewSessionOptions extends SessionNewOptions {}
 
+export interface CompactionMemoryWriteThrough {
+  compactionManager: CompactionManager;
+  logger?: CompactionMemoryLogger;
+}
+
+export interface CompactionMemoryLogger {
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string): void;
+}
+
 export interface ConversationManagerCompactionOptions {
   compactionService: CompactionService;
   memoryStore: MemoryStore;
   transcriptStore: TranscriptStore;
+  memoryWriteThrough?: CompactionMemoryWriteThrough;
 }
 
 export class ConversationManager {
@@ -509,6 +523,58 @@ export class ConversationManager {
       return compactResult;
     }
 
+    await this.runMemoryWriteThrough(conversation, session, compactResult.value);
+
     return ok(compactResult.value.session ?? session);
   }
+
+  private async runMemoryWriteThrough(
+    conversation: Conversation,
+    session: SessionMetadata,
+    compactionResult: { compacted: boolean; compactedMessages?: number },
+  ): Promise<void> {
+    const writeThrough = this.compactionOptions?.memoryWriteThrough;
+    if (!writeThrough || !compactionResult.compacted) {
+      return;
+    }
+
+    const logger = writeThrough.logger ?? noopCompactionLogger;
+    const truncationPoint = compactionResult.compactedMessages ?? 0;
+    if (truncationPoint === 0) {
+      return;
+    }
+
+    const context: CompactionContext = {
+      conversationId: conversation.id,
+      sessionId: session.id,
+      compactionReason: "token-threshold",
+      timestamp: new Date(),
+      truncationPoint,
+    };
+
+    const messagesToPreserve = conversation.messages.slice(0, truncationPoint);
+
+    logger.info(
+      `Memory write-through: extracting facts from ${messagesToPreserve.length} compacted messages`,
+    );
+
+    const result = await writeThrough.compactionManager.compact(messagesToPreserve, context);
+    if (!result.ok) {
+      logger.warn(
+        `Memory write-through failed: ${result.error.message}`,
+      );
+      return;
+    }
+
+    const { telemetry } = result.value;
+    logger.info(
+      `Memory write-through complete: extracted=${telemetry.extractedCount} persisted=${telemetry.persistedCount} duplicates=${telemetry.skippedDuplicates}`,
+    );
+  }
 }
+
+const noopCompactionLogger: CompactionMemoryLogger = {
+  info() {},
+  warn() {},
+  error() {},
+};

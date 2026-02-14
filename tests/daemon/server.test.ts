@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { rmSync, unlinkSync } from "node:fs";
+import { dirname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
 
 import { ok } from "../../src/result";
@@ -16,6 +16,8 @@ import { ModelRouter } from "../../src/providers/router";
 import { ToolExecutor, ToolRegistry } from "../../src/tools";
 import type { DaemonManagedService } from "../../src/daemon/types";
 import type { ConversationAuthCheck } from "../../src/providers/auth-service";
+import type { MemoryService, ImplicitMemoryInput } from "../../src/memory/services/memory-service";
+import type { MemoryRecord } from "../../src/memory/types/memory-record";
 import type { ChatRequest, ContentBlock, Model, Provider, StreamEvent, Tool, ToolContext, ToolDefinition, ToolResult } from "../../src/types";
 
 /**
@@ -58,6 +60,13 @@ function safeUnlink(path: string): void {
   } catch {
     // SHM file may not exist
   }
+
+  const runtimeDir = join(dirname(path), `.reins-runtime-${parse(path).name}`);
+  try {
+    rmSync(runtimeDir, { recursive: true, force: true });
+  } catch {
+    // runtime directory may not exist
+  }
 }
 
 function createMockModel(id: string, provider: string): Model {
@@ -68,6 +77,19 @@ function createMockModel(id: string, provider: string): Model {
     contextWindow: 8192,
     capabilities: ["chat", "streaming"],
   };
+}
+
+class TrackingCompactionMemoryService {
+  public readonly implicitWrites: ImplicitMemoryInput[] = [];
+
+  isReady(): boolean {
+    return true;
+  }
+
+  async saveImplicit(input: ImplicitMemoryInput) {
+    this.implicitWrites.push(input);
+    return ok({ id: `mem-${this.implicitWrites.length}` } as MemoryRecord);
+  }
 }
 
 function createToolDefinition(name: string): ToolDefinition {
@@ -413,6 +435,68 @@ describe("DaemonHttpServer conversation wiring", () => {
     const loaded = await manager!.load(conversation.id);
     expect(loaded.id).toBe(conversation.id);
     expect(loaded.title).toBe("Test Conversation");
+  });
+
+  it("wires daemon-created conversation manager with compaction write-through", async () => {
+    const dbPath = uniqueDbPath();
+    dbPaths.push(dbPath);
+    const trackingMemoryService = new TrackingCompactionMemoryService();
+
+    const server = new DaemonHttpServer({
+      port: 0,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      memoryService: trackingMemoryService as unknown as MemoryService,
+      conversation: {
+        sqliteStorePath: dbPath,
+        compactionConfig: {
+          tokenThreshold: 0.1,
+          keepRecentMessages: 2,
+          contextWindowTokens: 100,
+        },
+      },
+    });
+    servers.push(server);
+
+    const result = await server.start();
+    expect(result.ok).toBe(true);
+
+    const manager = server.getConversationManager();
+    expect(manager).toBeInstanceOf(ConversationManager);
+
+    const conversation = await manager!.create({
+      title: "Compaction wiring",
+      model: "claude-sonnet-4-20250514",
+      provider: "anthropic",
+    });
+
+    const longSuffix = " context".repeat(3000);
+    await manager!.addMessage(conversation.id, {
+      role: "user",
+      content: `I prefer TypeScript for backend services.${longSuffix}`,
+    });
+    await manager!.addMessage(conversation.id, {
+      role: "assistant",
+      content: `Noted, I will favor TypeScript in examples.${longSuffix}`,
+    });
+    await manager!.addMessage(conversation.id, {
+      role: "user",
+      content: `I decided to use Bun runtime for this project.${longSuffix}`,
+    });
+    await manager!.addMessage(conversation.id, {
+      role: "assistant",
+      content: `Great, Bun should keep execution fast.${longSuffix}`,
+    });
+    await manager!.addMessage(conversation.id, {
+      role: "user",
+      content: `My name is Jamie and I work at Reins Labs.${longSuffix}`,
+    });
+    await manager!.addMessage(conversation.id, {
+      role: "assistant",
+      content: `Thanks Jamie, I will remember your profile.${longSuffix}`,
+    });
+
+    expect(trackingMemoryService.implicitWrites.length).toBeGreaterThan(0);
   });
 
   it("server starts successfully with both auth and conversation services", async () => {

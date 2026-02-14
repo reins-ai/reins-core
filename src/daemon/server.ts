@@ -3,8 +3,14 @@
  * Listens on localhost:7433
  */
 
-import { ConversationManager } from "../conversation/manager";
+import { dirname, join, parse } from "node:path";
+
+import { ConversationManager, type ConversationManagerCompactionOptions } from "../conversation/manager";
+import { CompactionService } from "../conversation/compaction";
+import { CompactionManager, MemoryPreservationHook } from "../conversation/compaction/index";
+import { SessionRepository } from "../conversation/session-repository";
 import { SQLiteConversationStore } from "../conversation/sqlite-store";
+import { TranscriptStore } from "../conversation/transcript-store";
 import { ProviderAuthService } from "../providers/auth-service";
 import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strategy";
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
@@ -15,10 +21,23 @@ import { ProviderRegistry } from "../providers/registry";
 import { ModelRouter } from "../providers/router";
 import { AuthError, ConversationError, ProviderError } from "../errors";
 import { err, ok, type Result } from "../result";
+import type { MemoryService, ExplicitMemoryInput, MemoryListOptions, UpdateMemoryInput } from "../memory/services/memory-service";
+import type { MemoryRecord } from "../memory/types/memory-record";
+import { LocalFileMemoryStore } from "../memory/local-store";
+import { SessionExtractor } from "../memory/capture";
+
+import {
+  parseListMemoryQueryParams,
+  validateCreateMemoryRequest,
+  validateSearchMemoryRequest,
+  validateUpdateMemoryRequest,
+  type MemoryRecordDto,
+} from "./types/memory-routes";
 import { getTextContent, serializeContent, type Conversation, type Message } from "../types";
 import { AgentLoop } from "../harness/agent-loop";
 import { ToolExecutor, ToolRegistry } from "../tools";
 import { EDIT_DEFINITION, GLOB_DEFINITION, GREP_DEFINITION, READ_DEFINITION, WRITE_DEFINITION } from "../tools/builtins";
+import { MemoryTool } from "../tools/memory-tool";
 import { BashTool } from "../tools/system/bash";
 import { executeEdit } from "../tools/system/edit";
 import { GlobTool } from "../tools/system/glob";
@@ -41,6 +60,13 @@ import type {
 import type { DaemonError, DaemonManagedService } from "./types";
 import { WsStreamRegistry, type StreamRegistrySocketData } from "./ws-stream-registry";
 import type { ContentBlock, Provider, TokenUsage, Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
+import {
+  MemoryCapabilitiesResolver,
+  resolveMemoryCapabilities,
+  resolveMemoryConfigPath,
+} from "./memory-capabilities";
+import type { MemoryCapabilities } from "./types/memory-config";
+import type { MemoryConfig } from "./types/memory-config";
 
 interface ActiveExecution {
   conversationId: string;
@@ -226,6 +252,19 @@ interface DefaultServices {
 interface ConversationServiceOptions {
   conversationManager?: ConversationManager;
   sqliteStorePath?: string;
+  compactionConfig?: {
+    tokenThreshold?: number;
+    keepRecentMessages?: number;
+    contextWindowTokens?: number;
+    summaryMaxTokens?: number;
+  };
+}
+
+interface MemoryCapabilitiesSaveRequest {
+  embedding: {
+    provider: string;
+    model: string;
+  };
 }
 
 interface ServerOptions {
@@ -236,6 +275,8 @@ interface ServerOptions {
   conversation?: ConversationServiceOptions;
   toolDefinitions?: ToolDefinition[];
   toolExecutor?: ToolExecutor;
+  memoryService?: MemoryService;
+  memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
 }
 
 interface ProviderExecutionContext {
@@ -564,7 +605,7 @@ function createDefaultServices(): DefaultServices {
   return { authService, modelRouter };
 }
 
-function createDefaultToolExecutor(): ToolExecutor {
+function createDefaultToolExecutor(memoryService?: MemoryService | null): ToolExecutor {
   const sandboxRoot = process.cwd();
   const toolRegistry = new ToolRegistry();
 
@@ -616,6 +657,10 @@ function createDefaultToolExecutor(): ToolExecutor {
     execute: async (args) => await executeEdit(args, sandboxRoot),
   }));
 
+  if (memoryService) {
+    toolRegistry.register(new MemoryTool(memoryService));
+  }
+
   return new ToolExecutor(toolRegistry);
 }
 
@@ -661,13 +706,17 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly streamSubscriptionsByConnection = new Map<string, Set<string>>();
   private readonly toolDefinitions: ToolDefinition[];
   private readonly toolExecutor: ToolExecutor;
+  private readonly memoryService: MemoryService | null;
+  private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
     this.host = options.host ?? DEFAULT_HOST;
     this.conversationOptions = options.conversation ?? {};
     this.toolDefinitions = options.toolDefinitions ?? [];
-    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor();
+    this.memoryService = options.memoryService ?? null;
+    this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
+    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService);
 
     if (options.authService) {
       this.authService = options.authService;
@@ -684,6 +733,13 @@ export class DaemonHttpServer implements DaemonManagedService {
    */
   getConversationManager(): ConversationManager | null {
     return this.conversationManager;
+  }
+
+  /**
+   * Returns the memory service if memory services are active.
+   */
+  getMemoryService(): MemoryService | null {
+    return this.memoryService;
   }
 
   /**
@@ -806,6 +862,9 @@ export class DaemonHttpServer implements DaemonManagedService {
         if (this.conversationManager) {
           capabilities.push("conversations.crud", "messages.send", "stream.subscribe");
         }
+        if (this.memoryService) {
+          capabilities.push("memory.crud", "memory.search", "memory.consolidate");
+        }
 
         const health: HealthResponse = {
           status: "ok",
@@ -843,6 +902,27 @@ export class DaemonHttpServer implements DaemonManagedService {
       const conversationRoute = this.matchConversationRoute(url.pathname);
       if (conversationRoute) {
         return this.handleConversationRequest(conversationRoute, method, request, corsHeaders);
+      }
+
+      // Memory CRUD, search, and consolidation endpoints
+      if (url.pathname === "/api/memory/capabilities") {
+        if (method === "GET") {
+          return this.handleMemoryCapabilities(corsHeaders);
+        }
+
+        if (method === "POST") {
+          return this.handleMemoryCapabilitiesSave(request, corsHeaders);
+        }
+
+        return Response.json(
+          { error: `Method ${method} not allowed on memory capabilities` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      const memoryRoute = this.matchMemoryRoute(url.pathname);
+      if (memoryRoute) {
+        return this.handleMemoryRequest(memoryRoute, method, request, corsHeaders);
       }
 
       log("warn", `Not found: ${method} ${url.pathname}`);
@@ -2352,10 +2432,673 @@ export class DaemonHttpServer implements DaemonManagedService {
       path: this.conversationOptions.sqliteStorePath,
     });
     this.ownedSqliteStore = store;
-    this.conversationManager = new ConversationManager(store);
+
+    let compactionOptions;
+    try {
+      compactionOptions = this.buildCompactionOptions(store.path);
+    } catch (error) {
+      log("warn", "Failed to initialize compaction dependencies; continuing without write-through", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    this.conversationManager = new ConversationManager(store, compactionOptions?.sessionRepository, compactionOptions?.options);
     log("info", "Conversation services initialized (SQLite store)", {
       path: store.path,
     });
+  }
+
+  private buildCompactionOptions(
+    sqliteStorePath: string,
+  ): {
+    sessionRepository: SessionRepository;
+    options: ConversationManagerCompactionOptions;
+  } {
+    const runtimeRoot = join(
+      dirname(sqliteStorePath),
+      `.reins-runtime-${parse(sqliteStorePath).name}`,
+    );
+
+    const sessionRepository = new SessionRepository({
+      sessionsDir: join(runtimeRoot, "sessions"),
+    });
+    const transcriptStore = new TranscriptStore({
+      transcriptsDir: join(runtimeRoot, "transcripts"),
+    });
+
+    const compactionService = new CompactionService({
+      config: this.conversationOptions.compactionConfig,
+    });
+    const memoryStore = new LocalFileMemoryStore(join(runtimeRoot, "memory", "compaction-store.json"));
+
+    if (!this.memoryService) {
+      return {
+        sessionRepository,
+        options: {
+          compactionService,
+          memoryStore,
+          transcriptStore,
+        },
+      };
+    }
+
+    const sessionExtractor = new SessionExtractor({
+      memoryService: this.memoryService,
+    });
+    const compactionManager = new CompactionManager();
+    compactionManager.addPreCompactionHook(
+      new MemoryPreservationHook({
+        sessionExtractor,
+      }),
+    );
+
+    return {
+      sessionRepository,
+      options: {
+        compactionService,
+        memoryStore,
+        transcriptStore,
+        memoryWriteThrough: {
+          compactionManager,
+          logger: {
+            info: (message: string) => log("info", message),
+            warn: (message: string) => log("warn", message),
+            error: (message: string) => log("error", message),
+          },
+        },
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Memory route matching and handlers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Match memory routes: /api/memory, /api/memory/:id, /api/memory/search,
+   * /api/memory/consolidate.
+   */
+  private matchMemoryRoute(
+    pathname: string,
+  ): { type: "list" } | { type: "detail"; id: string } | { type: "search" } | { type: "consolidate" } | null {
+    if (pathname === "/api/memory/search") {
+      return { type: "search" };
+    }
+
+    if (pathname === "/api/memory/consolidate") {
+      return { type: "consolidate" };
+    }
+
+    if (pathname === "/api/memory") {
+      return { type: "list" };
+    }
+
+    const detailMatch = pathname.match(/^\/api\/memory\/([^/]+)$/);
+    if (detailMatch) {
+      return { type: "detail", id: decodeURIComponent(detailMatch[1]) };
+    }
+
+    return null;
+  }
+
+  /**
+   * Handle memory CRUD, search, and consolidation requests.
+   * Routes: POST (create), GET (list/get), PUT (update), DELETE (remove),
+   * POST /search, POST /consolidate.
+   *
+   * CRUD operations are always available when memory service is ready.
+   * Search and consolidation are gated on embedding provider configuration
+   * to enforce graceful degradation before setup.
+   */
+  private async handleMemoryRequest(
+    route: { type: "list" } | { type: "detail"; id: string } | { type: "search" } | { type: "consolidate" },
+    method: string,
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.memoryService) {
+      return Response.json(
+        { error: "Memory services are not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    if (!this.memoryService.isReady()) {
+      return Response.json(
+        { error: "Memory service is not ready" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    try {
+      if (route.type === "search") {
+        if (method !== "POST") {
+          return Response.json(
+            { error: `Method ${method} not allowed on memory search` },
+            { status: 405, headers: corsHeaders },
+          );
+        }
+
+        const capabilityGate = await this.checkEmbeddingCapability("semanticSearch", corsHeaders);
+        if (capabilityGate) {
+          return capabilityGate;
+        }
+
+        return this.handleMemorySearch(request, corsHeaders);
+      }
+
+      if (route.type === "consolidate") {
+        if (method !== "POST") {
+          return Response.json(
+            { error: `Method ${method} not allowed on memory consolidation` },
+            { status: 405, headers: corsHeaders },
+          );
+        }
+
+        const capabilityGate = await this.checkEmbeddingCapability("consolidation", corsHeaders);
+        if (capabilityGate) {
+          return capabilityGate;
+        }
+
+        return this.handleMemoryConsolidate(corsHeaders);
+      }
+
+      if (route.type === "list") {
+        if (method === "POST") {
+          return this.handleMemoryCreate(request, corsHeaders);
+        }
+        if (method === "GET") {
+          return this.handleMemoryList(request, corsHeaders);
+        }
+        return Response.json(
+          { error: `Method ${method} not allowed on memory collection` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      // route.type === "detail"
+      if (method === "GET") {
+        return this.handleMemoryGet(route.id, corsHeaders);
+      }
+      if (method === "PUT") {
+        return this.handleMemoryUpdate(route.id, request, corsHeaders);
+      }
+      if (method === "DELETE") {
+        return this.handleMemoryDelete(route.id, corsHeaders);
+      }
+      return Response.json(
+        { error: `Method ${method} not allowed on memory resource` },
+        { status: 405, headers: corsHeaders },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Internal server error";
+      log("error", "Memory operation failed", { error: message });
+      return Response.json(
+        { error: message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+  }
+
+  private async resolveMemoryCapabilitiesState(): Promise<MemoryCapabilities> {
+    const capabilitiesResult = await this.memoryCapabilitiesResolver.getCapabilities();
+    if (capabilitiesResult.ok) {
+      return capabilitiesResult.value;
+    }
+
+    const configPath = resolveMemoryConfigPath();
+    return resolveMemoryCapabilities(null, configPath);
+  }
+
+  /**
+   * Check whether an embedding-dependent capability is enabled.
+   * Returns a 503 response when the feature is gated, or null when allowed.
+   */
+  private async checkEmbeddingCapability(
+    feature: "semanticSearch" | "consolidation",
+    corsHeaders: Record<string, string>,
+  ): Promise<Response | null> {
+    const capabilities = await this.resolveMemoryCapabilitiesState();
+    const featureState = capabilities.features[feature];
+
+    if (featureState.enabled) {
+      return null;
+    }
+
+    const featureLabel = feature === "semanticSearch" ? "Semantic search" : "Consolidation";
+    const reason = featureState.reason ?? "Embedding provider setup is required.";
+
+    log("info", `${featureLabel} gated: embedding not configured`, { feature });
+
+    return Response.json(
+      {
+        error: `${featureLabel} requires embedding provider configuration. Run /memory setup to configure.`,
+        code: "EMBEDDING_NOT_CONFIGURED",
+        feature,
+        reason,
+        setupRequired: true,
+      },
+      { status: 503, headers: corsHeaders },
+    );
+  }
+
+  private async handleMemoryCapabilities(
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const capabilities = await this.resolveMemoryCapabilitiesState();
+    return this.memoryCapabilitiesResponse(capabilities, corsHeaders);
+  }
+
+  private async handleMemoryCapabilitiesSave(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const body = await this.parseJsonBody(request);
+    if (!body.ok) {
+      return Response.json(
+        { error: body.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const validated = this.validateMemoryCapabilitiesSaveRequest(body.value);
+    if (!validated.ok) {
+      return Response.json(
+        { error: validated.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const config: MemoryConfig = {
+      embedding: validated.value.embedding,
+    };
+    const saveResult = await this.memoryCapabilitiesResolver.saveConfig(config);
+    if (!saveResult.ok) {
+      return Response.json(
+        { error: saveResult.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    const capabilities = await this.resolveMemoryCapabilitiesState();
+    return this.memoryCapabilitiesResponse(capabilities, corsHeaders);
+  }
+
+  private memoryCapabilitiesResponse(
+    capabilities: MemoryCapabilities,
+    corsHeaders: Record<string, string>,
+  ): Response {
+    return Response.json(
+      {
+        ready: this.memoryService?.isReady() ?? false,
+        ...capabilities,
+      },
+      { headers: corsHeaders },
+    );
+  }
+
+  private validateMemoryCapabilitiesSaveRequest(
+    input: unknown,
+  ): { ok: true; value: MemoryCapabilitiesSaveRequest } | { ok: false; error: string } {
+    if (!isRecord(input)) {
+      return { ok: false, error: "Memory capabilities payload must be a JSON object" };
+    }
+
+    const keys = Object.keys(input);
+    if (keys.length !== 1 || !keys.includes("embedding")) {
+      return { ok: false, error: "Memory capabilities payload must include only an embedding object" };
+    }
+
+    if (!isRecord(input.embedding)) {
+      return { ok: false, error: "embedding must be an object" };
+    }
+
+    const embeddingKeys = Object.keys(input.embedding);
+    if (embeddingKeys.length !== 2 || !embeddingKeys.includes("provider") || !embeddingKeys.includes("model")) {
+      return { ok: false, error: "embedding must include only provider and model" };
+    }
+
+    const provider = typeof input.embedding.provider === "string" ? input.embedding.provider.trim() : "";
+    const model = typeof input.embedding.model === "string" ? input.embedding.model.trim() : "";
+    if (!provider) {
+      return { ok: false, error: "embedding.provider is required" };
+    }
+    if (!model) {
+      return { ok: false, error: "embedding.model is required" };
+    }
+
+    return {
+      ok: true,
+      value: {
+        embedding: {
+          provider,
+          model,
+        },
+      },
+    };
+  }
+
+  /**
+   * POST /api/memory — create a new memory record.
+   * Accepts content, type, tags, entities, conversationId, messageId.
+   */
+  private async handleMemoryCreate(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const body = await this.parseJsonBody(request);
+    if (!body.ok) {
+      return Response.json(
+        { error: body.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const validated = validateCreateMemoryRequest(body.value);
+    if (!validated.ok) {
+      return Response.json(
+        { error: validated.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const dto = validated.value;
+    const input: ExplicitMemoryInput = {
+      content: dto.content,
+      type: dto.type,
+      tags: dto.tags,
+      entities: dto.entities,
+      conversationId: dto.conversationId,
+      messageId: dto.messageId,
+    };
+
+    const result = await this.memoryService!.rememberExplicit(input);
+    if (!result.ok) {
+      log("error", "Memory create failed", { error: result.error.message });
+      return Response.json(
+        { error: result.error.message },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    log("info", "Memory created", { memoryId: result.value.id });
+    return Response.json(
+      this.memoryRecordToDto(result.value),
+      { status: 201, headers: corsHeaders },
+    );
+  }
+
+  /**
+   * GET /api/memory — list memory records with optional query params.
+   * Supports: type, layer, limit, offset, sortBy, sortOrder.
+   */
+  private async handleMemoryList(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const url = new URL(request.url);
+    const params = parseListMemoryQueryParams(url);
+
+    const options: MemoryListOptions = {
+      type: params.type,
+      layer: params.layer,
+      limit: params.limit,
+      offset: params.offset,
+      sortBy: params.sortBy,
+      sortOrder: params.sortOrder,
+    };
+
+    const result = await this.memoryService!.list(options);
+    if (!result.ok) {
+      log("error", "Memory list failed", { error: result.error.message });
+      return Response.json(
+        { error: result.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    return Response.json(
+      { memories: result.value.map((r) => this.memoryRecordToDto(r)) },
+      { headers: corsHeaders },
+    );
+  }
+
+  /**
+   * GET /api/memory/:id — get a memory record by ID.
+   */
+  private async handleMemoryGet(
+    id: string,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const result = await this.memoryService!.getById(id);
+    if (!result.ok) {
+      log("error", "Memory get failed", { memoryId: id, error: result.error.message });
+      return Response.json(
+        { error: result.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    if (!result.value) {
+      return Response.json(
+        { error: `Memory not found: ${id}` },
+        { status: 404, headers: corsHeaders },
+      );
+    }
+
+    return Response.json(
+      this.memoryRecordToDto(result.value),
+      { headers: corsHeaders },
+    );
+  }
+
+  /**
+   * PUT /api/memory/:id — update a memory record.
+   * Accepts content, importance, confidence, tags, entities.
+   */
+  private async handleMemoryUpdate(
+    id: string,
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const body = await this.parseJsonBody(request);
+    if (!body.ok) {
+      return Response.json(
+        { error: body.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const validated = validateUpdateMemoryRequest(body.value);
+    if (!validated.ok) {
+      return Response.json(
+        { error: validated.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const dto = validated.value;
+    const input: UpdateMemoryInput = {
+      content: dto.content,
+      importance: dto.importance,
+      confidence: dto.confidence,
+      tags: dto.tags,
+      entities: dto.entities,
+    };
+
+    const result = await this.memoryService!.update(id, input);
+    if (!result.ok) {
+      const isNotFound = result.error.message.toLowerCase().includes("not found");
+      const status = isNotFound ? 404 : 400;
+      log(isNotFound ? "warn" : "error", "Memory update failed", { memoryId: id, error: result.error.message });
+      return Response.json(
+        { error: result.error.message },
+        { status, headers: corsHeaders },
+      );
+    }
+
+    log("info", "Memory updated", { memoryId: id });
+    return Response.json(
+      this.memoryRecordToDto(result.value),
+      { headers: corsHeaders },
+    );
+  }
+
+  /**
+   * DELETE /api/memory/:id — delete a memory record.
+   */
+  private async handleMemoryDelete(
+    id: string,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    // Check existence first for proper 404 feedback
+    const existing = await this.memoryService!.getById(id);
+    if (!existing.ok) {
+      log("error", "Memory delete lookup failed", { memoryId: id, error: existing.error.message });
+      return Response.json(
+        { error: existing.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    if (!existing.value) {
+      return Response.json(
+        { error: `Memory not found: ${id}` },
+        { status: 404, headers: corsHeaders },
+      );
+    }
+
+    const result = await this.memoryService!.forget(id);
+    if (!result.ok) {
+      log("error", "Memory delete failed", { memoryId: id, error: result.error.message });
+      return Response.json(
+        { error: result.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    log("info", "Memory deleted", { memoryId: id });
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  /**
+   * POST /api/memory/search — search memories by query text and optional filters.
+   * Uses list-based filtering. Full hybrid search requires embedding setup (Wave 5).
+   */
+  private async handleMemorySearch(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const body = await this.parseJsonBody(request);
+    if (!body.ok) {
+      return Response.json(
+        { error: body.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const validated = validateSearchMemoryRequest(body.value);
+    if (!validated.ok) {
+      return Response.json(
+        { error: validated.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    const dto = validated.value;
+    const query = dto.query ?? "";
+
+    const listOptions: MemoryListOptions = {
+      type: dto.type,
+      layer: dto.layer,
+      limit: dto.limit ?? 50,
+    };
+
+    const result = await this.memoryService!.list(listOptions);
+    if (!result.ok) {
+      log("error", "Memory search failed", { error: result.error.message });
+      return Response.json(
+        { error: result.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    let memories = result.value;
+
+    // Client-side text filtering when a query string is provided
+    if (query.length > 0) {
+      const lowerQuery = query.toLowerCase();
+      memories = memories.filter((record) =>
+        record.content.toLowerCase().includes(lowerQuery) ||
+        record.tags.some((tag) => tag.toLowerCase().includes(lowerQuery)) ||
+        record.entities.some((entity) => entity.toLowerCase().includes(lowerQuery))
+      );
+    }
+
+    return Response.json(
+      {
+        query,
+        results: memories.map((r) => this.memoryRecordToDto(r)),
+        total: memories.length,
+      },
+      { headers: corsHeaders },
+    );
+  }
+
+  /**
+   * POST /api/memory/consolidate — trigger memory consolidation.
+   * Returns 202 Accepted. Actual consolidation job wiring is handled separately.
+   */
+  private handleMemoryConsolidate(
+    corsHeaders: Record<string, string>,
+  ): Response {
+    log("info", "Memory consolidation triggered");
+    return Response.json(
+      {
+        status: "accepted",
+        message: "Consolidation triggered",
+        timestamp: new Date().toISOString(),
+      },
+      { status: 202, headers: corsHeaders },
+    );
+  }
+
+  /**
+   * Serialize a MemoryRecord to a JSON-safe DTO with ISO date strings.
+   */
+  private memoryRecordToDto(record: MemoryRecord): MemoryRecordDto {
+    return {
+      id: record.id,
+      content: record.content,
+      type: record.type,
+      layer: record.layer,
+      tags: record.tags,
+      entities: record.entities,
+      importance: record.importance,
+      confidence: record.confidence,
+      provenance: record.provenance,
+      supersedes: record.supersedes,
+      supersededBy: record.supersededBy,
+      embedding: record.embedding,
+      createdAt: record.createdAt.toISOString(),
+      updatedAt: record.updatedAt.toISOString(),
+      accessedAt: record.accessedAt.toISOString(),
+    };
+  }
+
+  /**
+   * Parse JSON request body, returning a Result-like object.
+   */
+  private async parseJsonBody(request: Request): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+    try {
+      const text = await request.text();
+      if (text.length === 0) {
+        return { ok: false, error: "Request body is required" };
+      }
+      return { ok: true, value: JSON.parse(text) };
+    } catch {
+      return { ok: false, error: "Invalid JSON in request body" };
+    }
   }
 
   /**
@@ -2376,4 +3119,8 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
     this.conversationManager = null;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
