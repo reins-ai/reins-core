@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { SystemPromptBuilder } from "../../src/persona/builder";
+import type { EnvironmentDocumentMap } from "../../src/environment/types";
 import type { Persona } from "../../src/persona/persona";
 import type { ToolDefinition } from "../../src/types";
 
@@ -147,5 +148,101 @@ describe("SystemPromptBuilder", () => {
     expect(userIndex).toBeGreaterThan(dateIndex);
     expect(toolsIndex).toBeGreaterThan(userIndex);
     expect(instructionsIndex).toBeGreaterThan(toolsIndex);
+  });
+
+  it("injects environment documents into identity, boundaries, and user sections", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+    const environmentDocuments: EnvironmentDocumentMap = {
+      PERSONALITY: "You are a professional assistant.",
+      BOUNDARIES: "Do not provide medical or legal advice.",
+      USER: "The user is Alex and prefers concise responses.",
+    };
+
+    const prompt = builder.build({ persona, environmentDocuments });
+
+    expect(prompt).toContain("## Identity");
+    expect(prompt).toContain("You are a professional assistant.");
+    expect(prompt).toContain("## Boundaries");
+    expect(prompt).toContain("Do not provide medical or legal advice.");
+    expect(prompt).toContain("## User Context");
+    expect(prompt).toContain("The user is Alex and prefers concise responses.");
+  });
+
+  it("uses stable section ordering when environment documents are provided", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+    const tools = [createTool("notes.create", "Create a note")];
+    const environmentDocuments: EnvironmentDocumentMap = {
+      PERSONALITY: "Environment identity.",
+      BOUNDARIES: "Environment boundaries.",
+      USER: "Environment user context.",
+      HEARTBEAT: "Heartbeat placeholder.",
+      TOOLS: "Tool preferences placeholder.",
+    };
+
+    const prompt = builder.build({
+      persona,
+      currentDate: new Date("2026-02-10T12:34:56.000Z"),
+      availableTools: tools,
+      additionalInstructions: ["Keep answers short"],
+      environmentDocuments,
+    });
+
+    const identityIndex = prompt.indexOf("## Identity");
+    const boundariesIndex = prompt.indexOf("## Boundaries");
+    const userIndex = prompt.indexOf("## User Context");
+    const dateIndex = prompt.indexOf("## Current Date and Time");
+    const toolsIndex = prompt.indexOf("## Available Tools");
+    const dynamicIndex = prompt.indexOf("## Dynamic Context");
+    const instructionsIndex = prompt.indexOf("## Additional Instructions");
+
+    expect(identityIndex).toBeGreaterThanOrEqual(0);
+    expect(boundariesIndex).toBeGreaterThan(identityIndex);
+    expect(userIndex).toBeGreaterThan(boundariesIndex);
+    expect(dateIndex).toBeGreaterThan(userIndex);
+    expect(toolsIndex).toBeGreaterThan(dateIndex);
+    expect(dynamicIndex).toBeGreaterThan(toolsIndex);
+    expect(instructionsIndex).toBeGreaterThan(dynamicIndex);
+  });
+
+  it("keeps legacy output unchanged when environment documents are not provided", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+    const tools = [createTool("notes.create", "Create a note")];
+
+    const prompt = builder.build({
+      persona,
+      currentDate: new Date("2026-02-10T12:34:56.000Z"),
+      userContext: "User: Alex",
+      availableTools: tools,
+      additionalInstructions: ["Keep answers short"],
+    });
+
+    expect(prompt).toBe(
+      [
+        "Base persona prompt.",
+        "## Current Date and Time\n2026-02-10T12:34:56.000Z",
+        "## User Context\nUser: Alex",
+        "## Available Tools\n- notes.create: Create a note",
+        "## Additional Instructions\n- Keep answers short",
+      ].join("\n\n"),
+    );
+  });
+
+  it("uses PERSONALITY environment document instead of base persona prompt", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+
+    const prompt = builder.build({
+      persona,
+      environmentDocuments: {
+        PERSONALITY: "You are the configured environment persona.",
+      },
+    });
+
+    expect(prompt).toContain("## Identity");
+    expect(prompt).toContain("You are the configured environment persona.");
+    expect(prompt).not.toContain("Base persona prompt.");
   });
 });
