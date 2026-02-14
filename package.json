@@ -12,6 +12,7 @@
     "./context": "./src/context/index.ts",
     "./errors": "./src/errors.ts",
     "./memory": "./src/memory/index.ts",
+    "./memory/proactive": "./src/memory/proactive/index.ts",
     "./persona": "./src/persona/index.ts",
     "./plugins": "./src/plugins/index.ts",
     "./providers": "./src/providers/index.ts",
