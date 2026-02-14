@@ -7,6 +7,7 @@ export * from "./cron/policy";
 export * from "./cron/rate-limit";
 export * from "./cron/executor";
 export * from "./cron/types";
+export * from "./cron/jobs/heartbeat-job";
 export * from "./daemon/runtime";
 export * from "./daemon/service-installer";
 export * from "./daemon/paths";

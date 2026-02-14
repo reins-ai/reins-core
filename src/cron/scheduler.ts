@@ -79,6 +79,18 @@ export class CronScheduler {
       return validated;
     }
 
+    const jobId = input.id?.trim() ?? crypto.randomUUID();
+    if (input.id !== undefined) {
+      const existing = await this.getJob(jobId);
+      if (!existing.ok) {
+        return existing;
+      }
+
+      if (existing.value) {
+        return err(new CronError(`Cron job already exists: ${jobId}`, "CRON_JOB_ALREADY_EXISTS"));
+      }
+    }
+
     const now = this.now();
     const timezone = input.timezone ?? getSystemTimezone();
     const nextRunAt = computeNextRunAt(input.schedule, timezone, now);
@@ -87,7 +99,7 @@ export class CronScheduler {
     }
 
     const job: CronJobDefinition = {
-      id: crypto.randomUUID(),
+      id: jobId,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       schedule: input.schedule.trim(),
@@ -324,6 +336,10 @@ export class CronScheduler {
   }
 
   private validateJob(job: CronJobDefinition): CronResult<void> {
+    if (job.id.trim().length === 0) {
+      return err(new CronError("Cron job id is required", "CRON_JOB_ID_REQUIRED"));
+    }
+
     if (job.name.trim().length === 0) {
       return err(new CronError("Cron job name is required", "CRON_JOB_NAME_REQUIRED"));
     }

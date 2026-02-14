@@ -20,12 +20,15 @@ export interface CronJobDefinition {
   tags: string[];
 }
 
+export type CronJob = CronJobDefinition;
+
 export interface CronJobPayload {
   action: string;
   parameters: Record<string, unknown>;
 }
 
 export interface CronJobCreateInput {
+  id?: string;
   name: string;
   description?: string;
   schedule: string;
