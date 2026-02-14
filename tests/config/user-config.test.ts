@@ -134,6 +134,101 @@ describe("UserConfig", () => {
       expect(readResult.value!.provider.search?.provider).toBe("exa");
     });
 
+    it("switches from brave to exa via writeUserConfig", async () => {
+      const filePath = await createTempConfigPath();
+
+      // Start with brave (default)
+      const initialWrite = await writeUserConfig(
+        { name: "test", provider: { mode: "byok", search: { provider: "brave" } } },
+        { filePath },
+      );
+      expect(initialWrite.ok).toBe(true);
+
+      // Switch to exa
+      const switchResult = await writeUserConfig(
+        { provider: { mode: "byok", search: { provider: "exa" } } },
+        { filePath },
+      );
+      expect(switchResult.ok).toBe(true);
+      if (!switchResult.ok) return;
+
+      expect(switchResult.value.provider.search?.provider).toBe("exa");
+
+      // Verify persistence
+      const readResult = await readUserConfig({ filePath });
+      expect(readResult.ok).toBe(true);
+      if (!readResult.ok) return;
+
+      expect(readResult.value).not.toBeNull();
+      expect(readResult.value!.provider.search?.provider).toBe("exa");
+    });
+
+    it("switches from exa to brave via writeUserConfig", async () => {
+      const filePath = await createTempConfigPath();
+
+      // Start with exa
+      const initialWrite = await writeUserConfig(
+        { name: "test", provider: { mode: "byok", search: { provider: "exa" } } },
+        { filePath },
+      );
+      expect(initialWrite.ok).toBe(true);
+
+      // Switch to brave
+      const switchResult = await writeUserConfig(
+        { provider: { mode: "byok", search: { provider: "brave" } } },
+        { filePath },
+      );
+      expect(switchResult.ok).toBe(true);
+      if (!switchResult.ok) return;
+
+      expect(switchResult.value.provider.search?.provider).toBe("brave");
+
+      // Verify persistence
+      const readResult = await readUserConfig({ filePath });
+      expect(readResult.ok).toBe(true);
+      if (!readResult.ok) return;
+
+      expect(readResult.value).not.toBeNull();
+      expect(readResult.value!.provider.search?.provider).toBe("brave");
+    });
+
+    it("multiple rapid switches end with the last value", async () => {
+      const filePath = await createTempConfigPath();
+
+      // Initial config
+      await writeUserConfig({ name: "test" }, { filePath });
+
+      // Rapid switches: brave -> exa -> brave -> exa
+      await writeUserConfig(
+        { provider: { mode: "byok", search: { provider: "brave" } } },
+        { filePath },
+      );
+      await writeUserConfig(
+        { provider: { mode: "byok", search: { provider: "exa" } } },
+        { filePath },
+      );
+      await writeUserConfig(
+        { provider: { mode: "byok", search: { provider: "brave" } } },
+        { filePath },
+      );
+      const lastSwitch = await writeUserConfig(
+        { provider: { mode: "byok", search: { provider: "exa" } } },
+        { filePath },
+      );
+      expect(lastSwitch.ok).toBe(true);
+      if (!lastSwitch.ok) return;
+
+      expect(lastSwitch.value.provider.search?.provider).toBe("exa");
+
+      // Verify final state persisted
+      const readResult = await readUserConfig({ filePath });
+      expect(readResult.ok).toBe(true);
+      if (!readResult.ok) return;
+
+      expect(readResult.value).not.toBeNull();
+      expect(readResult.value!.provider.search?.provider).toBe("exa");
+    });
+
     it("handles config file without search field (backward compat)", async () => {
       const filePath = await createTempConfigPath();
 
