@@ -805,6 +805,11 @@ export class ProviderAuthService implements AuthService {
 
     const knownProviderIds = new Set<string>(this.registry.listUserConfigurableCapabilities().map((entry) => entry.providerId));
     for (const providerId of latestCredentialByProvider.keys()) {
+      const capabilities = this.registry.getCapabilities(providerId);
+      if (capabilities?.userConfigurable === false) {
+        continue;
+      }
+
       knownProviderIds.add(providerId);
     }
 

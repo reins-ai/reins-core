@@ -146,6 +146,8 @@ describe("ProviderRegistry", () => {
 
     expect(userConfigurableProviderIds).toContain("anthropic");
     expect(userConfigurableProviderIds).not.toContain("fireworks");
+    expect(userConfigurableProviderIds).not.toContain("brave_search");
+    expect(userConfigurableProviderIds).not.toContain("exa");
   });
 
   it("filters non-user-configurable providers from provider instance listings", () => {

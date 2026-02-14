@@ -1283,8 +1283,31 @@ export class DaemonHttpServer implements DaemonManagedService {
         });
 
         if (result.ok) {
-          log("info", "BYOK configured successfully", { providerId });
-          return Response.json({ success: true }, { headers: corsHeaders });
+          const configured = result.value.credential !== undefined && result.value.credential !== null;
+          if (configured) {
+            log("info", "BYOK configured successfully", { providerId });
+            return Response.json({
+              configured: true,
+              valid: true,
+              provider: providerId,
+              providerId,
+            }, { headers: corsHeaders });
+          }
+
+          const message = result.value.guidance?.message ?? "Provider configuration failed";
+          log("warn", "BYOK configure did not persist credential", {
+            providerId,
+            guidance: result.value.guidance?.action,
+          });
+          return Response.json({
+            configured: false,
+            valid: false,
+            provider: providerId,
+            providerId,
+            error: message,
+            message,
+            guidance: result.value.guidance,
+          }, { headers: corsHeaders });
         }
         log("error", "BYOK configure failed", { providerId, error: result.error.message });
         return Response.json({ error: result.error.message }, { status: 400, headers: corsHeaders });
