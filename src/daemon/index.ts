@@ -9,9 +9,46 @@ import { DaemonHttpServer } from "./server";
 import { getBuiltinToolDefinitions } from "../tools/builtins";
 import { MemoryDaemonService } from "./memory-daemon-service";
 import { getDataRoot } from "./paths";
-import { ok } from "../result";
+import { DaemonError } from "./types";
+import { err, ok, type Result } from "../result";
 import { join } from "node:path";
 import type { MemoryServiceContract } from "../memory/services";
+import { MemoryService } from "../memory/services/memory-service";
+import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
+
+function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<MemoryServiceContract, DaemonError> {
+  const db = new SqliteMemoryDb({ dbPath });
+  const initializeResult = db.initialize();
+  if (!initializeResult.ok) {
+    return err(new DaemonError("Failed to initialize memory SQLite storage", initializeResult.error.code, initializeResult.error));
+  }
+
+  try {
+    const repository = new SqliteMemoryRepository({
+      db,
+      dataDir,
+    });
+
+    const memoryService = new MemoryService({
+      repository,
+      logger: {
+        info: (message) => {
+          console.info(`[memory] ${message}`);
+        },
+        warn: (message) => {
+          console.warn(`[memory] ${message}`);
+        },
+        error: (message) => {
+          console.error(`[memory] ${message}`);
+        },
+      },
+    });
+
+    return ok(memoryService);
+  } catch (error) {
+    return err(new DaemonError("Failed to initialize memory runtime", "DAEMON_MEMORY_INIT_FAILED", error instanceof Error ? error : undefined));
+  }
+}
 
 async function main() {
   const runtime = new DaemonRuntime();
@@ -19,20 +56,20 @@ async function main() {
     toolDefinitions: getBuiltinToolDefinitions(),
   });
   const dataRoot = getDataRoot();
+  const memoryDataDir = join(dataRoot, "memory");
+  const memoryDbPath = join(memoryDataDir, "memory.db");
 
-  const memoryServiceContract: MemoryServiceContract = {
-    initialize: async () => ok(undefined),
-    shutdown: async () => ok(undefined),
-    isReady: () => true,
-    healthCheck: async () =>
-      ok({
-        dbConnected: true,
-        memoryCount: 0,
-      }),
-  };
+  const memoryRuntimeResult = initializeMemoryRuntime(memoryDbPath, memoryDataDir);
+  if (!memoryRuntimeResult.ok) {
+    console.error("Failed to initialize memory runtime:", memoryRuntimeResult.error.message);
+    process.exit(1);
+  }
+
+  const memoryServiceContract = memoryRuntimeResult.value;
+
   const memoryService = new MemoryDaemonService({
-    dbPath: join(dataRoot, "memory", "memory.db"),
-    dataDir: join(dataRoot, "memory"),
+    dbPath: memoryDbPath,
+    dataDir: memoryDataDir,
     memoryService: memoryServiceContract,
   });
 
