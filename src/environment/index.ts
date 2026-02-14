@@ -21,6 +21,9 @@ export { ENVIRONMENT_ERROR_CODES } from "./errors";
 export { FileEnvironmentResolver } from "./file-resolver";
 export { DocumentLoader } from "./document-loader";
 
+export { KnowledgeService, parseKnowledgeDocument } from "./knowledge";
+export type { KnowledgeDocument, KnowledgeEntry } from "./knowledge";
+
 export { EnvironmentSwitchService } from "./switch-service";
 export type {
   EnvironmentSwitchEvent,
