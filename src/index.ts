@@ -16,6 +16,7 @@ export * from "./daemon/environment-api";
 export * from "./environment";
 export * from "./errors";
 export * from "./harness";
+export * from "./heartbeat";
 export * from "./memory";
 export * from "./persona";
 export * from "./plugins";
