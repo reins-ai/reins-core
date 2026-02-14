@@ -15,3 +15,11 @@ export {
   type SearchMemoryRequestDto,
   type UpdateMemoryRequestDto,
 } from "./memory-routes";
+
+export type {
+  EmbeddingProviderConfig,
+  MemoryCapabilities,
+  MemoryCapabilityFeature,
+  MemoryCapabilityState,
+  MemoryConfig,
+} from "./memory-config";

@@ -52,6 +52,12 @@ import type {
 import type { DaemonError, DaemonManagedService } from "./types";
 import { WsStreamRegistry, type StreamRegistrySocketData } from "./ws-stream-registry";
 import type { ContentBlock, Provider, TokenUsage, Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
+import {
+  MemoryCapabilitiesResolver,
+  resolveMemoryCapabilities,
+  resolveMemoryConfigPath,
+} from "./memory-capabilities";
+import type { MemoryCapabilities } from "./types/memory-config";
 
 interface ActiveExecution {
   conversationId: string;
@@ -248,6 +254,7 @@ interface ServerOptions {
   toolDefinitions?: ToolDefinition[];
   toolExecutor?: ToolExecutor;
   memoryService?: MemoryService;
+  memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
 }
 
 interface ProviderExecutionContext {
@@ -678,6 +685,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly toolDefinitions: ToolDefinition[];
   private readonly toolExecutor: ToolExecutor;
   private readonly memoryService: MemoryService | null;
+  private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
 
   constructor(options: ServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
@@ -685,6 +693,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.conversationOptions = options.conversation ?? {};
     this.toolDefinitions = options.toolDefinitions ?? [];
     this.memoryService = options.memoryService ?? null;
+    this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
     this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService);
 
     if (options.authService) {
@@ -874,6 +883,17 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       // Memory CRUD, search, and consolidation endpoints
+      if (url.pathname === "/api/memory/capabilities") {
+        if (method !== "GET") {
+          return Response.json(
+            { error: `Method ${method} not allowed on memory capabilities` },
+            { status: 405, headers: corsHeaders },
+          );
+        }
+
+        return this.handleMemoryCapabilities(corsHeaders);
+      }
+
       const memoryRoute = this.matchMemoryRoute(url.pathname);
       if (memoryRoute) {
         return this.handleMemoryRequest(memoryRoute, method, request, corsHeaders);
@@ -2504,6 +2524,30 @@ export class DaemonHttpServer implements DaemonManagedService {
         { status: 500, headers: corsHeaders },
       );
     }
+  }
+
+  private async resolveMemoryCapabilitiesState(): Promise<MemoryCapabilities> {
+    const capabilitiesResult = await this.memoryCapabilitiesResolver.getCapabilities();
+    if (capabilitiesResult.ok) {
+      return capabilitiesResult.value;
+    }
+
+    const configPath = resolveMemoryConfigPath();
+    return resolveMemoryCapabilities(null, configPath);
+  }
+
+  private async handleMemoryCapabilities(
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const capabilities = await this.resolveMemoryCapabilitiesState();
+
+    return Response.json(
+      {
+        ready: this.memoryService?.isReady() ?? false,
+        ...capabilities,
+      },
+      { headers: corsHeaders },
+    );
   }
 
   /**

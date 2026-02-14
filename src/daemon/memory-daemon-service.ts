@@ -1,6 +1,8 @@
 import { DaemonError, type DaemonManagedService, type DaemonResult } from "./types";
 import { err, ok, type Result } from "../result";
 import { MemoryError, type MemoryErrorCode, type MemoryHealthStatus, type MemoryServiceContract } from "../memory/services";
+import { MemoryCapabilitiesResolver } from "./memory-capabilities";
+import type { MemoryCapabilities } from "./types/memory-config";
 
 export type MemoryDaemonServiceState = "idle" | "starting" | "ready" | "stopping" | "stopped" | "error";
 
@@ -22,6 +24,7 @@ export interface MemoryDaemonServiceOptions {
   flushPendingWrites?: () => Promise<Result<void, MemoryError>>;
   checkStorageHealth?: () => Promise<Result<boolean, MemoryError>>;
   closeStorage?: () => Promise<Result<void, MemoryError>>;
+  capabilitiesResolver?: MemoryCapabilitiesResolver;
 }
 
 const defaultInitializeStorage = async (): Promise<Result<void, MemoryError>> => ok(undefined);
@@ -64,6 +67,8 @@ export class MemoryDaemonService implements DaemonManagedService {
   private readonly dbPath: string;
   private readonly dataDir: string;
   private readonly embeddingProvider?: string;
+  private readonly capabilitiesResolver: MemoryCapabilitiesResolver;
+  private capabilities: MemoryCapabilities;
   private memoryCount = 0;
   private lastConsolidation?: Date;
 
@@ -78,6 +83,17 @@ export class MemoryDaemonService implements DaemonManagedService {
     this.flushPendingWrites = options.flushPendingWrites ?? defaultFlushPendingWrites;
     this.checkStorageHealth = options.checkStorageHealth ?? defaultCheckStorageHealth;
     this.closeStorage = options.closeStorage ?? defaultCloseStorage;
+    this.capabilitiesResolver = options.capabilitiesResolver ?? new MemoryCapabilitiesResolver();
+    this.capabilities = {
+      embeddingConfigured: false,
+      setupRequired: true,
+      configPath: "",
+      features: {
+        crud: { enabled: true },
+        semanticSearch: { enabled: false, reason: "Embedding provider setup is required." },
+        consolidation: { enabled: false, reason: "Embedding provider setup is required." },
+      },
+    };
   }
 
   getState(): MemoryDaemonServiceState {
@@ -88,6 +104,22 @@ export class MemoryDaemonService implements DaemonManagedService {
     return this.state === "ready" && this.memoryService.isReady();
   }
 
+  getCapabilities(): MemoryCapabilities {
+    return this.capabilities;
+  }
+
+  async refreshCapabilities(): Promise<void> {
+    const capabilitiesResult = await this.capabilitiesResolver.getCapabilities();
+    if (!capabilitiesResult.ok) {
+      this.logger.warn("Unable to load memory embedding configuration; continuing in setup-required mode", {
+        error: capabilitiesResult.error.message,
+      });
+      return;
+    }
+
+    this.capabilities = capabilitiesResult.value;
+  }
+
   async start(): Promise<DaemonResult<void>> {
     if (!this.canStart()) {
       return err(this.toDaemonError(this.createMemoryError("Memory service cannot start in current state", "MEMORY_INIT_FAILED")));
@@ -95,6 +127,8 @@ export class MemoryDaemonService implements DaemonManagedService {
 
     this.state = "starting";
     this.logger.info("Starting memory daemon service", { dbPath: this.dbPath, dataDir: this.dataDir });
+
+    await this.refreshCapabilities();
 
     const initializeStorageResult = await this.initializeStorage(this.dbPath);
     if (!initializeStorageResult.ok) {
@@ -179,7 +213,7 @@ export class MemoryDaemonService implements DaemonManagedService {
       dbConnected: healthResult.value.dbConnected && storageHealthResult.value,
       memoryCount: Math.max(healthResult.value.memoryCount, this.memoryCount),
       lastConsolidation: healthResult.value.lastConsolidation ?? this.lastConsolidation,
-      embeddingProvider: healthResult.value.embeddingProvider ?? this.embeddingProvider,
+      embeddingProvider: healthResult.value.embeddingProvider ?? this.capabilities.embedding?.provider ?? this.embeddingProvider,
     });
   }
 

@@ -18,6 +18,7 @@ import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
 import { MemoryConsolidationJob } from "../cron/jobs/memory-consolidation-job";
 import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
 import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
+import { MemoryCapabilitiesResolver } from "./memory-capabilities";
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryService;
@@ -147,9 +148,11 @@ async function main() {
   }
 
   const memoryRuntime = memoryRuntimeResult.value;
+  const memoryCapabilitiesResolver = new MemoryCapabilitiesResolver({ dataRoot });
   const httpServer = new DaemonHttpServer({
     toolDefinitions: getBuiltinToolDefinitions(),
     memoryService: memoryRuntime.memoryService,
+    memoryCapabilitiesResolver,
   });
 
   const memoryService = new MemoryDaemonService({
@@ -158,6 +161,7 @@ async function main() {
     memoryService: memoryRuntime.memoryService,
     checkStorageHealth: memoryRuntime.checkStorageHealth,
     closeStorage: memoryRuntime.closeStorage,
+    capabilitiesResolver: memoryCapabilitiesResolver,
   });
 
   // Register HTTP server as managed service
