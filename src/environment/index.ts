@@ -17,6 +17,8 @@ export {
 export type { EnvironmentErrorCode } from "./errors";
 export { ENVIRONMENT_ERROR_CODES } from "./errors";
 
+export { FileEnvironmentResolver } from "./file-resolver";
+
 export type { EnvironmentResolver } from "./resolver";
 
 export {
