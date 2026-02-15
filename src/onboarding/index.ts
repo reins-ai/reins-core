@@ -38,8 +38,15 @@ export {
 export {
   DaemonInstallStep,
   type DaemonInstallStepOptions,
+  ModelSelectionStep,
+  type ModelSelectionStepOptions,
+  PersonalityStep,
+  type PersonalityStepOptions,
+  ProviderSetupStep,
+  type ProviderSetupStepOptions,
   WelcomeStep,
   type WelcomeStepOptions,
+  WorkspaceStep,
 } from "./steps";
 
 export {
