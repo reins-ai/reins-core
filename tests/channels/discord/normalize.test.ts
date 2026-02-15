@@ -345,7 +345,7 @@ describe("normalizeDiscordMessage", () => {
     expect(result!.formatting).toBeUndefined();
   });
 
-  it("returns null for messages with no content, attachments, or embeds", () => {
+  it("returns null for messages with no content, attachments, embeds, or unsupported type", () => {
     const msg = createDiscordMessage({
       content: "",
       attachments: [],
@@ -365,6 +365,137 @@ describe("normalizeDiscordMessage", () => {
     const result = normalizeDiscordMessage(msg);
 
     expect(result).toBeNull();
+  });
+
+  it("returns notification for sticker messages", () => {
+    const msg = createDiscordMessage({
+      content: "",
+      attachments: [],
+      embeds: [],
+      sticker_items: [{ id: "sticker-1", name: "cool_sticker", format_type: 1 }],
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: sticker. Only text, images, documents, and voice are supported.",
+    );
+    expect(result!.platform).toBe("discord");
+    expect(result!.channelId).toBe("ch-42");
+    expect(result!.sender.id).toBe("101");
+  });
+
+  it("returns notification for poll messages", () => {
+    const msg = createDiscordMessage({
+      content: "",
+      attachments: [],
+      embeds: [],
+      poll: { question: { text: "Favorite color?" } },
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: poll. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for activity messages", () => {
+    const msg = createDiscordMessage({
+      content: "",
+      attachments: [],
+      embeds: [],
+      activity: { type: 1 },
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: activity. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for system message types", () => {
+    const msg = createDiscordMessage({
+      type: 7,
+      content: "",
+      attachments: [],
+      embeds: [],
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: member join. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for unknown system message types", () => {
+    const msg = createDiscordMessage({
+      type: 99,
+      content: "",
+      attachments: [],
+      embeds: [],
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: system message. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for pin notification messages", () => {
+    const msg = createDiscordMessage({
+      type: 6,
+      content: "",
+      attachments: [],
+      embeds: [],
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: pin notification. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("includes platformData in unsupported type notifications", () => {
+    const msg = createDiscordMessage({
+      content: "",
+      attachments: [],
+      embeds: [],
+      sticker_items: [{ id: "sticker-1", name: "cool_sticker", format_type: 1 }],
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.platformData).toBeDefined();
+    expect(result!.platformData!.message_id).toBe("msg-1");
+    expect(result!.platformData!.channel_id).toBe("ch-42");
+  });
+
+  it("does not return notification for default message type with no content", () => {
+    const msg = createDiscordMessage({
+      type: 0,
+      content: "",
+      attachments: [],
+      embeds: [],
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).toBeNull();
+  });
+
+  it("normalizes content normally even when sticker_items are present", () => {
+    const msg = createDiscordMessage({
+      content: "Hello with sticker",
+      sticker_items: [{ id: "sticker-1", name: "cool_sticker", format_type: 1 }],
+    });
+    const result = normalizeDiscordMessage(msg);
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe("Hello with sticker");
   });
 
   it("handles message with only attachments and no text", () => {

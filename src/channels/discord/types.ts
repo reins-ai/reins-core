@@ -59,6 +59,7 @@ export interface DiscordUser {
 
 export interface DiscordMessage {
   id: string;
+  type?: number;
   channel_id: string;
   guild_id?: string;
   author: DiscordUser;
@@ -67,6 +68,11 @@ export interface DiscordMessage {
   edited_timestamp?: string | null;
   embeds: DiscordEmbed[];
   attachments: DiscordAttachment[];
+  sticker_items?: Array<{ id: string; name: string; format_type: number }>;
+  components?: unknown[];
+  interaction?: { id: string; type: number; name: string };
+  activity?: { type: number };
+  poll?: { question: { text: string } };
 }
 
 export interface DiscordGatewayHelloData {

@@ -179,10 +179,55 @@ function buildPlatformData(msg: DiscordMessage): ChannelPlatformData {
 }
 
 /**
+ * Discord message type constants for detecting non-default messages.
+ */
+const DISCORD_DEFAULT_MESSAGE_TYPE = 0;
+
+/**
+ * Human-readable labels for Discord message types that are not
+ * standard user messages.
+ */
+const DISCORD_SYSTEM_MESSAGE_TYPES: Record<number, string> = {
+  6: "pin notification",
+  7: "member join",
+  8: "server boost",
+  9: "server boost tier 1",
+  10: "server boost tier 2",
+  11: "server boost tier 3",
+  14: "channel follow",
+  19: "reply",
+  20: "application command",
+  21: "thread starter",
+  22: "invite reminder",
+};
+
+/**
+ * Detect the type of an unsupported Discord message.
+ *
+ * Returns a human-readable label for the unsupported content type,
+ * or `undefined` when no unsupported payload is detected.
+ */
+function detectUnsupportedType(msg: DiscordMessage): string | undefined {
+  if (msg.sticker_items !== undefined && msg.sticker_items.length > 0) return "sticker";
+  if (msg.poll !== undefined) return "poll";
+  if (msg.activity !== undefined) return "activity";
+
+  if (msg.type !== undefined && msg.type !== DISCORD_DEFAULT_MESSAGE_TYPE) {
+    return DISCORD_SYSTEM_MESSAGE_TYPES[msg.type] ?? "system message";
+  }
+
+  return undefined;
+}
+
+/**
  * Convert a Discord MESSAGE_CREATE event payload into a platform-agnostic ChannelMessage.
  *
- * Returns `null` when the message contains no recognizable content
- * (empty text, no attachments, no embeds).
+ * Returns `null` only when the message has no detectable content and no
+ * recognizable unsupported type.
+ *
+ * When the message contains an unsupported content type (sticker, poll,
+ * activity, etc.), a notification ChannelMessage is returned with text
+ * explaining the limitation.
  */
 export function normalizeDiscordMessage(msg: DiscordMessage): ChannelMessage | null {
   const text = msg.content.length > 0 ? msg.content : undefined;
@@ -193,6 +238,19 @@ export function normalizeDiscordMessage(msg: DiscordMessage): ChannelMessage | n
   const combinedText = text ?? embedText;
 
   if (combinedText === undefined && attachments === undefined && voice === undefined) {
+    const unsupportedType = detectUnsupportedType(msg);
+    if (unsupportedType !== undefined) {
+      return {
+        id: msg.id,
+        platform: "discord",
+        channelId: msg.channel_id,
+        sender: extractSender(msg),
+        timestamp: new Date(msg.timestamp),
+        text: `Unsupported message type: ${unsupportedType}. Only text, images, documents, and voice are supported.`,
+        platformData: buildPlatformData(msg),
+      };
+    }
+
     return null;
   }
 

@@ -291,7 +291,7 @@ describe("normalizeTelegramMessage", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null for messages with no recognizable content", () => {
+  it("returns null for messages with no recognizable content and no unsupported type", () => {
     const msg: TelegramMessage = {
       message_id: 5,
       date: 1_735_689_600,
@@ -300,6 +300,188 @@ describe("normalizeTelegramMessage", () => {
     const result = normalizeTelegramMessage(createUpdate(msg));
 
     expect(result).toBeNull();
+  });
+
+  it("returns notification for sticker messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 6,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      sticker: { file_id: "sticker-id", type: "regular", emoji: "😀" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: sticker. Only text, images, documents, and voice are supported.",
+    );
+    expect(result!.platform).toBe("telegram");
+    expect(result!.channelId).toBe("42");
+    expect(result!.sender.id).toBe("101");
+  });
+
+  it("returns notification for poll messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 7,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      poll: { id: "poll-1", question: "Favorite color?" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: poll. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for location messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 8,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      location: { latitude: 51.5074, longitude: -0.1278 },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: location. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for contact messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 9,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      contact: { phone_number: "+1234567890", first_name: "Bob" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: contact. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for animation messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 10,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      animation: { file_id: "anim-id" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: animation. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for video messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 11,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      video: { file_id: "video-id" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: video. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for dice messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 12,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      dice: { emoji: "🎲", value: 4 },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: dice. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for venue messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 13,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      venue: { location: { latitude: 51.5074, longitude: -0.1278 }, title: "Big Ben" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: venue. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for game messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 14,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      game: { title: "My Game" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: game. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("returns notification for video_note messages", () => {
+    const msg: TelegramMessage = {
+      message_id: 15,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      video_note: { file_id: "vnote-id" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.text).toBe(
+      "Unsupported message type: video note. Only text, images, documents, and voice are supported.",
+    );
+  });
+
+  it("includes platformData in unsupported type notifications", () => {
+    const msg: TelegramMessage = {
+      message_id: 16,
+      date: 1_735_689_600,
+      chat: createChat(),
+      from: createFrom(),
+      sticker: { file_id: "sticker-id" },
+    };
+    const result = normalizeTelegramMessage(createUpdate(msg));
+
+    expect(result).not.toBeNull();
+    expect(result!.platformData).toEqual({
+      message_id: 16,
+      chat_id: 42,
+      chat_type: "private",
+      date: 1_735_689_600,
+    });
   });
 
   it("handles a message with both photo and document", () => {

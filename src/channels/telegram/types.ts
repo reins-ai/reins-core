@@ -88,6 +88,16 @@ export interface TelegramMessage {
   document?: TelegramDocument;
   voice?: TelegramVoice;
   reply_to_message?: TelegramMessage;
+  sticker?: { file_id: string; type?: string; emoji?: string };
+  animation?: { file_id: string };
+  video?: { file_id: string };
+  video_note?: { file_id: string };
+  contact?: { phone_number: string; first_name: string };
+  location?: { latitude: number; longitude: number };
+  venue?: { location: { latitude: number; longitude: number }; title: string };
+  poll?: { id: string; question: string };
+  dice?: { emoji: string; value: number };
+  game?: { title: string };
 }
 
 export interface TelegramUpdate {
@@ -117,6 +127,19 @@ export interface TelegramSendMediaOptions {
   disableNotification?: boolean;
   replyToMessageId?: number;
 }
+
+export type TelegramChatAction =
+  | "typing"
+  | "upload_photo"
+  | "record_video"
+  | "upload_video"
+  | "record_voice"
+  | "upload_voice"
+  | "upload_document"
+  | "choose_sticker"
+  | "find_location"
+  | "record_video_note"
+  | "upload_video_note";
 
 export interface TelegramClientOptions {
   token: string;

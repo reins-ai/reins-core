@@ -169,10 +169,35 @@ function extractMessage(update: TelegramUpdate): TelegramMessage | undefined {
 }
 
 /**
+ * Detect the type of an unsupported Telegram message.
+ *
+ * Returns a human-readable label for the unsupported content type,
+ * or `undefined` when the message has no detectable unsupported payload
+ * (e.g. callback queries or other non-message updates with no content).
+ */
+function detectUnsupportedType(msg: TelegramMessage): string | undefined {
+  if (msg.sticker !== undefined) return "sticker";
+  if (msg.animation !== undefined) return "animation";
+  if (msg.video !== undefined) return "video";
+  if (msg.video_note !== undefined) return "video note";
+  if (msg.contact !== undefined) return "contact";
+  if (msg.location !== undefined) return "location";
+  if (msg.venue !== undefined) return "venue";
+  if (msg.poll !== undefined) return "poll";
+  if (msg.dice !== undefined) return "dice";
+  if (msg.game !== undefined) return "game";
+  return undefined;
+}
+
+/**
  * Convert a Telegram update into a platform-agnostic ChannelMessage.
  *
- * Returns `null` when the update contains no recognizable message
+ * Returns `null` only when the update contains no message at all
  * (e.g. callback queries, inline results, or other non-message updates).
+ *
+ * When the message contains an unsupported content type (sticker, poll,
+ * location, etc.), a notification ChannelMessage is returned with text
+ * explaining the limitation.
  */
 export function normalizeTelegramMessage(update: TelegramUpdate): ChannelMessage | null {
   const msg = extractMessage(update);
@@ -185,6 +210,19 @@ export function normalizeTelegramMessage(update: TelegramUpdate): ChannelMessage
   const voice = extractVoice(msg);
 
   if (text === undefined && attachments === undefined && voice === undefined) {
+    const unsupportedType = detectUnsupportedType(msg);
+    if (unsupportedType !== undefined) {
+      return {
+        id: String(msg.message_id),
+        platform: "telegram",
+        channelId: String(msg.chat.id),
+        sender: extractSender(msg),
+        timestamp: new Date(msg.date * 1_000),
+        text: `Unsupported message type: ${unsupportedType}. Only text, images, documents, and voice are supported.`,
+        platformData: buildPlatformData(msg),
+      };
+    }
+
     return null;
   }
 
