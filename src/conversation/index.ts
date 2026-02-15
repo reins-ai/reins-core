@@ -36,6 +36,14 @@ export type {
 export type { TranscriptEntry, TranscriptMessageRole } from "./transcript-types";
 export type { TranscriptStoreOptions } from "./transcript-store";
 export type { SQLiteConversationStoreOptions } from "./sqlite-store";
+export type {
+  ChannelSource,
+  ChannelSourcePlatform,
+  ContentBlock,
+  Conversation,
+  Message,
+  MessageRole,
+} from "./types";
 export type { ConversationStore, ConversationStoreResult, ListOptions } from "./store";
 export type {
   MemoryPrimingContract,
