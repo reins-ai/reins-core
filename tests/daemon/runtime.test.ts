@@ -197,8 +197,10 @@ describe("ServiceInstaller", () => {
         const full = `${command} ${args.join(" ")}`;
         commands.push(full);
 
-        if (full.includes("is-active")) {
-          return ok({ stdout: "active\n", stderr: "" });
+        // status() now uses `show -p LoadState,ActiveState` instead of
+        // `is-active` to distinguish "failed" from "not-installed".
+        if (full.includes("show") && full.includes("LoadState")) {
+          return ok({ stdout: "LoadState=loaded\nActiveState=active\n", stderr: "" });
         }
 
         return ok({ stdout: "ok", stderr: "" });
@@ -235,7 +237,7 @@ describe("ServiceInstaller", () => {
     expect(writes.some((entry) => entry.endsWith(".service"))).toBe(true);
     expect(commands).toContain("systemctl --user daemon-reload");
     expect(commands).toContain("systemctl --user enable --now com.reins.daemon.service");
-    expect(commands).toContain("systemctl --user is-active com.reins.daemon.service");
+    expect(commands).toContain("systemctl --user show -p LoadState,ActiveState com.reins.daemon.service");
     expect(commands).toContain("systemctl --user disable --now com.reins.daemon.service");
   });
 
