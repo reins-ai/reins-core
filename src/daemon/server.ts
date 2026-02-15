@@ -38,6 +38,7 @@ import { SessionExtractor } from "../memory/capture";
 import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
+import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
 
 import {
   parseListMemoryQueryParams,
@@ -93,6 +94,8 @@ import type { MemoryCapabilities } from "./types/memory-config";
 import type { MemoryConfig } from "./types/memory-config";
 import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
+import { ChannelDaemonService } from "./channel-service";
+import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
 
 interface ActiveExecution {
   conversationId: string;
@@ -313,6 +316,7 @@ export interface DaemonHttpServerOptions {
   toolExecutor?: ToolExecutor;
   memoryService?: MemoryService;
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
+  channelService?: ChannelDaemonService;
 }
 
 interface ProviderExecutionContext {
@@ -784,9 +788,13 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly toolExecutor: ToolExecutor;
   private readonly memoryService: MemoryService | null;
   private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
+  private readonly credentialStore: EncryptedCredentialStore | null;
+  private readonly providedChannelService: ChannelDaemonService | null;
   private readonly environmentOptions: {
     daemonPathOptions?: DaemonPathOptions;
   };
+  private channelService: ChannelDaemonService | null = null;
+  private channelRouteHandler: ChannelRouteHandler | null = null;
   private configStore: ConfigStore | null = null;
   private environmentResolver: FileEnvironmentResolver | null = null;
   private environmentSwitchService: EnvironmentSwitchService | null = null;
@@ -801,6 +809,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.toolDefinitions = options.toolDefinitions ?? [];
     this.memoryService = options.memoryService ?? null;
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
+    this.providedChannelService = options.channelService ?? null;
 
     // Create auth services first so credential store is available for tool registration
     const legacyService = options.authService;
@@ -820,7 +829,16 @@ export class DaemonHttpServer implements DaemonManagedService {
       credentialStore = services.credentialStore;
     }
 
+    this.credentialStore = credentialStore ?? null;
+
     this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService, credentialStore);
+
+    if (this.providedChannelService) {
+      this.channelService = this.providedChannelService;
+      this.channelRouteHandler = createChannelRouteHandler({
+        channelService: this.providedChannelService,
+      });
+    }
   }
 
   /**
@@ -875,6 +893,14 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
+      await this.initializeChannelServices();
+    } catch (error) {
+      log("warn", "Channel services failed to initialize; daemon will start without them", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
       const requestHandler = this.machineAuthService
         ? createAuthMiddleware({
             authService: this.machineAuthService,
@@ -918,6 +944,15 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
+      if (this.channelService) {
+        await this.channelService.stop();
+      }
+
+      if (!this.providedChannelService) {
+        this.channelService = null;
+        this.channelRouteHandler = null;
+      }
+
       this.stopWebSocketHeartbeatLoop();
       this.wsRegistry.clear();
       for (const execution of this.activeExecutions.values()) {
@@ -981,6 +1016,9 @@ export class DaemonHttpServer implements DaemonManagedService {
         if (this.conversationManager) {
           capabilities.push("conversations.crud", "messages.send", "stream.subscribe");
         }
+        if (this.channelService) {
+          capabilities.push("channels.manage");
+        }
         if (this.memoryService) {
           capabilities.push("memory.crud", "memory.search", "memory.consolidate");
         }
@@ -1015,6 +1053,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Provider auth endpoints
       if (url.pathname.startsWith("/api/providers/auth/")) {
         return this.handleAuthRequest(url, method, request, corsHeaders);
+      }
+
+      const channelResponse = await this.handleChannelRequest(url, method, request, corsHeaders);
+      if (channelResponse) {
+        return channelResponse;
       }
 
       // Message ingest endpoint — canonical (/api/messages) and compatibility (/messages)
@@ -1475,6 +1518,26 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     log("warn", `Auth endpoint not found: ${method} ${path}`);
     return new Response("Not Found", { status: 404, headers: corsHeaders });
+  }
+
+  private async handleChannelRequest(
+    url: URL,
+    method: string,
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response | null> {
+    if (!url.pathname.startsWith("/channels")) {
+      return null;
+    }
+
+    if (!this.channelRouteHandler) {
+      return Response.json(
+        { error: "Channel services are not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    return await this.channelRouteHandler.handle(url, method, request, corsHeaders);
   }
 
   /**
@@ -2838,6 +2901,41 @@ export class DaemonHttpServer implements DaemonManagedService {
     log("info", "Conversation services initialized (SQLite store)", {
       path: store.path,
     });
+  }
+
+  private async initializeChannelServices(): Promise<void> {
+    if (!this.channelService && this.providedChannelService) {
+      this.channelService = this.providedChannelService;
+      this.channelRouteHandler = createChannelRouteHandler({
+        channelService: this.providedChannelService,
+      });
+    }
+
+    if (!this.channelService) {
+      if (!this.conversationManager || !this.credentialStore) {
+        return;
+      }
+
+      const channelRegistry = new ChannelRegistry();
+      const credentialStorage = new ChannelCredentialStorage({
+        store: this.credentialStore,
+      });
+      const conversationBridge = new ConversationBridge({
+        conversationManager: this.conversationManager,
+        channelRegistry,
+      });
+
+      this.channelService = new ChannelDaemonService({
+        channelRegistry,
+        conversationBridge,
+        credentialStorage,
+      });
+      this.channelRouteHandler = createChannelRouteHandler({
+        channelService: this.channelService,
+      });
+    }
+
+    await this.channelService.start();
   }
 
   private buildCompactionOptions(
