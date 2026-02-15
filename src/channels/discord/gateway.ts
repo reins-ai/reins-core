@@ -56,6 +56,8 @@ export interface DiscordGatewayOptions {
 
 export type DiscordGatewayMessageHandler = (message: DiscordMessage) => Promise<void> | void;
 export type DiscordGatewayReadyHandler = (event: DiscordGatewayReadyEvent) => Promise<void> | void;
+export type DiscordGatewayDisconnectHandler = (details: { code?: number; reason?: string; error?: string }) =>
+  Promise<void> | void;
 
 function toDefaultIdentifyProperties(): DiscordGatewayIdentifyProperties {
   return {
@@ -103,11 +105,14 @@ export class DiscordGateway {
 
   private readonly messageHandlers = new Set<DiscordGatewayMessageHandler>();
   private readonly readyHandlers = new Set<DiscordGatewayReadyHandler>();
+  private readonly disconnectHandlers = new Set<DiscordGatewayDisconnectHandler>();
 
   private socket: DiscordGatewayWebSocket | null = null;
   private sequence: number | null = null;
   private sessionId: string | null = null;
   private heartbeatTimer: IntervalHandle | null = null;
+  private resumeSession: { sessionId: string; sequence: number } | null = null;
+  private isDisconnecting = false;
 
   constructor(options: DiscordGatewayOptions) {
     const token = options.token.trim();
@@ -138,6 +143,13 @@ export class DiscordGateway {
    */
   public get currentSessionId(): string | null {
     return this.sessionId;
+  }
+
+  /**
+   * Returns the latest gateway sequence number for session resume.
+   */
+  public get currentSequence(): number | null {
+    return this.sequence;
   }
 
   /**
@@ -181,6 +193,7 @@ export class DiscordGateway {
       return;
     }
 
+    this.isDisconnecting = true;
     this.stopHeartbeat();
 
     this.socket.removeEventListener("message", this.handleSocketMessage);
@@ -190,6 +203,8 @@ export class DiscordGateway {
     this.socket = null;
     this.sequence = null;
     this.sessionId = null;
+    this.resumeSession = null;
+    this.isDisconnecting = false;
   }
 
   /**
@@ -212,6 +227,26 @@ export class DiscordGateway {
     };
   }
 
+  /**
+   * Registers a handler for socket close or error events.
+   */
+  public onDisconnect(handler: DiscordGatewayDisconnectHandler): () => void {
+    this.disconnectHandlers.add(handler);
+    return () => {
+      this.disconnectHandlers.delete(handler);
+    };
+  }
+
+  /**
+   * Instructs the next HELLO handshake to resume an existing session.
+   */
+  public prepareResume(sessionId: string, sequence: number): void {
+    this.resumeSession = {
+      sessionId,
+      sequence,
+    };
+  }
+
   private readonly handleSocketMessage: MessageListener = (event) => {
     const jsonString = decodeGatewayMessageData(event.data);
     if (jsonString === null) {
@@ -231,6 +266,19 @@ export class DiscordGateway {
 
     if (payload.op === DISCORD_GATEWAY_OPCODES.HELLO) {
       this.handleHello(payload.d as DiscordGatewayHelloData);
+      return;
+    }
+
+    if (payload.op === DISCORD_GATEWAY_OPCODES.RECONNECT) {
+      this.socket?.close(4000, "Discord requested reconnect");
+      return;
+    }
+
+    if (payload.op === DISCORD_GATEWAY_OPCODES.INVALID_SESSION) {
+      this.resumeSession = null;
+      this.sequence = null;
+      this.sessionId = null;
+      this.sendIdentify();
       return;
     }
 
@@ -258,10 +306,20 @@ export class DiscordGateway {
   private readonly handleSocketClose: CloseListener = () => {
     this.stopHeartbeat();
     this.socket = null;
+
+    if (!this.isDisconnecting) {
+      void this.emitDisconnect({
+        code: 1006,
+        reason: "Socket closed",
+      });
+    }
   };
 
   private readonly handleSocketError: ErrorListener = () => {
     this.stopHeartbeat();
+    void this.emitDisconnect({
+      error: "Discord Gateway socket error",
+    });
   };
 
   private handleHello(hello: DiscordGatewayHelloData): void {
@@ -270,7 +328,25 @@ export class DiscordGateway {
     }
 
     this.startHeartbeat(hello.heartbeat_interval);
+
+    if (this.resumeSession !== null) {
+      this.sendResume(this.resumeSession.sessionId, this.resumeSession.sequence);
+      this.resumeSession = null;
+      return;
+    }
+
     this.sendIdentify();
+  }
+
+  private sendResume(sessionId: string, sequence: number): void {
+    this.sendPayload({
+      op: DISCORD_GATEWAY_OPCODES.RESUME,
+      d: {
+        token: this.token,
+        session_id: sessionId,
+        seq: sequence,
+      },
+    });
   }
 
   private sendIdentify(): void {
@@ -323,6 +399,12 @@ export class DiscordGateway {
   private async emitReady(event: DiscordGatewayReadyEvent): Promise<void> {
     for (const handler of this.readyHandlers) {
       await handler(event);
+    }
+  }
+
+  private async emitDisconnect(details: { code?: number; reason?: string; error?: string }): Promise<void> {
+    for (const handler of this.disconnectHandlers) {
+      await handler(details);
     }
   }
 }

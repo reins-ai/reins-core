@@ -7,6 +7,7 @@ import type {
   DiscordEmbed,
   DiscordGatewayReadyEvent,
   DiscordMessage,
+  DiscordUser,
   DiscordUploadFileInput,
 } from "./types";
 
@@ -129,6 +130,15 @@ export class DiscordClient {
       intents: options.intents,
       identifyProperties: options.gatewayIdentifyProperties,
       webSocketFactory: options.webSocketFactory as ((url: string) => DiscordGatewayWebSocket) | undefined,
+    });
+  }
+
+  /**
+   * Validates bot token by fetching the current bot user profile.
+   */
+  public async getCurrentUser(): Promise<DiscordUser> {
+    return this.requestJson<DiscordUser>("/users/@me", {
+      method: "GET",
     });
   }
 
