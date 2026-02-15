@@ -186,6 +186,48 @@ describe("ConversationManager", () => {
     expect(conversation.messages[0]?.content).toContain("## User Context\nUser profile from USER.md");
   });
 
+  test("applies persisted onboarding personality to runtime system prompt", async () => {
+    const personaRegistry = new PersonaRegistry();
+    const provider = new EnvironmentContextProvider(
+      {
+        getResolvedDocuments: async () =>
+          ok(
+            createOverlayResolution(
+              "You are an environment-specific assistant.",
+              "User profile from USER.md",
+            ),
+          ),
+      },
+      new SystemPromptBuilder(),
+    );
+    const manager = new ConversationManager(
+      new InMemoryConversationStore(),
+      undefined,
+      undefined,
+      {
+        personaRegistry,
+        environmentContextProvider: provider,
+        readUserConfig: async () => ok({
+          name: "James",
+          personality: { preset: "concise" },
+          provider: { mode: "none", search: { provider: "brave" } },
+          daemon: { host: "localhost", port: 7433 },
+          setupComplete: true,
+        }),
+      },
+    );
+
+    const conversation = await manager.create({
+      title: "Env Session",
+      model: "gpt-4o-mini",
+      provider: "openai",
+    });
+
+    expect(conversation.messages).toHaveLength(1);
+    expect(conversation.messages[0]?.content).toContain("## Additional Instructions");
+    expect(conversation.messages[0]?.content).toContain("Keep responses brief and to the point");
+  });
+
   test("preserves explicit system prompt when provided", async () => {
     const personaRegistry = new PersonaRegistry();
     const provider = new EnvironmentContextProvider(

@@ -268,6 +268,7 @@ describe("UserConfig", () => {
     it("resolves config directory to data root on linux", () => {
       const dir = resolveUserConfigDirectory({
         platform: "linux",
+        env: {} as NodeJS.ProcessEnv,
         homeDirectory: "/home/testuser",
       });
 
@@ -286,6 +287,7 @@ describe("UserConfig", () => {
     it("resolves config path to data root config.json on linux", () => {
       const path = resolveUserConfigPath({
         platform: "linux",
+        env: {} as NodeJS.ProcessEnv,
         homeDirectory: "/home/testuser",
       });
 
@@ -301,7 +303,6 @@ describe("UserConfig", () => {
         homeDirectory: "/home/testuser",
       });
 
-      // Config now lives under data root, not XDG config
       expect(path).toBe("/home/testuser/.reins/config.json");
     });
   });
@@ -385,7 +386,7 @@ describe("UserConfig", () => {
 
       const result = await writeUserConfig(
         { name: "fresh-user" },
-        { platform: "linux", homeDirectory: tempHome },
+        { platform: "linux", homeDirectory: tempHome, env: {} as NodeJS.ProcessEnv },
       );
 
       expect(result.ok).toBe(true);

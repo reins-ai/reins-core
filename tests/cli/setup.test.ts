@@ -403,6 +403,7 @@ describe("user config read/write", () => {
   it("resolves config path under data root", () => {
     const path = resolveUserConfigPath({
       platform: "linux",
+      env: {} as NodeJS.ProcessEnv,
       homeDirectory: "/home/example",
     });
 

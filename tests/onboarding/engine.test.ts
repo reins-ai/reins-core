@@ -265,7 +265,11 @@ describe("OnboardingEngine", () => {
       "stepEnter",
     ]);
     expect(events[0]).toEqual({ type: "stepEnter", step: "welcome" });
-    expect(events[1]).toEqual({ type: "stepComplete", step: "welcome", data: { first: true } });
+    expect(events[1]).toEqual({
+      type: "stepComplete",
+      step: "welcome",
+      data: { first: true, mockData: true },
+    });
     expect(events[2]).toEqual({ type: "stepEnter", step: "daemon-install" });
     expect(events[3]).toEqual({ type: "stepSkip", step: "daemon-install" });
     expect(events[4]).toEqual({ type: "stepEnter", step: "provider-keys" });

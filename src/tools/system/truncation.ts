@@ -17,8 +17,6 @@ export interface TruncatedResult {
   metadata: TruncationMetadata;
 }
 
-const encoder = new TextEncoder();
-
 export function truncateOutput(
   content: string,
   options: TruncationOptions = {},
@@ -26,7 +24,7 @@ export function truncateOutput(
   const maxLines = normalizeLimit(options.maxLines, MAX_LINES);
   const maxBytes = normalizeLimit(options.maxBytes, MAX_BYTES);
 
-  const originalBytes = encoder.encode(content).byteLength;
+  const originalBytes = Buffer.byteLength(content, "utf8");
   const originalLines = countLines(content);
 
   if (originalLines <= maxLines && originalBytes <= maxBytes) {
@@ -42,10 +40,10 @@ export function truncateOutput(
 
   let currentBytes = 0;
   let currentLines = content.length === 0 ? 0 : 1;
-  let output = "";
+  let endIndex = 0;
 
   for (const char of content) {
-    const charBytes = encoder.encode(char).byteLength;
+    const charBytes = codePointByteLength(char.codePointAt(0)!);
     if (currentBytes + charBytes > maxBytes) {
       break;
     }
@@ -54,7 +52,7 @@ export function truncateOutput(
       break;
     }
 
-    output += char;
+    endIndex += char.length;
     currentBytes += charBytes;
 
     if (char === "\n") {
@@ -63,7 +61,7 @@ export function truncateOutput(
   }
 
   return {
-    output,
+    output: content.slice(0, endIndex),
     metadata: {
       truncated: true,
       originalLines,
@@ -72,16 +70,22 @@ export function truncateOutput(
   };
 }
 
+function codePointByteLength(codePoint: number): number {
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint <= 0x7ff) return 2;
+  if (codePoint <= 0xffff) return 3;
+  return 4;
+}
+
 function countLines(content: string): number {
   if (content.length === 0) {
     return 0;
   }
 
   let lines = 1;
-  for (const char of content) {
-    if (char === "\n") {
-      lines += 1;
-    }
+  let index = -1;
+  while ((index = content.indexOf("\n", index + 1)) !== -1) {
+    lines += 1;
   }
 
   return lines;

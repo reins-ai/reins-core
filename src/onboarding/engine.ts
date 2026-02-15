@@ -6,6 +6,7 @@ import {
 } from "./checkpoint-service";
 import {
   ONBOARDING_STEPS,
+  type PersonalityConfig,
   type CompletedStepRecord,
   type OnboardingConfig,
   type OnboardingMode,
@@ -250,7 +251,46 @@ export class OnboardingEngine {
       );
     }
 
-    const finalData = data ?? (this.mode === "quickstart" ? handler.getDefaults() : undefined);
+    const executeResult = await handler.execute({
+      mode: this.mode,
+      config: this.buildConfigFromCurrentState(),
+      collectedData: {
+        ...this.collectedData,
+        ...(data ?? {}),
+      },
+    });
+
+    if (executeResult.status === "back") {
+      return this.back();
+    }
+
+    if (executeResult.status === "skipped") {
+      if (!handler.skippable) {
+        return err(
+          new OnboardingError(
+            `Step is not skippable: ${currentStep}`,
+            "STEP_NOT_SKIPPABLE",
+          ),
+        );
+      }
+
+      this.skippedStepSet.add(currentStep);
+      this.onEvent?.({ type: "stepSkip", step: currentStep });
+      this.currentStepIndex += 1;
+
+      const persistSkippedResult = await this.persistCheckpoint();
+      if (!persistSkippedResult.ok) {
+        return persistSkippedResult;
+      }
+
+      return this.afterIndexChange();
+    }
+
+    const finalData = data
+      ? { ...(executeResult.data ?? {}), ...data }
+      : this.mode === "quickstart"
+        ? handler.getDefaults()
+        : executeResult.data;
     if (finalData) {
       this.collectedData = {
         ...this.collectedData,
@@ -335,6 +375,11 @@ export class OnboardingEngine {
 
     const currentStep = isComplete ? null : this.getCurrentStep();
 
+    const collectedUserName = typeof this.collectedData.userName === "string"
+      ? this.collectedData.userName
+      : undefined;
+    const collectedPersonality = this.readPersonalityConfig(this.collectedData);
+
     return {
       setupComplete: isComplete,
       mode: this.mode,
@@ -342,8 +387,30 @@ export class OnboardingEngine {
       completedSteps,
       startedAt,
       completedAt: isComplete ? new Date().toISOString() : this.config?.completedAt ?? null,
-      userName: this.config?.userName,
-      personality: this.config?.personality,
+      userName: collectedUserName ?? this.config?.userName,
+      personality: collectedPersonality ?? this.config?.personality,
+    };
+  }
+
+  private readPersonalityConfig(data: Record<string, unknown>): PersonalityConfig | undefined {
+    const presetCandidate = data.preset ?? data.personalityPreset;
+    if (
+      presetCandidate !== "balanced"
+      && presetCandidate !== "concise"
+      && presetCandidate !== "technical"
+      && presetCandidate !== "warm"
+      && presetCandidate !== "custom"
+    ) {
+      return undefined;
+    }
+
+    const customPrompt = typeof data.customPrompt === "string"
+      ? data.customPrompt
+      : undefined;
+
+    return {
+      preset: presetCandidate,
+      customPrompt,
     };
   }
 

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 
 import { getDataRoot } from "../daemon/paths";
+import type { PersonalityConfig } from "../onboarding/types";
 import { err, ok, type Result } from "../result";
 
 const DEFAULT_DAEMON_HOST = "localhost";
@@ -12,8 +13,17 @@ export type UserProviderMode = "byok" | "gateway" | "none";
 
 export type SearchProviderPreference = "exa" | "brave";
 
+function isPersonalityPreset(value: unknown): value is PersonalityConfig["preset"] {
+  return value === "balanced"
+    || value === "concise"
+    || value === "technical"
+    || value === "warm"
+    || value === "custom";
+}
+
 export interface UserConfig {
   name: string;
+  personality?: PersonalityConfig;
   provider: {
     mode: UserProviderMode;
     activeProvider?: string;
@@ -104,6 +114,7 @@ function normalizeConfig(value: unknown): UserConfig {
   if (!isRecord(value)) {
     return {
       name: "",
+      personality: undefined,
       provider: { mode: "none", search: { provider: "brave" } },
       daemon: { host: DEFAULT_DAEMON_HOST, port: DEFAULT_DAEMON_PORT },
       setupComplete: false,
@@ -119,8 +130,21 @@ function normalizeConfig(value: unknown): UserConfig {
   const searchCandidate = isRecord(providerCandidate.search) ? providerCandidate.search : {};
   const searchProvider = normalizeSearchProviderPreference(searchCandidate.provider);
 
+  const personalityCandidate = isRecord(value.personality) ? value.personality : null;
+  const personalityPreset = personalityCandidate?.preset;
+  const personality =
+    isPersonalityPreset(personalityPreset)
+      ? {
+          preset: personalityPreset,
+          customPrompt: personalityCandidate !== null && typeof personalityCandidate.customPrompt === "string"
+            ? personalityCandidate.customPrompt
+            : undefined,
+        }
+      : undefined;
+
   return {
     name: typeof value.name === "string" ? value.name : "",
+    personality,
     provider: {
       mode,
       activeProvider,
@@ -150,6 +174,7 @@ function mergeUserConfig(existing: UserConfig | null, updates: Partial<UserConfi
 
   return {
     name: updates.name ?? base.name,
+    personality: updates.personality ?? base.personality,
     provider: {
       mode: nextProviderMode,
       activeProvider: nextActiveProvider,
