@@ -34,14 +34,49 @@ class InMemoryChannelCredentialStorage {
 
 class MockConversationBridge {
   public readonly inboundMessages: ChannelMessage[] = [];
+  public readonly outboundMessages: Array<{
+    conversationId: string;
+    text: string;
+    assistantMessageId?: string;
+    channelId: string;
+  }> = [];
   public failInbound = false;
+  public failOutbound = false;
 
-  async routeInbound(channelMessage: ChannelMessage): Promise<void> {
+  async routeInbound(channelMessage: ChannelMessage, sourceChannel: Channel): Promise<{
+    conversationId: string;
+    assistantMessageId: string;
+    source: { channelId: string; platform: ChannelPlatform };
+  }> {
     if (this.failInbound) {
       throw new Error("bridge failure");
     }
 
     this.inboundMessages.push(channelMessage);
+    return {
+      conversationId: channelMessage.conversationId ?? "conversation-1",
+      assistantMessageId: `assistant-${channelMessage.id}`,
+      source: {
+        channelId: sourceChannel.config.id,
+        platform: sourceChannel.config.platform,
+      },
+    };
+  }
+
+  async routeOutbound(
+    agentResponse: { conversationId: string; text: string; assistantMessageId?: string },
+    sourceChannel: Channel,
+  ): Promise<void> {
+    if (this.failOutbound) {
+      throw new Error("outbound failure");
+    }
+
+    this.outboundMessages.push({
+      conversationId: agentResponse.conversationId,
+      text: agentResponse.text,
+      assistantMessageId: agentResponse.assistantMessageId,
+      channelId: sourceChannel.config.id,
+    });
   }
 }
 
@@ -117,11 +152,15 @@ function createHarness() {
   const bridge = new MockConversationBridge();
   const credentialStorage = new InMemoryChannelCredentialStorage();
   const channelsById = new Map<string, MockChannel>();
+  const pendingExecutions: Array<{ conversationId: string; assistantMessageId: string }> = [];
 
   const service = new ChannelDaemonService({
     channelRegistry: registry,
     conversationBridge: bridge,
     credentialStorage,
+    onInboundAssistantPending: ({ conversationId, assistantMessageId }) => {
+      pendingExecutions.push({ conversationId, assistantMessageId });
+    },
     channelFactory: (platform, channelId) => {
       const channel = new MockChannel({
         id: channelId,
@@ -141,6 +180,7 @@ function createHarness() {
     bridge,
     credentialStorage,
     channelsById,
+    pendingExecutions,
   };
 }
 
@@ -202,6 +242,61 @@ describe("ChannelDaemonService", () => {
 
     const statusAfterFailure = harness.service.getChannelStatus("telegram");
     expect(statusAfterFailure?.lastError).toContain("bridge failure");
+  });
+
+  it("schedules provider generation and forwards assistant response", async () => {
+    const harness = createHarness();
+    await harness.service.start();
+    await harness.service.addChannel("telegram", "tg-token");
+
+    const channel = harness.channelsById.get("telegram");
+    expect(channel).toBeDefined();
+
+    await channel?.emitInbound(createInboundMessage({ id: "inbound-42", conversationId: "conv-42" }));
+
+    expect(harness.pendingExecutions).toEqual([
+      { conversationId: "conv-42", assistantMessageId: "assistant-inbound-42" },
+    ]);
+
+    const forwarded = await harness.service.forwardAssistantResponse(
+      "conv-42",
+      "hello from assistant",
+      "assistant-inbound-42",
+    );
+
+    expect(forwarded).toBe(true);
+    expect(harness.bridge.outboundMessages).toEqual([
+      {
+        conversationId: "conv-42",
+        text: "hello from assistant",
+        assistantMessageId: "assistant-inbound-42",
+        channelId: "telegram",
+      },
+    ]);
+  });
+
+  it("returns false when forwarding without a known source channel", async () => {
+    const harness = createHarness();
+    await harness.service.start();
+
+    const forwarded = await harness.service.forwardAssistantResponse("unknown-conversation", "reply");
+    expect(forwarded).toBe(false);
+  });
+
+  it("surfaces forwarding errors and records diagnostics", async () => {
+    const harness = createHarness();
+    await harness.service.start();
+    await harness.service.addChannel("telegram", "tg-token");
+    const channel = harness.channelsById.get("telegram");
+    await channel?.emitInbound(createInboundMessage({ id: "inbound-99", conversationId: "conv-99" }));
+
+    harness.bridge.failOutbound = true;
+    await expect(
+      harness.service.forwardAssistantResponse("conv-99", "reply", "assistant-inbound-99"),
+    ).rejects.toThrow("Failed to forward assistant response");
+
+    const status = harness.service.getChannelStatus("telegram");
+    expect(status?.lastError).toContain("outbound failure");
   });
 });
 

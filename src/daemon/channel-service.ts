@@ -23,7 +23,26 @@ export interface ChannelRegistryLike {
 }
 
 export interface ConversationBridgeLike {
-  routeInbound(channelMessage: ChannelMessage, sourceChannel: Channel): Promise<unknown>;
+  routeInbound(
+    channelMessage: ChannelMessage,
+    sourceChannel: Channel,
+  ): Promise<{
+    conversationId: string;
+    assistantMessageId: string;
+    source: {
+      channelId: string;
+      platform: ChannelPlatform;
+    };
+  }>;
+  routeOutbound(
+    agentResponse: {
+      conversationId: string;
+      text: string;
+      assistantMessageId?: string;
+      metadata?: Record<string, unknown>;
+    },
+    sourceChannel: Channel,
+  ): Promise<void>;
 }
 
 export interface ChannelCredentialStorageLike {
@@ -61,6 +80,12 @@ export interface ChannelDaemonServiceOptions {
   channelRegistry: ChannelRegistryLike;
   conversationBridge: ConversationBridgeLike;
   credentialStorage: ChannelCredentialStorageLike;
+  onInboundAssistantPending?: (context: {
+    conversationId: string;
+    assistantMessageId: string;
+    sourceChannelId: string;
+    sourcePlatform: ChannelPlatform;
+  }) => Promise<void> | void;
   channelFactory?: (platform: ChannelPlatform, channelId: string, token: string) => Channel;
   nowFn?: () => Date;
 }
@@ -109,10 +134,17 @@ export class ChannelDaemonService {
   private readonly conversationBridge: ConversationBridgeLike;
   private readonly credentialStorage: ChannelCredentialStorageLike;
   private readonly channelFactory: (platform: ChannelPlatform, channelId: string, token: string) => Channel;
+  private readonly onInboundAssistantPending?: (context: {
+    conversationId: string;
+    assistantMessageId: string;
+    sourceChannelId: string;
+    sourcePlatform: ChannelPlatform;
+  }) => Promise<void> | void;
   private readonly nowFn: () => Date;
 
   private readonly inboundUnsubscribers = new Map<string, () => void>();
   private readonly diagnosticsByChannelId = new Map<string, ChannelDiagnostics>();
+  private readonly sourceChannelIdByConversationId = new Map<string, string>();
   private started = false;
 
   constructor(options: ChannelDaemonServiceOptions) {
@@ -120,6 +152,7 @@ export class ChannelDaemonService {
     this.conversationBridge = options.conversationBridge;
     this.credentialStorage = options.credentialStorage;
     this.channelFactory = options.channelFactory ?? createDefaultChannel;
+    this.onInboundAssistantPending = options.onInboundAssistantPending;
     this.nowFn = options.nowFn ?? (() => new Date());
   }
 
@@ -208,8 +241,56 @@ export class ChannelDaemonService {
     await this.stopChannel(channel);
     const removed = this.channelRegistry.remove(channelId);
     this.diagnosticsByChannelId.delete(channel.config.id);
+    for (const [conversationId, sourceChannelId] of this.sourceChannelIdByConversationId.entries()) {
+      if (sourceChannelId === channel.config.id) {
+        this.sourceChannelIdByConversationId.delete(conversationId);
+      }
+    }
     await this.credentialStorage.deleteToken(channel.config.platform);
     return removed;
+  }
+
+  /**
+   * Forward a completed assistant response to the channel that initiated
+   * the conversation.
+   */
+  public async forwardAssistantResponse(
+    conversationId: string,
+    assistantText: string,
+    assistantMessageId?: string,
+  ): Promise<boolean> {
+    const sourceChannelId = this.sourceChannelIdByConversationId.get(conversationId);
+    if (!sourceChannelId) {
+      return false;
+    }
+
+    const sourceChannel = this.channelRegistry.get(sourceChannelId);
+    if (!sourceChannel || !sourceChannel.config.enabled) {
+      return false;
+    }
+
+    if (assistantText.trim().length === 0) {
+      return false;
+    }
+
+    try {
+      await this.conversationBridge.routeOutbound(
+        {
+          conversationId,
+          text: assistantText,
+          assistantMessageId,
+        },
+        sourceChannel,
+      );
+      this.updateDiagnostics(sourceChannel.config.id, { lastError: undefined });
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.updateDiagnostics(sourceChannel.config.id, { lastError: errorMessage });
+      throw new ChannelError(
+        `Failed to forward assistant response for conversation ${conversationId}: ${errorMessage}`,
+      );
+    }
   }
 
   /**
@@ -294,7 +375,19 @@ export class ChannelDaemonService {
         });
 
         try {
-          await this.conversationBridge.routeInbound(message, channel);
+          const inboundResult = await this.conversationBridge.routeInbound(message, channel);
+          this.sourceChannelIdByConversationId.set(
+            inboundResult.conversationId,
+            inboundResult.source.channelId,
+          );
+          if (this.onInboundAssistantPending) {
+            await this.onInboundAssistantPending({
+              conversationId: inboundResult.conversationId,
+              assistantMessageId: inboundResult.assistantMessageId,
+              sourceChannelId: inboundResult.source.channelId,
+              sourcePlatform: inboundResult.source.platform,
+            });
+          }
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           this.updateDiagnostics(channel.config.id, {

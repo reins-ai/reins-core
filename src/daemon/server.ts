@@ -1962,6 +1962,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
 
       const assistantContent = generation.content;
+      const assistantText = getTextContent(assistantContent);
       const finishReason = generation.finishReason;
       const usage = generation.usage;
 
@@ -1981,7 +1982,7 @@ export class DaemonHttpServer implements DaemonManagedService {
           type: "message_complete",
           conversationId: context.conversationId,
           messageId: context.assistantMessageId,
-          content: getTextContent(assistantContent),
+          content: assistantText,
           sequence: nextSequence(),
           finishReason,
           usage,
@@ -1989,12 +1990,28 @@ export class DaemonHttpServer implements DaemonManagedService {
         },
       });
 
+      if (this.channelService) {
+        try {
+          await this.channelService.forwardAssistantResponse(
+            context.conversationId,
+            assistantText,
+            context.assistantMessageId,
+          );
+        } catch (error) {
+          log("warn", "Failed to forward assistant response to channel", {
+            conversationId: context.conversationId,
+            assistantMessageId: context.assistantMessageId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       log("info", "Provider response persisted", {
         conversationId: context.conversationId,
         assistantMessageId: context.assistantMessageId,
         provider: resolvedProvider,
         model: resolvedModel,
-        contentLength: getTextContent(assistantContent).length,
+        contentLength: assistantText.length,
       });
     } catch (error) {
       const failure = this.toProviderExecutionFailure(error);
@@ -2929,6 +2946,12 @@ export class DaemonHttpServer implements DaemonManagedService {
         channelRegistry,
         conversationBridge,
         credentialStorage,
+        onInboundAssistantPending: (context) => {
+          this.scheduleProviderExecution({
+            conversationId: context.conversationId,
+            assistantMessageId: context.assistantMessageId,
+          });
+        },
       });
       this.channelRouteHandler = createChannelRouteHandler({
         channelService: this.channelService,
