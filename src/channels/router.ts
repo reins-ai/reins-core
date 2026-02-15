@@ -158,8 +158,8 @@ export class ChannelRouter {
    */
   public async routeOutbound(agentResponse: AgentResponse, sourceChannel: Channel): Promise<void> {
     const routeContext = this.routeContextByConversationId.get(agentResponse.conversationId);
-    const sourceDestination = routeContext?.destinationChannelId
-      ?? this.destinationByChannelId.get(sourceChannel.config.id);
+    const sourceDestination = this.destinationByChannelId.get(sourceChannel.config.id)
+      ?? routeContext?.destinationChannelId;
 
     if (!sourceDestination) {
       throw new ChannelError(

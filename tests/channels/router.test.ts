@@ -213,6 +213,48 @@ describe("ChannelRouter", () => {
     expect(outbound?.platformData?.source_channel_id).toBe("telegram-main");
   });
 
+  it("prefers source channel destination over latest conversation route context", async () => {
+    const { manager } = createMockConversationManager();
+    const telegram = createMockChannel({ id: "telegram-main", platform: "telegram" });
+    const discord = createMockChannel({ id: "discord-main", platform: "discord" });
+    const router = new ChannelRouter({
+      conversationManager: manager,
+    });
+
+    await router.routeInbound(
+      createInboundMessage({
+        conversationId: "conv-shared",
+        channelId: "tg-chat",
+        platform: "telegram",
+        text: "from telegram",
+      }),
+      telegram,
+    );
+
+    await router.routeInbound(
+      createInboundMessage({
+        id: "dc-inbound-1",
+        conversationId: "conv-shared",
+        channelId: "dc-room",
+        platform: "discord",
+        text: "from discord",
+      }),
+      discord,
+    );
+
+    await router.routeOutbound(
+      {
+        conversationId: "conv-shared",
+        text: "reply to telegram",
+      },
+      telegram,
+    );
+
+    expect(telegram.sentMessages).toHaveLength(1);
+    expect(telegram.sentMessages[0]?.channelId).toBe("tg-chat");
+    expect(discord.sentMessages).toHaveLength(0);
+  });
+
   it("broadcasts outbound responses to all active channels with known destinations", async () => {
     const { manager } = createMockConversationManager();
     const telegram = createMockChannel({ id: "telegram-main", platform: "telegram", enabled: true });
