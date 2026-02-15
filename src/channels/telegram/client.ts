@@ -2,6 +2,7 @@ import { ChannelError } from "../errors";
 import type {
   TelegramApiError,
   TelegramApiResponse,
+  TelegramChatAction,
   TelegramClientOptions,
   TelegramGetUpdatesOptions,
   TelegramMessage,
@@ -240,6 +241,17 @@ export class TelegramClient {
     options: TelegramSendMediaOptions = {},
   ): Promise<TelegramMessage> {
     return this.sendMedia("sendVoice", chatId, "voice", voice, options);
+  }
+
+  /**
+   * Send chat action (for example `typing`) to show user activity while
+   * processing a response.
+   */
+  public async sendChatAction(chatId: string | number, action: TelegramChatAction): Promise<boolean> {
+    return this.request<boolean>("sendChatAction", {
+      chat_id: chatId,
+      action,
+    });
   }
 
   private async sendMedia(

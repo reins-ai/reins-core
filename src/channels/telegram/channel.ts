@@ -21,6 +21,7 @@ export interface TelegramChannelClient {
   sendPhoto(chatId: string | number, photo: string, options?: Record<string, unknown>): Promise<unknown>;
   sendDocument(chatId: string | number, document: string, options?: Record<string, unknown>): Promise<unknown>;
   sendVoice(chatId: string | number, voice: string, options?: Record<string, unknown>): Promise<unknown>;
+  sendChatAction(chatId: string | number, action: "typing"): Promise<unknown>;
 }
 
 export interface TelegramChannelOptions {
@@ -168,6 +169,12 @@ export class TelegramChannel implements Channel {
     return () => {
       this.handlers.delete(handler);
     };
+  }
+
+  public async sendTypingIndicator(destinationChannelId: string): Promise<void> {
+    const parsed = Number(destinationChannelId);
+    const chatId = Number.isFinite(parsed) ? parsed : destinationChannelId;
+    await this.client.sendChatAction(chatId, "typing");
   }
 
   private async sendToChat(chatId: number | string, message: ChannelMessage): Promise<void> {

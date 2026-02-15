@@ -19,6 +19,7 @@ type ReconnectTimer = ReturnType<typeof setTimeout>;
 
 interface DiscordChannelClient {
   getCurrentUser(): Promise<DiscordUser>;
+  sendTyping(channelId: string): Promise<unknown>;
   sendMessage(channelId: string, content: string): Promise<unknown>;
   sendEmbed(channelId: string, embed: DiscordEmbed): Promise<unknown>;
   uploadFile(channelId: string, file: { name: string; data: string; description?: string }): Promise<unknown>;
@@ -251,6 +252,10 @@ export class DiscordChannel implements Channel {
     return () => {
       this.handlers.delete(handler);
     };
+  }
+
+  public async sendTypingIndicator(destinationChannelId: string): Promise<void> {
+    await this.client.sendTyping(destinationChannelId);
   }
 
   private getOrCreateGateway(gatewayUrl?: string): DiscordChannelGateway {

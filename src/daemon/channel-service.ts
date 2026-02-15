@@ -374,6 +374,17 @@ export class ChannelDaemonService {
           lastMessageAt: this.nowFn(),
         });
 
+        if (typeof channel.sendTypingIndicator === "function") {
+          try {
+            await channel.sendTypingIndicator(message.channelId);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            this.updateDiagnostics(channel.config.id, {
+              lastError: `Typing indicator failed: ${errorMessage}`,
+            });
+          }
+        }
+
         try {
           const inboundResult = await this.conversationBridge.routeInbound(message, channel);
           this.sourceChannelIdByConversationId.set(

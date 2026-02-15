@@ -75,6 +75,7 @@ class MockTelegramClient implements TelegramChannelClient {
   public sendPhotoCalls: SendCall[] = [];
   public sendDocumentCalls: SendCall[] = [];
   public sendVoiceCalls: SendCall[] = [];
+  public sendChatActionCalls: Array<{ chatId: string | number; action: string }> = [];
 
   private readonly updatesQueue: Array<TelegramUpdate[] | Error>;
   private readonly getMeError: Error | null;
@@ -131,6 +132,11 @@ class MockTelegramClient implements TelegramChannelClient {
   public async sendVoice(chatId: string | number, voice: string, options?: Record<string, unknown>): Promise<unknown> {
     this.sendVoiceCalls.push({ chatId, value: voice, options });
     return {};
+  }
+
+  public async sendChatAction(chatId: string | number, action: "typing"): Promise<unknown> {
+    this.sendChatActionCalls.push({ chatId, action });
+    return { ok: true };
   }
 }
 
@@ -278,6 +284,18 @@ describe("TelegramChannel", () => {
       options: { caption: "doc caption" },
     });
     expect(client.sendVoiceCalls[0]).toEqual({ chatId: 42, value: "voice-file", options: undefined });
+  });
+
+  it("emits typing indicator for the destination chat", async () => {
+    const client = new MockTelegramClient();
+    const channel = new TelegramChannel({
+      config: createConfig(),
+      client,
+    });
+
+    await channel.sendTypingIndicator("42");
+
+    expect(client.sendChatActionCalls).toEqual([{ chatId: 42, action: "typing" }]);
   });
 
   it("disconnects and stops future polling", async () => {

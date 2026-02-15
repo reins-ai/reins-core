@@ -60,6 +60,7 @@ class ReconnectScheduler {
 
 class MockDiscordClient {
   public getCurrentUserCalls = 0;
+  public sendTypingCalls: string[] = [];
   public sendMessageCalls: Array<{ channelId: string; content: string }> = [];
   public sendEmbedCalls: Array<{ channelId: string; description?: string }> = [];
   public uploadFileCalls: Array<{ channelId: string; name: string; data: string; description?: string }> = [];
@@ -82,6 +83,11 @@ class MockDiscordClient {
       discriminator: "0001",
       bot: true,
     };
+  }
+
+  public async sendTyping(channelId: string): Promise<unknown> {
+    this.sendTypingCalls.push(channelId);
+    return {};
   }
 
   public async sendMessage(channelId: string, content: string): Promise<unknown> {
@@ -317,6 +323,22 @@ describe("DiscordChannel", () => {
 
     expect(client.sendMessageCalls).toEqual([{ channelId: "channel-1", content: "plain text" }]);
     expect(client.sendEmbedCalls).toEqual([{ channelId: "channel-1", description: "embed text" }]);
+  });
+
+  it("emits typing indicator for a channel", async () => {
+    const client = new MockDiscordClient();
+    const gateway = new MockDiscordGateway();
+
+    const channel = new DiscordChannel({
+      config: createConfig(),
+      token: "bot-token",
+      client,
+      gateway,
+    });
+
+    await channel.sendTypingIndicator("channel-1");
+
+    expect(client.sendTypingCalls).toEqual(["channel-1"]);
   });
 
   it("disconnects and clears connection state", async () => {

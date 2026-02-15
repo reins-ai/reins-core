@@ -197,6 +197,15 @@ export class DiscordClient {
   }
 
   /**
+   * Emit typing indicator for a channel.
+   */
+  public async sendTyping(channelId: string): Promise<void> {
+    await this.requestJson<unknown>(`/channels/${channelId}/typing`, {
+      method: "POST",
+    });
+  }
+
+  /**
    * Uploads a file attachment to a Discord channel.
    */
   public async uploadFile(channelId: string, file: DiscordUploadFileInput): Promise<DiscordMessage> {

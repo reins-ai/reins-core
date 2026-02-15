@@ -152,7 +152,7 @@ describe("ChannelRouter", () => {
     });
     expect(assistantMetadata?.status).toBe("pending");
     expect(assistantMetadata?.provider).toBe("anthropic");
-    expect(assistantMetadata?.model).toBe("claude-sonnet-4-20250514");
+    expect(assistantMetadata?.model).toBe("anthropic/claude-sonnet-4-5");
   });
 
   it("uses existing conversation id when routing inbound", async () => {

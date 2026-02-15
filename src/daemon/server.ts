@@ -19,7 +19,7 @@ import { AnthropicOAuthProvider } from "../providers/oauth/anthropic";
 import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
 import { ProviderRegistry } from "../providers/registry";
-import { ModelRouter } from "../providers/router";
+import { ModelRouter, type AuthenticatedRouteResult } from "../providers/router";
 import { AuthError, ConversationError, ProviderError } from "../errors";
 import {
   EnvironmentNotFoundError,
@@ -1930,11 +1930,34 @@ export class DaemonHttpServer implements DaemonManagedService {
         return;
       }
 
-      const routeResult = await this.modelRouter.routeWithAuthCheck({
-        provider: requestedProvider,
-        model: requestedModel,
-        capabilities: ["chat", "streaming"],
-      });
+      let routeResult: Result<AuthenticatedRouteResult, AuthError>;
+      try {
+        routeResult = await this.modelRouter.routeWithAuthCheck({
+          provider: requestedProvider,
+          model: requestedModel,
+          capabilities: ["chat", "streaming"],
+        });
+      } catch (error) {
+        const canRetryWithoutModel =
+          error instanceof ProviderError
+          && typeof requestedModel === "string"
+          && requestedModel.trim().length > 0;
+
+        if (!canRetryWithoutModel) {
+          throw error;
+        }
+
+        log("warn", "Requested model route unavailable, retrying with provider default", {
+          conversationId: context.conversationId,
+          requestedProvider,
+          requestedModel,
+        });
+
+        routeResult = await this.modelRouter.routeWithAuthCheck({
+          provider: requestedProvider,
+          capabilities: ["chat", "streaming"],
+        });
+      }
 
       if (!routeResult.ok) {
         throw routeResult.error;
@@ -2020,6 +2043,22 @@ export class DaemonHttpServer implements DaemonManagedService {
         provider: resolvedProvider,
         model: resolvedModel,
       }, errorSequence);
+
+      if (this.channelService) {
+        try {
+          await this.channelService.forwardAssistantResponse(
+            context.conversationId,
+            failure.message,
+            context.assistantMessageId,
+          );
+        } catch (forwardError) {
+          log("warn", "Failed to forward provider failure to channel", {
+            conversationId: context.conversationId,
+            assistantMessageId: context.assistantMessageId,
+            error: forwardError instanceof Error ? forwardError.message : String(forwardError),
+          });
+        }
+      }
     } finally {
       this.activeExecutions.delete(executionKey);
     }

@@ -85,6 +85,7 @@ class MockChannel implements Channel {
   public status: ChannelStatus = { state: "disconnected", uptimeMs: 0 };
   public connectCalls = 0;
   public disconnectCalls = 0;
+  public typingIndicatorCalls: string[] = [];
 
   private readonly handlers = new Set<ChannelMessageHandler>();
 
@@ -110,6 +111,10 @@ class MockChannel implements Channel {
 
   async send(_message: ChannelMessage): Promise<void> {
     return;
+  }
+
+  async sendTypingIndicator(destinationChannelId: string): Promise<void> {
+    this.typingIndicatorCalls.push(destinationChannelId);
   }
 
   onMessage(handler: ChannelMessageHandler): () => void {
@@ -232,6 +237,8 @@ describe("ChannelDaemonService", () => {
     expect(channel).toBeDefined();
 
     await channel?.emitInbound(createInboundMessage({ id: "m1" }));
+
+    expect(channel?.typingIndicatorCalls).toEqual(["chat-1"]);
 
     const statusAfterSuccess = harness.service.getChannelStatus("telegram");
     expect(statusAfterSuccess?.lastMessageAt).toBe("2026-02-15T12:00:00.000Z");

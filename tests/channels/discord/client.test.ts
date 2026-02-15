@@ -117,6 +117,19 @@ describe("DiscordClient", () => {
     expect(embeds[0]?.description).toBe("Build complete");
   });
 
+  it("sends typing indicator via Discord REST API", async () => {
+    const { fetchFn, calls } = createFetchMock([
+      createJsonResponse(204, null),
+    ]);
+
+    const client = new DiscordClient({ token: "bot-token", fetchFn });
+    await client.sendTyping("123");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://discord.com/api/v10/channels/123/typing");
+    expect(calls[0]!.init?.method).toBe("POST");
+  });
+
   it("uploads files using multipart form data", async () => {
     const { fetchFn, calls } = createFetchMock([
       createJsonResponse(200, createMessage("message-3")),

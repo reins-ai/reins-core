@@ -167,6 +167,22 @@ describe("TelegramClient", () => {
     expect(thirdBody.disable_notification).toBe(true);
   });
 
+  it("sends typing chat action", async () => {
+    const { fetchFn, calls } = createFetchMock([
+      createJsonResponse(200, { ok: true, result: true }),
+    ]);
+
+    const client = new TelegramClient({ token: "123:abc", fetchFn });
+    const result = await client.sendChatAction(42, "typing");
+
+    expect(result).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.telegram.org/bot123:abc/sendChatAction");
+    const requestBody = parseJsonBody(calls[0]!);
+    expect(requestBody.chat_id).toBe(42);
+    expect(requestBody.action).toBe("typing");
+  });
+
   it("retries transient network failures with exponential backoff", async () => {
     const sleepCalls: number[] = [];
     const { fetchFn } = createFetchMock([

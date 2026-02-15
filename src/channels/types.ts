@@ -131,6 +131,7 @@ export interface Channel {
   readonly status: ChannelStatus;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  sendTypingIndicator?(destinationChannelId: string): Promise<void>;
   send(message: ChannelMessage): Promise<void>;
   onMessage(handler: ChannelMessageHandler): () => void;
 }

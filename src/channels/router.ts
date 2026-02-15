@@ -14,7 +14,7 @@ import type {
 } from "./types";
 
 const DEFAULT_PROVIDER = "anthropic";
-const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5";
 
 export interface ChannelRouterConversationManager {
   create(options: CreateOptions): Promise<{ id: string }>;
