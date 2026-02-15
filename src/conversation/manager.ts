@@ -1,5 +1,7 @@
 import { ConversationError } from "../errors";
+import { readUserConfig } from "../config/user-config";
 import type { MemoryStore } from "../memory";
+import { getPresetPromptModifier } from "../onboarding/personality-prompts";
 import type { EnvironmentContextProvider } from "../persona/environment-context";
 import type { PersonaRegistry } from "../persona/registry";
 import { err, ok, type Result } from "../result";
@@ -99,11 +101,13 @@ export interface ConversationManagerCompactionOptions {
 export interface ConversationManagerEnvironmentOptions {
   personaRegistry?: PersonaRegistry;
   environmentContextProvider?: EnvironmentContextProvider;
+  readUserConfig?: typeof readUserConfig;
 }
 
 export class ConversationManager {
   private readonly compactionOptions?: ConversationManagerCompactionOptions;
   private readonly environmentOptions?: ConversationManagerEnvironmentOptions;
+  private readonly userConfigReader: typeof readUserConfig;
 
   constructor(
     private readonly store: ConversationStore,
@@ -113,6 +117,7 @@ export class ConversationManager {
   ) {
     this.compactionOptions = compactionOptions;
     this.environmentOptions = environmentOptions;
+    this.userConfigReader = environmentOptions?.readUserConfig ?? readUserConfig;
   }
 
   async create(options: CreateOptions): Promise<Conversation> {
@@ -561,12 +566,34 @@ export class ConversationManager {
       return undefined;
     }
 
-    const promptResult = await provider.buildEnvironmentPrompt(persona);
+    const personalityInstruction = await this.resolvePersonalityInstruction();
+    const promptResult = await provider.buildEnvironmentPrompt(persona, {
+      additionalInstructions: personalityInstruction ? [personalityInstruction] : undefined,
+    });
     if (!promptResult.ok) {
       return persona.systemPrompt;
     }
 
     return promptResult.value;
+  }
+
+  private async resolvePersonalityInstruction(): Promise<string | undefined> {
+    const configResult = await this.userConfigReader();
+    if (!configResult.ok || configResult.value === null) {
+      return undefined;
+    }
+
+    const personality = configResult.value.personality;
+    if (!personality) {
+      return undefined;
+    }
+
+    if (personality.preset === "custom") {
+      const customPrompt = personality.customPrompt?.trim();
+      return customPrompt && customPrompt.length > 0 ? customPrompt : undefined;
+    }
+
+    return getPresetPromptModifier(personality.preset) ?? undefined;
   }
 
   private async syncEnvironmentSystemPrompt(conversation: Conversation): Promise<void> {

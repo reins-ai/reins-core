@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   readUserConfig,
+  resolveUserConfigDirectory,
+  resolveUserConfigPath,
   writeUserConfig,
   type UserConfig,
 } from "../../src/config/user-config";
@@ -259,6 +261,206 @@ describe("UserConfig", () => {
       expect(config.provider.mode).toBe("gateway");
       expect(config.provider.activeProvider).toBe("openai");
       expect(config.setupComplete).toBe(true);
+    });
+  });
+
+  describe("config path resolution", () => {
+    it("resolves config directory to data root on linux", () => {
+      const dir = resolveUserConfigDirectory({
+        platform: "linux",
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: "/home/testuser",
+      });
+
+      expect(dir).toBe("/home/testuser/.reins");
+    });
+
+    it("resolves config directory to Application Support on macOS", () => {
+      const dir = resolveUserConfigDirectory({
+        platform: "darwin",
+        homeDirectory: "/Users/testuser",
+      });
+
+      expect(dir).toBe("/Users/testuser/Library/Application Support/reins");
+    });
+
+    it("resolves config path to data root config.json on linux", () => {
+      const path = resolveUserConfigPath({
+        platform: "linux",
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: "/home/testuser",
+      });
+
+      expect(path).toBe("/home/testuser/.reins/config.json");
+    });
+
+    it("ignores XDG_CONFIG_HOME for config path resolution", () => {
+      const path = resolveUserConfigPath({
+        platform: "linux",
+        env: {
+          XDG_CONFIG_HOME: "/tmp/xdg-config",
+        } as NodeJS.ProcessEnv,
+        homeDirectory: "/home/testuser",
+      });
+
+      expect(path).toBe("/home/testuser/.reins/config.json");
+    });
+  });
+
+  describe("legacy config migration", () => {
+    it("reads from legacy path when new path does not exist", async () => {
+      const tempHome = await mkdtemp(join(tmpdir(), "reins-migration-"));
+      createdDirectories.push(tempHome);
+
+      // Write config at legacy location (~/.config/reins/config.json)
+      const legacyDir = join(tempHome, ".config", "reins");
+      await mkdir(legacyDir, { recursive: true });
+      const legacyConfig = {
+        name: "migrated-user",
+        provider: { mode: "byok", activeProvider: "anthropic" },
+        daemon: { host: "localhost", port: 7433 },
+        setupComplete: true,
+      };
+      await writeFile(
+        join(legacyDir, "config.json"),
+        JSON.stringify(legacyConfig, null, 2),
+        "utf8",
+      );
+
+      // Read without filePath override — should find legacy config
+      // Pass empty env to avoid host XDG_CONFIG_HOME interfering
+      const result = await readUserConfig({
+        platform: "linux",
+        homeDirectory: tempHome,
+        env: {} as NodeJS.ProcessEnv,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value).not.toBeNull();
+      expect(result.value!.name).toBe("migrated-user");
+      expect(result.value!.provider.activeProvider).toBe("anthropic");
+      expect(result.value!.setupComplete).toBe(true);
+    });
+
+    it("prefers new path over legacy path when both exist", async () => {
+      const tempHome = await mkdtemp(join(tmpdir(), "reins-migration-"));
+      createdDirectories.push(tempHome);
+
+      // Write config at legacy location
+      const legacyDir = join(tempHome, ".config", "reins");
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(
+        join(legacyDir, "config.json"),
+        JSON.stringify({ name: "old-user", provider: { mode: "none" }, daemon: { host: "localhost", port: 7433 }, setupComplete: false }, null, 2),
+        "utf8",
+      );
+
+      // Write config at new data root location
+      const newDir = join(tempHome, ".reins");
+      await mkdir(newDir, { recursive: true });
+      await writeFile(
+        join(newDir, "config.json"),
+        JSON.stringify({ name: "new-user", provider: { mode: "byok" }, daemon: { host: "localhost", port: 7433 }, setupComplete: true }, null, 2),
+        "utf8",
+      );
+
+      const result = await readUserConfig({
+        platform: "linux",
+        homeDirectory: tempHome,
+        env: {} as NodeJS.ProcessEnv,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value).not.toBeNull();
+      expect(result.value!.name).toBe("new-user");
+      expect(result.value!.setupComplete).toBe(true);
+    });
+
+    it("writes to new data root location", async () => {
+      const tempHome = await mkdtemp(join(tmpdir(), "reins-migration-"));
+      createdDirectories.push(tempHome);
+
+      const result = await writeUserConfig(
+        { name: "fresh-user" },
+        { platform: "linux", homeDirectory: tempHome, env: {} as NodeJS.ProcessEnv },
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Verify file was written to new location
+      const newConfigPath = join(tempHome, ".reins", "config.json");
+      const file = Bun.file(newConfigPath);
+      expect(await file.exists()).toBe(true);
+
+      const content = await file.json();
+      expect(content.name).toBe("fresh-user");
+    });
+
+    it("returns null when neither new nor legacy config exists", async () => {
+      const tempHome = await mkdtemp(join(tmpdir(), "reins-migration-"));
+      createdDirectories.push(tempHome);
+
+      const result = await readUserConfig({
+        platform: "linux",
+        homeDirectory: tempHome,
+        env: {} as NodeJS.ProcessEnv,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value).toBeNull();
+    });
+
+    it("handles corrupt legacy config gracefully", async () => {
+      const tempHome = await mkdtemp(join(tmpdir(), "reins-migration-"));
+      createdDirectories.push(tempHome);
+
+      // Write corrupt JSON at legacy location
+      const legacyDir = join(tempHome, ".config", "reins");
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(join(legacyDir, "config.json"), "not valid json{{{", "utf8");
+
+      const result = await readUserConfig({
+        platform: "linux",
+        homeDirectory: tempHome,
+        env: {} as NodeJS.ProcessEnv,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Corrupt legacy file treated as no config
+      expect(result.value).toBeNull();
+    });
+
+    it("does not check legacy path when filePath override is provided", async () => {
+      const tempHome = await mkdtemp(join(tmpdir(), "reins-migration-"));
+      createdDirectories.push(tempHome);
+
+      // Write config at legacy location
+      const legacyDir = join(tempHome, ".config", "reins");
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(
+        join(legacyDir, "config.json"),
+        JSON.stringify({ name: "legacy-user" }, null, 2),
+        "utf8",
+      );
+
+      // Read with explicit filePath that doesn't exist
+      const nonExistentPath = join(tempHome, "nonexistent", "config.json");
+      const result = await readUserConfig({ filePath: nonExistentPath });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Should NOT fall back to legacy when filePath is explicit
+      expect(result.value).toBeNull();
     });
   });
 });

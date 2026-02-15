@@ -11,6 +11,10 @@ export * from "./cron/jobs/heartbeat-job";
 export * from "./daemon/runtime";
 export * from "./daemon/service-installer";
 export * from "./daemon/paths";
+export * from "./daemon/profile-store";
+export * from "./daemon/profile-types";
+export * from "./daemon/token-manager";
+export * from "./daemon/transport-probe";
 export * from "./daemon/types";
 export * from "./daemon/environment-api";
 export * from "./environment";
@@ -37,3 +41,55 @@ export * from "./tools/schedule";
 export * from "./types";
 export * from "./utils";
 export * from "./voice";
+
+// Onboarding — explicit re-exports to avoid StepResult collision with harness
+export {
+  OnboardingEngine,
+  type EngineState,
+  type OnboardingEngineOptions,
+  type OnboardingEvent,
+  type OnboardingEventListener,
+  type OnboardingStepHandler,
+  type StepDefaults,
+  type StepExecutionContext,
+  type StepResult as OnboardingStepResult,
+} from "./onboarding/engine";
+export {
+  OnboardingCheckpointService,
+  OnboardingError,
+  type CheckpointServiceOptions,
+} from "./onboarding/checkpoint-service";
+export {
+  FirstRunDetector,
+  type FirstRunDetectionResult,
+  type FirstRunDetectorOptions,
+  type FirstRunStatus,
+} from "./onboarding/first-run-detector";
+export {
+  PERSONALITY_PRESETS,
+  getPresetPromptModifier,
+  type PersonalityPromptDefinition,
+} from "./onboarding/personality-prompts";
+export {
+  DaemonInstallStep,
+  type DaemonInstallStepOptions,
+  ModelSelectionStep,
+  type ModelSelectionStepOptions,
+  PersonalityStep,
+  type PersonalityStepOptions,
+  ProviderSetupStep,
+  type ProviderSetupStepOptions,
+  WelcomeStep,
+  type WelcomeStepOptions,
+  WorkspaceStep,
+} from "./onboarding/steps";
+export {
+  ONBOARDING_STEPS,
+  type CompletedStepRecord,
+  type OnboardingConfig,
+  type OnboardingMode,
+  type OnboardingStep,
+  type OnboardingStepStatus,
+  type PersonalityConfig,
+  type PersonalityPreset,
+} from "./onboarding/types";

@@ -226,16 +226,33 @@ class SystemdUserAdapter implements PlatformServiceAdapter {
     definition: ServiceDefinition,
     runner: PlatformCommandRunner,
   ): Promise<DaemonResult<"running" | "stopped" | "not-installed">> {
-    const result = await runner.run("systemctl", ["--user", "is-active", `${definition.serviceName}.service`]);
+    // Use `show` instead of `is-active` because `is-active` exits non-zero
+    // for any state other than "active" (including "failed", "inactive",
+    // "activating"), which would incorrectly report "not-installed" for a
+    // service that exists but crashed. `show` always exits 0 and returns
+    // LoadState/ActiveState properties that let us distinguish properly.
+    const result = await runner.run("systemctl", [
+      "--user", "show", "-p", "LoadState,ActiveState",
+      `${definition.serviceName}.service`,
+    ]);
+
     if (!result.ok) {
       return ok("not-installed");
     }
 
-    const status = result.value.stdout.trim();
-    if (status === "active") {
+    const output = result.value.stdout;
+
+    // LoadState=not-found means the unit file does not exist on disk
+    if (output.includes("LoadState=not-found")) {
+      return ok("not-installed");
+    }
+
+    // Unit file exists — check if it's running
+    if (output.includes("ActiveState=active")) {
       return ok("running");
     }
 
+    // Unit exists but not active (failed, inactive, activating, etc.)
     return ok("stopped");
   }
 }

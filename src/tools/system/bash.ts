@@ -170,13 +170,22 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function toOutputString(value: string | Buffer | null | undefined): string {
+function toOutputString(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
 
   if (value instanceof Buffer) {
     return value.toString("utf8");
+  }
+
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString("utf8");
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView;
+    return Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString("utf8");
   }
 
   return "";
@@ -209,7 +218,7 @@ async function runCommand(options: {
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const appendChunk = (current: string, chunk: Buffer): string => {
+  const appendChunk = (current: string, chunk: unknown): string => {
     if (current.length >= MAX_BUFFER_BYTES) {
       return current;
     }
@@ -223,11 +232,25 @@ async function runCommand(options: {
     return `${current}${chunkString.slice(0, remaining)}`;
   };
 
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout = appendChunk(stdout, chunk);
+  const drainStream = (stream: { read: () => unknown } | null, current: string): string => {
+    if (!stream) {
+      return current;
+    }
+
+    let next = current;
+    let chunk: unknown;
+    while ((chunk = stream.read()) !== null) {
+      next = appendChunk(next, chunk);
+    }
+
+    return next;
+  };
+
+  child.stdout.on("readable", () => {
+    stdout = drainStream(child.stdout, stdout);
   });
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr = appendChunk(stderr, chunk);
+  child.stderr.on("readable", () => {
+    stderr = drainStream(child.stderr, stderr);
   });
 
   const terminateProcess = (mode: "abort" | "timeout"): void => {
@@ -260,6 +283,9 @@ async function runCommand(options: {
     terminateProcess("abort");
   };
   options.abortSignal?.addEventListener("abort", abortListener, { once: true });
+  if (options.abortSignal?.aborted) {
+    terminateProcess("abort");
+  }
 
   return await new Promise((resolve, reject) => {
     child.once("error", (error) => {
@@ -276,6 +302,13 @@ async function runCommand(options: {
 
     child.once("close", (code, signal) => {
       settled = true;
+      stdout = drainStream(child.stdout, stdout);
+      stderr = drainStream(child.stderr, stderr);
+
+      if (options.abortSignal?.aborted && !timedOut) {
+        aborted = true;
+      }
+
       if (timeoutTimer) {
         clearTimeout(timeoutTimer);
       }
