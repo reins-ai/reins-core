@@ -7,4 +7,10 @@ export {
   type SkillMetadata,
   type SkillMetadataConfig,
 } from "./metadata";
+export {
+  parseSkillMd,
+  parseYamlFrontmatter,
+  readSkillMd,
+  type ParsedSkill,
+} from "./parser";
 export * from "./types";
