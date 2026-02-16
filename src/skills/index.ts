@@ -26,6 +26,13 @@ export {
   readSkillMd,
   type ParsedSkill,
 } from "./parser";
+export {
+  AutoDenyPermissionChecker,
+  AutoGrantPermissionChecker,
+  SkillPermissionPolicy,
+  type PermissionResult,
+  type SkillPermissionChecker,
+} from "./permissions";
 export { normalizeSkillName, SkillRegistry } from "./registry";
 export {
   ScriptRunner,
