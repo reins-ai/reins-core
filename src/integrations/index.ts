@@ -40,3 +40,33 @@ export {
   INTEGRATION_ERROR_CODES,
   type IntegrationErrorCode,
 } from "./errors";
+
+export {
+  getCapabilityIndexTokenCount,
+  IntegrationMetaTool,
+  INTEGRATION_META_TOOL_ACTIONS,
+  INTEGRATION_META_TOOL_DEFINITION,
+  INTEGRATION_META_TOOL_MAX_TOKENS,
+  getIntegrationMetaToolTokenCount,
+  type IntegrationMetaToolAction,
+} from "./meta-tool";
+
+export {
+  formatDetailResult,
+  formatErrorResult,
+  formatListResult,
+  type CompactResult,
+  type DetailResultFormatterOptions,
+  type ErrorResultFormatterOptions,
+  type IntegrationResult,
+  type IntegrationResultKind,
+  type ListResultFormatterOptions,
+  type RichResult,
+} from "./result";
+
+// Intent-routed fallback injection
+export {
+  IntentRouter,
+  type DetectedIntent,
+  type FallbackInjection,
+} from "./intent-router";
