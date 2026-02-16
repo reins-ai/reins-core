@@ -37,7 +37,17 @@ export {
   formatSkillIndex,
   getSkillIndexTokenEstimate,
 } from "./prompt-formatter";
-export { normalizeSkillName, SkillRegistry } from "./registry";
+export {
+  normalizeSkillName,
+  SkillRegistry,
+  type SkillRegistryOptions,
+} from "./registry";
+export {
+  FileSkillStateStore,
+  type PersistedSkillState,
+  type SkillStateData,
+  type SkillStateStore,
+} from "./state-store";
 export {
   ScriptRunner,
   type ScriptResult,
@@ -48,6 +58,12 @@ export {
   type DiscoveryReport,
   type SkillDiscoveryError,
 } from "./scanner";
+export {
+  SkillDaemonService,
+  type SkillDaemonServiceLogger,
+  type SkillDaemonServiceOptions,
+  type SkillDaemonServiceState,
+} from "./skill-service";
 export { SKILL_TOOL_DEFINITION, SkillTool } from "./skill-tool";
 export * from "./types";
 export { validateSkillDirectory, type SkillDirectoryInfo } from "./validator";

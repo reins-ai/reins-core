@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { SkillError } from "../../src/skills/errors";
 import { normalizeSkillName, SkillRegistry } from "../../src/skills/registry";
+import type { SkillStateStore } from "../../src/skills/state-store";
 import type { Skill, SkillConfig } from "../../src/skills/types";
 
 function createTestSkill(
@@ -221,5 +222,73 @@ describe("SkillRegistry", () => {
     const registry = new SkillRegistry();
 
     expect(registry.getSummaries()).toEqual([]);
+  });
+
+  describe("with SkillStateStore", () => {
+    function createMockStateStore(state: Record<string, boolean> = {}): SkillStateStore & { calls: { name: string; enabled: boolean }[] } {
+      const calls: { name: string; enabled: boolean }[] = [];
+      return {
+        calls,
+        getEnabled(name: string) {
+          return state[name];
+        },
+        setEnabled(name: string, enabled: boolean) {
+          state[name] = enabled;
+          calls.push({ name, enabled });
+        },
+        async load() {},
+        async save() {},
+      };
+    }
+
+    it("applies persisted enabled state on register", () => {
+      const store = createMockStateStore({ "my-skill": false });
+      const registry = new SkillRegistry({ stateStore: store });
+      const skill = createTestSkill({ config: { name: "my-skill", enabled: true } });
+
+      registry.register(skill);
+
+      expect(skill.config.enabled).toBe(false);
+    });
+
+    it("does not override enabled state when store has no entry", () => {
+      const store = createMockStateStore({});
+      const registry = new SkillRegistry({ stateStore: store });
+      const skill = createTestSkill({ config: { name: "new-skill", enabled: true } });
+
+      registry.register(skill);
+
+      expect(skill.config.enabled).toBe(true);
+    });
+
+    it("persists state on enable", () => {
+      const store = createMockStateStore({});
+      const registry = new SkillRegistry({ stateStore: store });
+      registry.register(createTestSkill({ config: { name: "toggle-skill", enabled: false } }));
+
+      registry.enable("toggle-skill");
+
+      expect(store.calls).toEqual([{ name: "toggle-skill", enabled: true }]);
+    });
+
+    it("persists state on disable", () => {
+      const store = createMockStateStore({});
+      const registry = new SkillRegistry({ stateStore: store });
+      registry.register(createTestSkill({ config: { name: "toggle-skill", enabled: true } }));
+
+      registry.disable("toggle-skill");
+
+      expect(store.calls).toEqual([{ name: "toggle-skill", enabled: false }]);
+    });
+
+    it("does not call state store when enable/disable targets missing skill", () => {
+      const store = createMockStateStore({});
+      const registry = new SkillRegistry({ stateStore: store });
+
+      registry.enable("missing");
+      registry.disable("missing");
+
+      expect(store.calls).toEqual([]);
+    });
   });
 });

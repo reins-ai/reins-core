@@ -1,4 +1,5 @@
 import { SkillError } from "./errors";
+import type { SkillStateStore } from "./state-store";
 import type { Skill, SkillSummary } from "./types";
 
 function normalizeSkillName(name: string): string {
@@ -7,14 +8,29 @@ function normalizeSkillName(name: string): string {
 
 export { normalizeSkillName };
 
+export interface SkillRegistryOptions {
+  stateStore?: SkillStateStore;
+}
+
 export class SkillRegistry {
   private readonly skills = new Map<string, Skill>();
+  private readonly stateStore?: SkillStateStore;
+
+  constructor(options?: SkillRegistryOptions) {
+    this.stateStore = options?.stateStore;
+  }
 
   register(skill: Skill): void {
     const name = normalizeSkillName(skill.config.name);
 
     if (this.skills.has(name)) {
       throw new SkillError(`Skill already registered: ${name}`);
+    }
+
+    // Apply persisted enabled state if available
+    const persisted = this.stateStore?.getEnabled(name);
+    if (persisted !== undefined) {
+      skill.config.enabled = persisted;
     }
 
     this.skills.set(name, skill);
@@ -57,6 +73,7 @@ export class SkillRegistry {
     }
 
     skill.config.enabled = true;
+    this.stateStore?.setEnabled(normalizeSkillName(name), true);
     return true;
   }
 
@@ -67,6 +84,7 @@ export class SkillRegistry {
     }
 
     skill.config.enabled = false;
+    this.stateStore?.setEnabled(normalizeSkillName(name), false);
     return true;
   }
 
