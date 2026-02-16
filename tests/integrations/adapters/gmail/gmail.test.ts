@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { ok } from "../../../../src/result";
 
 import { IntegrationError } from "../../../../src/integrations/errors";
 import { validateIntegrationManifest } from "../../../../src/integrations/manifest";
@@ -14,6 +15,8 @@ import {
   resetGmailManifestCacheForTests,
 } from "../../../../src/integrations/adapters/gmail/index";
 import { GmailAuth } from "../../../../src/integrations/adapters/gmail/auth";
+import { connect as connectGmail } from "../../../../src/integrations/adapters/gmail/operations/connect";
+import { disconnect as disconnectGmail } from "../../../../src/integrations/adapters/gmail/operations/disconnect";
 import { readEmail } from "../../../../src/integrations/adapters/gmail/operations/read-email";
 import { searchEmails } from "../../../../src/integrations/adapters/gmail/operations/search-emails";
 import { sendEmail } from "../../../../src/integrations/adapters/gmail/operations/send-email";
@@ -221,7 +224,7 @@ describe("GmailManifest", () => {
     expect(manifest.category).toBe("communication");
     expect(manifest.auth.type).toBe("oauth2");
     expect(manifest.platforms).toContain("daemon");
-    expect(manifest.operations).toHaveLength(4);
+    expect(manifest.operations).toHaveLength(6);
   });
 
   it("passes validateIntegrationManifest with the raw JSON", async () => {
@@ -231,12 +234,14 @@ describe("GmailManifest", () => {
     expect(result.valid).toBe(true);
   });
 
-  it("includes all four operations in the manifest", async () => {
+  it("includes connect, disconnect, and core operations in the manifest", async () => {
     const result = await loadGmailManifest();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const opNames = result.value.operations.map((op) => op.name);
+    expect(opNames).toContain("connect");
+    expect(opNames).toContain("disconnect");
     expect(opNames).toContain("read-email");
     expect(opNames).toContain("search-emails");
     expect(opNames).toContain("send-email");
@@ -424,9 +429,9 @@ describe("GmailIntegration", () => {
     });
 
     const ops = integration.getOperations();
-    expect(ops).toHaveLength(4);
+    expect(ops).toHaveLength(6);
     expect(ops.map((op) => op.name)).toEqual(
-      expect.arrayContaining(["read-email", "search-emails", "send-email", "list-emails"]),
+      expect.arrayContaining(["connect", "disconnect", "read-email", "search-emails", "send-email", "list-emails"]),
     );
   });
 
@@ -446,7 +451,27 @@ describe("GmailIntegration", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBeInstanceOf(IntegrationError);
-    expect(result.error.message).toContain("client ID");
+    expect(result.error.message).toContain("Gmail requires OAuth credentials");
+  });
+
+  it("includes setup guide in OAuth config error", async () => {
+    const manifestResult = await loadGmailManifest();
+    expect(manifestResult.ok).toBe(true);
+    if (!manifestResult.ok) return;
+
+    const vault = new InMemoryCredentialVault();
+    const integration = new GmailIntegration({
+      vault,
+      manifest: manifestResult.value,
+    });
+
+    const result = await integration.connect();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("Google Cloud Console");
+    expect(result.error.message).toContain("GMAIL_CLIENT_ID");
+    expect(result.error.message).toContain("GMAIL_CLIENT_SECRET");
+    expect(result.error.message).toContain("developers.google.com");
   });
 
   it("returns error for unknown operation", async () => {
@@ -490,6 +515,135 @@ describe("GmailIntegration", () => {
 
     const result = await integration.execute("read-email", { id: "msg-delegate-001" });
     expect(result.ok).toBe(true);
+  });
+
+  it("dispatches connect through execute without requiring a pre-existing token", async () => {
+    const manifestResult = await loadGmailManifest();
+    expect(manifestResult.ok).toBe(true);
+    if (!manifestResult.ok) return;
+
+    const vault = new InMemoryCredentialVault();
+    const integration = new GmailIntegration({
+      vault,
+      manifest: manifestResult.value,
+      config: {
+        authConfig: { googleClientId: "test-client-id" },
+      },
+    });
+
+    const auth = integration.getAuth() as unknown as {
+      connect: (config: unknown) => Promise<unknown>;
+      getAccessToken: () => Promise<unknown>;
+    };
+
+    auth.connect = mock(async () => ok(undefined));
+    auth.getAccessToken = mock(async () => ok("oauth-token"));
+
+    mockFetch(() => jsonResponse({ emailAddress: "user@example.com" }));
+
+    const result = await integration.execute("connect", {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const modelData = (result.value as IntegrationResult).forModel.data as {
+      connected: boolean;
+      email?: string;
+    };
+
+    expect(modelData.connected).toBe(true);
+    expect(modelData.email).toBe("user@example.com");
+  });
+
+  it("dispatches disconnect through execute without requiring an access token", async () => {
+    const manifestResult = await loadGmailManifest();
+    expect(manifestResult.ok).toBe(true);
+    if (!manifestResult.ok) return;
+
+    const vault = new InMemoryCredentialVault();
+    const integration = new GmailIntegration({
+      vault,
+      manifest: manifestResult.value,
+      config: {
+        authConfig: { googleClientId: "test-client-id" },
+      },
+    });
+
+    const auth = integration.getAuth() as unknown as {
+      disconnect: () => Promise<unknown>;
+    };
+    auth.disconnect = mock(async () => ok(undefined));
+
+    const result = await integration.execute("disconnect", {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const modelData = (result.value as IntegrationResult).forModel.data as { connected: boolean };
+    expect(modelData.connected).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connect/disconnect operations
+// ---------------------------------------------------------------------------
+
+describe("gmail connect/disconnect operations", () => {
+  it("connect returns connected result with profile email", async () => {
+    const auth = {
+      connect: mock(async () => ok(undefined)),
+      getAccessToken: mock(async () => ok("oauth-token")),
+    } as unknown as GmailAuth;
+
+    mockFetch(() => jsonResponse({ emailAddress: "profile@example.com" }));
+
+    const result = await connectGmail(auth, {
+      clientId: "test-client-id",
+      scopes: ["gmail.readonly", "gmail.send", "gmail.modify"],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const data = result.value;
+    const modelData = data.forModel.data as { connected: boolean; email?: string };
+    expect(modelData.connected).toBe(true);
+    expect(modelData.email).toBe("profile@example.com");
+    expect(data.forUser.message).toBe("Connected to Gmail as profile@example.com");
+  });
+
+  it("connect succeeds without email when profile endpoint fails", async () => {
+    const auth = {
+      connect: mock(async () => ok(undefined)),
+      getAccessToken: mock(async () => ok("oauth-token")),
+    } as unknown as GmailAuth;
+
+    mockFetch(() => textResponse("Server Error", 500));
+
+    const result = await connectGmail(auth, {
+      clientId: "test-client-id",
+      scopes: ["gmail.readonly", "gmail.send", "gmail.modify"],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const modelData = result.value.forModel.data as { connected: boolean; email?: string };
+    expect(modelData.connected).toBe(true);
+    expect(modelData.email).toBeUndefined();
+    expect(result.value.forUser.message).toBe("Connected to Gmail");
+  });
+
+  it("disconnect clears connection state", async () => {
+    const auth = {
+      disconnect: mock(async () => ok(undefined)),
+    } as unknown as GmailAuth;
+
+    const result = await disconnectGmail(auth);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const modelData = result.value.forModel.data as { connected: boolean };
+    expect(modelData.connected).toBe(false);
+    expect(result.value.forUser.message).toContain("cleared saved credentials");
   });
 });
 

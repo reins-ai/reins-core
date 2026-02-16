@@ -13,6 +13,8 @@ import type {
 } from "../../types";
 import { GmailAuth, type GmailOAuthConfig } from "./auth";
 import type { OAuthRefreshManager } from "../../credentials/oauth-refresh";
+import { connect as connectOperation } from "./operations/connect";
+import { disconnect as disconnectOperation } from "./operations/disconnect";
 import { readEmail } from "./operations/read-email";
 import { searchEmails } from "./operations/search-emails";
 import { sendEmail } from "./operations/send-email";
@@ -110,6 +112,19 @@ export class GmailIntegration implements Integration {
     operationName: string,
     args: Record<string, unknown>,
   ): Promise<Result<unknown, IntegrationError>> {
+    if (operationName === "connect") {
+      const oauthConfigResult = this.resolveOAuthConfig();
+      if (!oauthConfigResult.ok) {
+        return oauthConfigResult;
+      }
+
+      return connectOperation(this.auth, oauthConfigResult.value);
+    }
+
+    if (operationName === "disconnect") {
+      return disconnectOperation(this.auth);
+    }
+
     const tokenResult = await this.auth.getAccessToken();
     if (!tokenResult.ok) {
       return tokenResult;
@@ -168,7 +183,22 @@ export class GmailIntegration implements Integration {
     if (!clientIdFromConfig || clientIdFromConfig.trim().length === 0) {
       return err(
         new IntegrationError(
-          "Missing Gmail OAuth client ID. Set config.authConfig.googleClientId or env GMAIL_CLIENT_ID/GOOGLE_CLIENT_ID.",
+          [
+            "Gmail requires OAuth credentials to connect.",
+            "",
+            "To set up Gmail OAuth:",
+            "1. Go to Google Cloud Console (https://console.cloud.google.com)",
+            "2. Create a new project or select existing",
+            "3. Enable Gmail API",
+            "4. Create OAuth 2.0 credentials (Desktop app type)",
+            "5. Set environment variables:",
+            '   export GMAIL_CLIENT_ID="your-client-id"',
+            '   export GMAIL_CLIENT_SECRET="your-client-secret"',
+            "6. Restart Reins daemon",
+            "7. Try connecting again",
+            "",
+            "Need help? See: https://developers.google.com/gmail/api/quickstart",
+          ].join("\n"),
         ),
       );
     }
