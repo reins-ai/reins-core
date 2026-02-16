@@ -33,6 +33,10 @@ export {
   type PermissionResult,
   type SkillPermissionChecker,
 } from "./permissions";
+export {
+  formatSkillIndex,
+  getSkillIndexTokenEstimate,
+} from "./prompt-formatter";
 export { normalizeSkillName, SkillRegistry } from "./registry";
 export {
   ScriptRunner,
