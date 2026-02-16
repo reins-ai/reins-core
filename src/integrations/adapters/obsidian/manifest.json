@@ -1,0 +1,100 @@
+{
+  "id": "obsidian",
+  "name": "Obsidian",
+  "description": "Local filesystem integration for Obsidian vaults — search, read, create, and list Markdown notes.",
+  "version": "1.0.0",
+  "author": "Reins",
+  "category": "productivity",
+  "auth": {
+    "type": "local_path",
+    "pathLabel": "Vault directory",
+    "mustExist": true,
+    "requiresWriteAccess": true
+  },
+  "permissions": [
+    "file_system"
+  ],
+  "platforms": [
+    "daemon"
+  ],
+  "operations": [
+    {
+      "name": "search-notes",
+      "description": "Search notes by content and title in the local vault.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query to match against note titles and content."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of results to return."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "read-note",
+      "description": "Read the content of a note by its path relative to the vault root.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative path to the note within the vault (e.g. 'folder/note.md')."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "create-note",
+      "description": "Create a new Markdown note with a title and content.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title for the new note (used as filename)."
+          },
+          "content": {
+            "type": "string",
+            "description": "Markdown content for the note body."
+          },
+          "folder": {
+            "type": "string",
+            "description": "Optional subfolder within the vault to create the note in."
+          }
+        },
+        "required": [
+          "title",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "list-notes",
+      "description": "List notes in a directory or folder within the vault.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "Subfolder path relative to vault root. Omit or use empty string for vault root."
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Whether to list notes in subdirectories recursively."
+          }
+        }
+      }
+    }
+  ]
+}
