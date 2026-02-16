@@ -48,6 +48,7 @@ export {
   type DiscoveryReport,
   type SkillDiscoveryError,
 } from "./scanner";
+export { SKILL_TOOL_DEFINITION, SkillTool } from "./skill-tool";
 export * from "./types";
 export { validateSkillDirectory, type SkillDirectoryInfo } from "./validator";
 export {
