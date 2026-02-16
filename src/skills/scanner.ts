@@ -60,6 +60,7 @@ function buildSkill(dirInfo: SkillDirectoryInfo, metadata: SkillMetadata): Skill
     hasIntegration: dirInfo.hasIntegrationMd,
     scriptFiles: dirInfo.scriptFiles,
     categories: metadata.categories ?? [],
+    triggers: metadata.triggers ?? [],
   };
 }
 

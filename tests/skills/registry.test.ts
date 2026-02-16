@@ -22,6 +22,7 @@ function createTestSkill(
     hasIntegration: overrides.hasIntegration ?? false,
     scriptFiles: overrides.scriptFiles ?? [],
     categories: overrides.categories ?? [],
+    triggers: overrides.triggers ?? [],
   };
 }
 

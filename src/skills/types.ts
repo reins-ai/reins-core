@@ -21,4 +21,5 @@ export interface Skill {
   hasIntegration: boolean;
   scriptFiles: string[];
   categories: string[];
+  triggers: string[];
 }

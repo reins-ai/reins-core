@@ -420,6 +420,7 @@ trustLevel: trusted
         hasIntegration: false,
         scriptFiles: [],
         categories: [],
+        triggers: [],
       });
 
       const scanner = new SkillScanner(registry, dir);

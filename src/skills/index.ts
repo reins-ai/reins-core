@@ -7,6 +7,12 @@ export {
   type IntegrationStatus,
 } from "./integration-reader";
 export {
+  SkillMatcher,
+  type MatchSource,
+  type SkillMatch,
+  type SkillMatcherOptions,
+} from "./matcher";
+export {
   validateMetadata,
   MAX_NAME_LENGTH,
   MAX_DESCRIPTION_LENGTH,
