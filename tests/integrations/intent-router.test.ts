@@ -73,11 +73,89 @@ function createMockIntegration(
   };
 }
 
+/**
+ * Custom intent rules for testing. Uses neutral domain terms (email, music)
+ * without referencing specific third-party brands.
+ */
+const TEST_INTENT_RULES = [
+  {
+    integrationId: "adapter-beta",
+    keywords: [
+      "music",
+      "song",
+      "track",
+      "playlist",
+      "playback",
+    ],
+    phrases: [
+      "play music",
+      "pause music",
+      "skip this song",
+      "next track",
+      "stop music",
+      "resume music",
+      "search music",
+      "my playlists",
+      "what's playing",
+      "currently playing",
+    ],
+  },
+  {
+    integrationId: "adapter-alpha",
+    keywords: [
+      "email",
+      "inbox",
+      "mail",
+    ],
+    phrases: [
+      "check email",
+      "send email",
+      "compose email",
+      "search emails",
+      "read email",
+      "list emails",
+      "unread emails",
+      "check inbox",
+      "write an email",
+    ],
+  },
+  {
+    integrationId: "obsidian",
+    keywords: [
+      "obsidian",
+      "vault",
+      "note",
+      "notes",
+      "markdown",
+    ],
+    phrases: [
+      "search notes",
+      "search my notes",
+      "find notes",
+      "find a note",
+      "read note",
+      "read a note",
+      "open note",
+      "create note",
+      "create a note",
+      "new note",
+      "write a note",
+      "list notes",
+      "my notes",
+      "in my vault",
+      "in obsidian",
+      "obsidian vault",
+      "note about",
+      "notes about",
+    ],
+  },
+];
+
 function createRegistryWithAllIntegrations(): IntegrationRegistry {
   const registry = new IntegrationRegistry();
 
   registry.register(
-    createMockIntegration("spotify", [
+    createMockIntegration("adapter-beta", [
       createOperation("get_playback", "Get current playback state"),
       createOperation("control_playback", "Play/pause/skip/previous"),
       createOperation("search", "Search tracks, albums, artists"),
@@ -86,11 +164,11 @@ function createRegistryWithAllIntegrations(): IntegrationRegistry {
   );
 
   registry.register(
-    createMockIntegration("gmail", [
-      createOperation("read_email", "Read email by ID"),
-      createOperation("search_emails", "Search emails"),
-      createOperation("send_email", "Send an email"),
-      createOperation("list_emails", "List recent emails"),
+    createMockIntegration("adapter-alpha", [
+      createOperation("read_message", "Read message by ID"),
+      createOperation("search_messages", "Search messages"),
+      createOperation("send_message", "Send a message"),
+      createOperation("list_messages", "List recent messages"),
     ]),
   );
 
@@ -106,171 +184,160 @@ function createRegistryWithAllIntegrations(): IntegrationRegistry {
   return registry;
 }
 
+function createRouterWithAllRules(registry?: IntegrationRegistry): IntentRouter {
+  return new IntentRouter(registry ?? createRegistryWithAllIntegrations(), TEST_INTENT_RULES);
+}
+
 describe("IntentRouter", () => {
   describe("detectIntent", () => {
-    describe("Spotify intent detection", () => {
-      it("detects 'play music' as Spotify intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+    describe("media adapter intent detection", () => {
+      it("detects 'play music' as media intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Can you play music?");
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.confidence).toBeGreaterThan(0);
-        expect(spotify!.matchedKeywords).toContain("play music");
+        expect(media).toBeDefined();
+        expect(media!.confidence).toBeGreaterThan(0);
+        expect(media!.matchedKeywords).toContain("play music");
       });
 
-      it("detects 'pause music' as Spotify intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'pause music' as media intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Please pause music");
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.matchedKeywords).toContain("pause music");
+        expect(media).toBeDefined();
+        expect(media!.matchedKeywords).toContain("pause music");
       });
 
-      it("detects 'skip this song' as Spotify intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'skip this song' as media intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Skip this song please");
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.matchedKeywords).toContain("skip this song");
+        expect(media).toBeDefined();
+        expect(media!.matchedKeywords).toContain("skip this song");
       });
 
-      it("detects 'what's playing' as Spotify intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'what's playing' as media intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("What's playing right now?");
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.matchedKeywords).toContain("what's playing");
+        expect(media).toBeDefined();
+        expect(media!.matchedKeywords).toContain("what's playing");
       });
 
-      it("detects 'spotify' keyword directly", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'music' keyword directly", () => {
+        const router = createRouterWithAllRules();
 
-        const intents = router.detectIntent("Open Spotify");
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const intents = router.detectIntent("Open the music player");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.matchedKeywords).toContain("spotify");
+        expect(media).toBeDefined();
+        expect(media!.matchedKeywords).toContain("music");
       });
 
-      it("detects 'my playlists' as Spotify intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'my playlists' as media intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Show me my playlists");
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.matchedKeywords).toContain("my playlists");
+        expect(media).toBeDefined();
+        expect(media!.matchedKeywords).toContain("my playlists");
       });
 
-      it("detects 'next track' as Spotify intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'next track' as media intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Go to the next track");
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.matchedKeywords).toContain("next track");
+        expect(media).toBeDefined();
+        expect(media!.matchedKeywords).toContain("next track");
       });
     });
 
-    describe("Gmail intent detection", () => {
-      it("detects 'check email' as Gmail intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+    describe("mail adapter intent detection", () => {
+      it("detects 'check email' as mail intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Can you check email for me?");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("check email");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("check email");
       });
 
-      it("detects 'send email' as Gmail intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'send email' as mail intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Send email to John about the meeting");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("send email");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("send email");
       });
 
-      it("detects 'check inbox' as Gmail intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'check inbox' as mail intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Check inbox please");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("check inbox");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("check inbox");
       });
 
-      it("detects 'gmail' keyword directly", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'email' keyword directly", () => {
+        const router = createRouterWithAllRules();
 
-        const intents = router.detectIntent("Open Gmail");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const intents = router.detectIntent("Open my email");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("gmail");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("email");
       });
 
-      it("detects 'unread emails' as Gmail intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'unread emails' as mail intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Show me unread emails");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("unread emails");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("unread emails");
       });
 
-      it("detects 'compose email' as Gmail intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'compose email' as mail intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("I want to compose email");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("compose email");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("compose email");
       });
 
-      it("detects 'search emails' as Gmail intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+      it("detects 'search emails' as mail intent", () => {
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Search emails from last week");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("search emails");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("search emails");
       });
     });
 
     describe("Obsidian intent detection", () => {
       it("detects 'search notes' as Obsidian intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Search notes about TypeScript");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -280,8 +347,7 @@ describe("IntentRouter", () => {
       });
 
       it("detects 'create note' as Obsidian intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Create a note about today's meeting");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -291,8 +357,7 @@ describe("IntentRouter", () => {
       });
 
       it("detects 'obsidian' keyword directly", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Look in Obsidian for that");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -302,8 +367,7 @@ describe("IntentRouter", () => {
       });
 
       it("detects 'my notes' as Obsidian intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Search through my notes");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -313,8 +377,7 @@ describe("IntentRouter", () => {
       });
 
       it("detects 'in my vault' as Obsidian intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Find the project plan in my vault");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -324,8 +387,7 @@ describe("IntentRouter", () => {
       });
 
       it("detects 'list notes' as Obsidian intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("List notes in the projects folder");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -335,8 +397,7 @@ describe("IntentRouter", () => {
       });
 
       it("detects 'note about' as Obsidian intent", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Find the note about architecture decisions");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -348,36 +409,33 @@ describe("IntentRouter", () => {
 
     describe("confidence and ranking", () => {
       it("returns higher confidence for messages with multiple keyword matches", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const singleMatch = router.detectIntent("Play a song");
-        const multiMatch = router.detectIntent("Play music on Spotify from my playlist");
+        const multiMatch = router.detectIntent("Play music from my playlist with the next track");
 
-        const singleSpotify = singleMatch.find((i) => i.integrationId === "spotify");
-        const multiSpotify = multiMatch.find((i) => i.integrationId === "spotify");
+        const singleMedia = singleMatch.find((i) => i.integrationId === "adapter-beta");
+        const multiMedia = multiMatch.find((i) => i.integrationId === "adapter-beta");
 
-        expect(multiSpotify).toBeDefined();
-        expect(singleSpotify).toBeDefined();
-        expect(multiSpotify!.confidence).toBeGreaterThan(singleSpotify!.confidence);
+        expect(multiMedia).toBeDefined();
+        expect(singleMedia).toBeDefined();
+        expect(multiMedia!.confidence).toBeGreaterThan(singleMedia!.confidence);
       });
 
       it("caps confidence at 1.0", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent(
-          "Play music on Spotify, skip song, next track, search music, my playlists, currently playing",
+          "Play music, skip this song, next track, search music, my playlists, currently playing",
         );
-        const spotify = intents.find((i) => i.integrationId === "spotify");
+        const media = intents.find((i) => i.integrationId === "adapter-beta");
 
-        expect(spotify).toBeDefined();
-        expect(spotify!.confidence).toBeLessThanOrEqual(1.0);
+        expect(media).toBeDefined();
+        expect(media!.confidence).toBeLessThanOrEqual(1.0);
       });
 
       it("sorts results by confidence descending", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("Play music and also check email");
 
@@ -388,8 +446,7 @@ describe("IntentRouter", () => {
       });
 
       it("returns empty array for unrelated messages", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("What is the weather today?");
 
@@ -397,8 +454,7 @@ describe("IntentRouter", () => {
       });
 
       it("returns empty array for empty message", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("");
 
@@ -408,8 +464,7 @@ describe("IntentRouter", () => {
 
     describe("case insensitivity", () => {
       it("detects intent regardless of message casing", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const lower = router.detectIntent("play music");
         const upper = router.detectIntent("PLAY MUSIC");
@@ -429,27 +484,27 @@ describe("IntentRouter", () => {
         const registry = new IntegrationRegistry();
         registry.register(
           createMockIntegration(
-            "spotify",
+            "adapter-beta",
             [createOperation("search")],
             false,
           ),
         );
 
-        const router = new IntentRouter(registry);
-        const intents = router.detectIntent("Play music on Spotify");
+        const router = new IntentRouter(registry, TEST_INTENT_RULES);
+        const intents = router.detectIntent("Play some music");
 
         expect(intents).toEqual([]);
       });
 
       it("excludes unregistered integrations from detection", () => {
         const registry = new IntegrationRegistry();
-        // Only register Gmail, not Spotify or Obsidian
+        // Only register adapter-alpha, not adapter-beta or Obsidian
         registry.register(
-          createMockIntegration("gmail", [createOperation("list_emails")]),
+          createMockIntegration("adapter-alpha", [createOperation("list_messages")]),
         );
 
-        const router = new IntentRouter(registry);
-        const intents = router.detectIntent("Play music on Spotify");
+        const router = new IntentRouter(registry, TEST_INTENT_RULES);
+        const intents = router.detectIntent("Play some music");
 
         expect(intents).toEqual([]);
       });
@@ -457,8 +512,7 @@ describe("IntentRouter", () => {
 
     describe("word boundary matching", () => {
       it("matches 'note' as a standalone word", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
         const intents = router.detectIntent("I need to find that note");
         const obsidian = intents.find((i) => i.integrationId === "obsidian");
@@ -468,32 +522,30 @@ describe("IntentRouter", () => {
       });
 
       it("does not match 'mail' inside 'email' as standalone keyword", () => {
-        const registry = createRegistryWithAllIntegrations();
-        const router = new IntentRouter(registry);
+        const router = createRouterWithAllRules();
 
-        // "mail" is a Gmail keyword, but "email" contains "mail" without word boundary
+        // "mail" is a adapter-alpha keyword, but "email" contains "mail" without word boundary
         // The word boundary check should prevent "mail" from matching inside "email"
-        // However "email" itself IS a keyword, so Gmail should still be detected
+        // However "email" itself IS a keyword, so adapter-alpha should still be detected
         const intents = router.detectIntent("Check my email");
-        const gmail = intents.find((i) => i.integrationId === "gmail");
+        const mail = intents.find((i) => i.integrationId === "adapter-alpha");
 
-        expect(gmail).toBeDefined();
-        expect(gmail!.matchedKeywords).toContain("email");
+        expect(mail).toBeDefined();
+        expect(mail!.matchedKeywords).toContain("email");
       });
     });
   });
 
   describe("getToolSchemas", () => {
-    it("returns tool schemas for detected Spotify intent", () => {
-      const registry = createRegistryWithAllIntegrations();
-      const router = new IntentRouter(registry);
+    it("returns tool schemas for detected media intent", () => {
+      const router = createRouterWithAllRules();
 
       const injections = router.getToolSchemas("Play some music");
 
-      const spotify = injections.find((i) => i.integrationId === "spotify");
-      expect(spotify).toBeDefined();
-      expect(spotify!.operations).toHaveLength(4);
-      expect(spotify!.operations.map((op) => op.name)).toEqual([
+      const media = injections.find((i) => i.integrationId === "adapter-beta");
+      expect(media).toBeDefined();
+      expect(media!.operations).toHaveLength(4);
+      expect(media!.operations.map((op) => op.name)).toEqual([
         "get_playback",
         "control_playback",
         "search",
@@ -501,26 +553,24 @@ describe("IntentRouter", () => {
       ]);
     });
 
-    it("returns tool schemas for detected Gmail intent", () => {
-      const registry = createRegistryWithAllIntegrations();
-      const router = new IntentRouter(registry);
+    it("returns tool schemas for detected mail intent", () => {
+      const router = createRouterWithAllRules();
 
       const injections = router.getToolSchemas("Send email to Alice");
 
-      const gmail = injections.find((i) => i.integrationId === "gmail");
-      expect(gmail).toBeDefined();
-      expect(gmail!.operations).toHaveLength(4);
-      expect(gmail!.operations.map((op) => op.name)).toEqual([
-        "read_email",
-        "search_emails",
-        "send_email",
-        "list_emails",
+      const mail = injections.find((i) => i.integrationId === "adapter-alpha");
+      expect(mail).toBeDefined();
+      expect(mail!.operations).toHaveLength(4);
+      expect(mail!.operations.map((op) => op.name)).toEqual([
+        "read_message",
+        "search_messages",
+        "send_message",
+        "list_messages",
       ]);
     });
 
     it("returns tool schemas for detected Obsidian intent", () => {
-      const registry = createRegistryWithAllIntegrations();
-      const router = new IntentRouter(registry);
+      const router = createRouterWithAllRules();
 
       const injections = router.getToolSchemas("Search my notes about architecture");
 
@@ -536,20 +586,18 @@ describe("IntentRouter", () => {
     });
 
     it("returns multiple injections when message matches multiple integrations", () => {
-      const registry = createRegistryWithAllIntegrations();
-      const router = new IntentRouter(registry);
+      const router = createRouterWithAllRules();
 
       const injections = router.getToolSchemas("Play music and check email");
 
       expect(injections.length).toBeGreaterThanOrEqual(2);
       const ids = injections.map((i) => i.integrationId);
-      expect(ids).toContain("spotify");
-      expect(ids).toContain("gmail");
+      expect(ids).toContain("adapter-beta");
+      expect(ids).toContain("adapter-alpha");
     });
 
     it("returns empty array for unrelated messages", () => {
-      const registry = createRegistryWithAllIntegrations();
-      const router = new IntentRouter(registry);
+      const router = createRouterWithAllRules();
 
       const injections = router.getToolSchemas("What is 2 + 2?");
 
@@ -558,7 +606,7 @@ describe("IntentRouter", () => {
 
     it("returns empty array when no integrations are registered", () => {
       const registry = new IntegrationRegistry();
-      const router = new IntentRouter(registry);
+      const router = new IntentRouter(registry, TEST_INTENT_RULES);
 
       const injections = router.getToolSchemas("Play music");
 
@@ -568,18 +616,18 @@ describe("IntentRouter", () => {
     it("excludes disabled integrations from schema injection", () => {
       const registry = new IntegrationRegistry();
       registry.register(
-        createMockIntegration("spotify", [createOperation("search")], false),
+        createMockIntegration("adapter-beta", [createOperation("search")], false),
       );
       registry.register(
-        createMockIntegration("gmail", [createOperation("list_emails")]),
+        createMockIntegration("adapter-alpha", [createOperation("list_messages")]),
       );
 
-      const router = new IntentRouter(registry);
+      const router = new IntentRouter(registry, TEST_INTENT_RULES);
       const injections = router.getToolSchemas("Play music and check email");
 
       const ids = injections.map((i) => i.integrationId);
-      expect(ids).not.toContain("spotify");
-      expect(ids).toContain("gmail");
+      expect(ids).not.toContain("adapter-beta");
+      expect(ids).toContain("adapter-alpha");
     });
   });
 
@@ -587,23 +635,23 @@ describe("IntentRouter", () => {
     it("supports custom keyword rules", () => {
       const registry = new IntegrationRegistry();
       registry.register(
-        createMockIntegration("slack", [createOperation("send_message")]),
+        createMockIntegration("chat-adapter", [createOperation("send_message")]),
       );
 
       const router = new IntentRouter(registry, [
         {
-          integrationId: "slack",
-          keywords: ["slack", "channel"],
+          integrationId: "chat-adapter",
+          keywords: ["chat", "channel"],
           phrases: ["send message", "post in channel"],
         },
       ]);
 
-      const intents = router.detectIntent("Send message in Slack");
-      const slack = intents.find((i) => i.integrationId === "slack");
+      const intents = router.detectIntent("Send message in the chat");
+      const chat = intents.find((i) => i.integrationId === "chat-adapter");
 
-      expect(slack).toBeDefined();
-      expect(slack!.matchedKeywords).toContain("send message");
-      expect(slack!.matchedKeywords).toContain("slack");
+      expect(chat).toBeDefined();
+      expect(chat!.matchedKeywords).toContain("send message");
+      expect(chat!.matchedKeywords).toContain("chat");
     });
   });
 
@@ -615,33 +663,32 @@ describe("IntentRouter", () => {
      * The spec requires ≥80% accuracy (MH2).
      */
     it("achieves ≥80% accuracy on a representative test corpus", () => {
-      const registry = createRegistryWithAllIntegrations();
-      const router = new IntentRouter(registry);
+      const router = createRouterWithAllRules();
 
       const corpus: Array<{ message: string; expectedIntegration: string }> = [
-        // Spotify messages
-        { message: "Play some music", expectedIntegration: "spotify" },
-        { message: "Can you pause the music?", expectedIntegration: "spotify" },
-        { message: "Skip this song", expectedIntegration: "spotify" },
-        { message: "What's currently playing?", expectedIntegration: "spotify" },
-        { message: "Show me my playlists", expectedIntegration: "spotify" },
-        { message: "Search for Beatles songs", expectedIntegration: "spotify" },
-        { message: "Play the next track", expectedIntegration: "spotify" },
-        { message: "Resume music playback", expectedIntegration: "spotify" },
-        { message: "I want to listen to some jazz", expectedIntegration: "spotify" },
-        { message: "Open Spotify and play something", expectedIntegration: "spotify" },
+        // Media adapter messages
+        { message: "Play some music", expectedIntegration: "adapter-beta" },
+        { message: "Can you pause the music?", expectedIntegration: "adapter-beta" },
+        { message: "Skip this song", expectedIntegration: "adapter-beta" },
+        { message: "What's currently playing?", expectedIntegration: "adapter-beta" },
+        { message: "Show me my playlists", expectedIntegration: "adapter-beta" },
+        { message: "Search for some songs", expectedIntegration: "adapter-beta" },
+        { message: "Play the next track", expectedIntegration: "adapter-beta" },
+        { message: "Resume music playback", expectedIntegration: "adapter-beta" },
+        { message: "I want to listen to some jazz music", expectedIntegration: "adapter-beta" },
+        { message: "Start playing a song", expectedIntegration: "adapter-beta" },
 
-        // Gmail messages
-        { message: "Check my email", expectedIntegration: "gmail" },
-        { message: "Send an email to Bob", expectedIntegration: "gmail" },
-        { message: "Do I have any unread emails?", expectedIntegration: "gmail" },
-        { message: "Search emails from last week", expectedIntegration: "gmail" },
-        { message: "Read the latest email", expectedIntegration: "gmail" },
-        { message: "Compose email to the team", expectedIntegration: "gmail" },
-        { message: "Check my inbox for updates", expectedIntegration: "gmail" },
-        { message: "List recent emails", expectedIntegration: "gmail" },
-        { message: "Write an email about the project", expectedIntegration: "gmail" },
-        { message: "Open Gmail", expectedIntegration: "gmail" },
+        // Mail adapter messages
+        { message: "Check my email", expectedIntegration: "adapter-alpha" },
+        { message: "Send an email to Bob", expectedIntegration: "adapter-alpha" },
+        { message: "Do I have any unread emails?", expectedIntegration: "adapter-alpha" },
+        { message: "Search emails from last week", expectedIntegration: "adapter-alpha" },
+        { message: "Read the latest email", expectedIntegration: "adapter-alpha" },
+        { message: "Compose email to the team", expectedIntegration: "adapter-alpha" },
+        { message: "Check my inbox for updates", expectedIntegration: "adapter-alpha" },
+        { message: "List recent emails", expectedIntegration: "adapter-alpha" },
+        { message: "Write an email about the project", expectedIntegration: "adapter-alpha" },
+        { message: "Open my inbox", expectedIntegration: "adapter-alpha" },
 
         // Obsidian messages
         { message: "Search notes about TypeScript", expectedIntegration: "obsidian" },
@@ -672,11 +719,10 @@ describe("IntentRouter", () => {
     });
 
     it("reports individual accuracy per integration at ≥80%", () => {
-      const registry = createRegistryWithAllIntegrations();
-      const router = new IntentRouter(registry);
+      const router = createRouterWithAllRules();
 
       const integrationCorpora: Record<string, string[]> = {
-        spotify: [
+        "adapter-beta": [
           "Play some music",
           "Pause the music",
           "Skip this song",
@@ -688,7 +734,7 @@ describe("IntentRouter", () => {
           "Stop music",
           "Currently playing",
         ],
-        gmail: [
+        "adapter-alpha": [
           "Check my email",
           "Send an email to Alice",
           "Unread emails",
@@ -698,7 +744,7 @@ describe("IntentRouter", () => {
           "Check inbox",
           "List emails",
           "Write an email",
-          "Open Gmail",
+          "Open my inbox",
         ],
         obsidian: [
           "Search notes about TypeScript",

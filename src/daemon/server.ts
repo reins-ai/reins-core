@@ -39,6 +39,8 @@ import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
 import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
+import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
+import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
 
 import {
   parseListMemoryQueryParams,
@@ -499,6 +501,13 @@ interface HealthResponse {
   timestamp: string;
   version: string;
   contractVersion: string;
+  integrations: {
+    initialized: boolean;
+    registeredCount: number;
+    activeCount: number;
+    metaToolRegistered: boolean;
+    startupError?: string;
+  };
   discovery: {
     capabilities: string[];
     routes: {
@@ -827,6 +836,13 @@ export class DaemonHttpServer implements DaemonManagedService {
   private environmentSwitchService: EnvironmentSwitchService | null = null;
   private environmentContextProvider: EnvironmentContextProvider | null = null;
   private personaRegistry: PersonaRegistry | null = null;
+  private integrationService: IntegrationService | null = null;
+  private integrationHealth: HealthResponse["integrations"] = {
+    initialized: false,
+    registeredCount: 0,
+    activeCount: 0,
+    metaToolRegistered: false,
+  };
 
   constructor(options: DaemonHttpServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
@@ -928,6 +944,24 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
+      await this.initializeIntegrationServices();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.integrationService = null;
+      this.integrationHealth = {
+        initialized: false,
+        registeredCount: 0,
+        activeCount: 0,
+        metaToolRegistered: false,
+        startupError: message,
+      };
+      this.removeToolDefinitionByName(INTEGRATION_META_TOOL_DEFINITION.name);
+      log("warn", "Integration system failed to initialize; daemon will start without integrations", {
+        error: message,
+      });
+    }
+
+    try {
       const requestHandler = this.machineAuthService
         ? createAuthMiddleware({
             authService: this.machineAuthService,
@@ -971,6 +1005,24 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     try {
+      if (this.integrationService) {
+        const integrationStopResult = await this.integrationService.stop();
+        if (!integrationStopResult.ok) {
+          log("warn", "Integration system failed to stop cleanly", {
+            error: integrationStopResult.error.message,
+          });
+        }
+        this.integrationService = null;
+      }
+
+      this.integrationHealth = {
+        initialized: false,
+        registeredCount: 0,
+        activeCount: 0,
+        metaToolRegistered: false,
+      };
+      this.removeToolDefinitionByName(INTEGRATION_META_TOOL_DEFINITION.name);
+
       if (this.channelService) {
         await this.channelService.stop();
       }
@@ -1049,12 +1101,16 @@ export class DaemonHttpServer implements DaemonManagedService {
         if (this.memoryService) {
           capabilities.push("memory.crud", "memory.search", "memory.consolidate");
         }
+        if (this.integrationHealth.initialized) {
+          capabilities.push("integrations.manage");
+        }
 
         const health: HealthResponse = {
           status: "ok",
           timestamp: new Date().toISOString(),
           version: "0.1.0",
           contractVersion: CONTRACT_VERSION,
+          integrations: this.integrationHealth,
           discovery: {
             capabilities,
             routes: {
@@ -1347,6 +1403,76 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
       return Response.json({ models: [] }, { headers: corsHeaders });
     }
+  }
+
+  private async initializeIntegrationServices(): Promise<void> {
+    const toolRegistry = this.toolExecutor.getRegistry();
+    const integrationService = new IntegrationService({
+      toolRegistry,
+      credentialStore: this.credentialStore ?? undefined,
+    });
+
+    await this.registerBuiltinIntegrations(integrationService);
+
+    const startResult = await integrationService.start();
+    if (!startResult.ok) {
+      throw startResult.error;
+    }
+
+    this.integrationService = integrationService;
+    this.ensureToolDefinition(INTEGRATION_META_TOOL_DEFINITION);
+
+    const registeredCount = integrationService.getRegistry().list().length;
+    const activeCount = integrationService.getRegistry().listActive().length;
+    this.integrationHealth = {
+      initialized: true,
+      registeredCount,
+      activeCount,
+      metaToolRegistered: toolRegistry.has(INTEGRATION_META_TOOL_DEFINITION.name),
+    };
+
+    log("info", "Integration system initialized", {
+      registeredIntegrations: registeredCount,
+      activeIntegrations: activeCount,
+    });
+  }
+
+  private async registerBuiltinIntegrations(integrationService: IntegrationService): Promise<void> {
+    const vault = integrationService.getCredentialVault();
+    const registry = integrationService.getRegistry();
+
+    const obsidianManifestResult = await loadObsidianManifest();
+    if (obsidianManifestResult.ok) {
+      registry.register(new ObsidianIntegration({
+        vault,
+        manifest: obsidianManifestResult.value,
+        config: {
+          enabled: false,
+        },
+      }));
+    } else {
+      log("warn", "Failed to load Obsidian integration manifest", {
+        error: obsidianManifestResult.error.message,
+      });
+    }
+
+  }
+
+  private ensureToolDefinition(definition: ToolDefinition): void {
+    if (this.toolDefinitions.some((toolDefinition) => toolDefinition.name === definition.name)) {
+      return;
+    }
+
+    this.toolDefinitions.push(definition);
+  }
+
+  private removeToolDefinitionByName(name: string): void {
+    const index = this.toolDefinitions.findIndex((toolDefinition) => toolDefinition.name === name);
+    if (index < 0) {
+      return;
+    }
+
+    this.toolDefinitions.splice(index, 1);
   }
 
   private async handleAuthRequest(

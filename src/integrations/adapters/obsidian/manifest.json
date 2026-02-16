@@ -1,7 +1,7 @@
 {
   "id": "obsidian",
   "name": "Obsidian",
-  "description": "Local filesystem integration for Obsidian vaults — search, read, create, and list Markdown notes.",
+  "description": "Local filesystem integration for Obsidian vaults — connect, search, read, create, and list Markdown notes.",
   "version": "1.0.0",
   "author": "Reins",
   "category": "productivity",
@@ -18,6 +18,30 @@
     "daemon"
   ],
   "operations": [
+    {
+      "name": "connect",
+      "description": "Connect to an Obsidian vault by validating and storing its absolute path.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "vault_path": {
+            "type": "string",
+            "description": "Absolute path to the Obsidian vault directory."
+          }
+        },
+        "required": [
+          "vault_path"
+        ]
+      }
+    },
+    {
+      "name": "disconnect",
+      "description": "Disconnect Obsidian and clear the stored vault credential.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
     {
       "name": "search-notes",
       "description": "Search notes by content and title in the local vault.",

@@ -111,12 +111,12 @@ describe("validateIntegrationManifest", () => {
   it("accepts a manifest with oauth2 auth type", () => {
     const result = validateIntegrationManifest({
       ...createValidManifest(),
-      id: "gmail",
+      id: "adapter-alpha",
       auth: {
         type: "oauth2",
-        scopes: ["gmail.readonly", "gmail.send"],
-        authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-        tokenUrl: "https://oauth2.googleapis.com/token",
+        scopes: ["alpha.readonly", "alpha.send"],
+        authorizationUrl: "https://auth.example.com/oauth2/authorize",
+        tokenUrl: "https://auth.example.com/oauth2/token",
         pkce: true,
       },
     });
@@ -125,7 +125,7 @@ describe("validateIntegrationManifest", () => {
     if (result.valid) {
       expect(result.value.auth.type).toBe("oauth2");
       if (result.value.auth.type === "oauth2") {
-        expect(result.value.auth.scopes).toEqual(["gmail.readonly", "gmail.send"]);
+        expect(result.value.auth.scopes).toEqual(["alpha.readonly", "alpha.send"]);
         expect(result.value.auth.pkce).toBe(true);
       }
     }
@@ -510,7 +510,7 @@ describe("validateIntegrationManifest", () => {
   it("rejects non-array auth scopes for oauth2", () => {
     const result = validateIntegrationManifest({
       ...createValidManifest(),
-      auth: { type: "oauth2", scopes: "gmail.readonly" },
+      auth: { type: "oauth2", scopes: "alpha.readonly" },
     });
 
     expect(result.valid).toBe(false);

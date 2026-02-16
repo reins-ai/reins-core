@@ -3,7 +3,7 @@
  *
  * Provides a standardized 5-file integration contract (manifest.json + auth.ts +
  * operations/index.ts + individual operation files + README.md) for connecting
- * Reins to external services like Obsidian, Gmail, and Spotify.
+ * Reins to external services like Obsidian and future adapters.
  *
  * @module integrations
  */
@@ -78,6 +78,11 @@ export {
 } from "./state-machine";
 
 export {
+  IntegrationLifecycleManager,
+  type LifecycleManagerOptions,
+} from "./lifecycle";
+
+export {
   InMemoryCredentialVault,
   IntegrationCredentialVault,
   type ApiKeyCredential,
@@ -88,3 +93,10 @@ export {
   type LocalPathCredential,
   type OAuthCredential,
 } from "./credentials";
+
+export {
+  IntegrationService,
+  type IntegrationServiceOptions,
+  type IntegrationServiceStatus,
+  type IntegrationServiceSummary,
+} from "./service";

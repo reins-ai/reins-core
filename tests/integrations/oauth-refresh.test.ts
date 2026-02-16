@@ -223,9 +223,9 @@ describe("OAuthRefreshManager scheduleRefresh", () => {
   it("schedules a refresh and returns the delay in milliseconds", async () => {
     const { manager, vault, timers } = createManager();
     const cred = oauthCredential({ expires_at: futureIso(10_000) });
-    await vault.store("gmail", cred);
+    await vault.store("adapter-alpha", cred);
 
-    const result = await manager.scheduleRefresh("gmail", successfulRefreshCallback());
+    const result = await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -246,9 +246,9 @@ describe("OAuthRefreshManager scheduleRefresh", () => {
       now: () => fixedNow,
     });
     const cred = oauthCredential({ expires_at: expiresAt });
-    await vault.store("gmail", cred);
+    await vault.store("adapter-alpha", cred);
 
-    const result = await manager.scheduleRefresh("gmail", successfulRefreshCallback());
+    const result = await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -281,9 +281,9 @@ describe("OAuthRefreshManager scheduleRefresh", () => {
 
   it("returns error when credential has invalid expiry timestamp", async () => {
     const { manager, vault } = createManager();
-    await vault.store("gmail", oauthCredential({ expires_at: "not-a-date" }));
+    await vault.store("adapter-alpha", oauthCredential({ expires_at: "not-a-date" }));
 
-    const result = await manager.scheduleRefresh("gmail", successfulRefreshCallback());
+    const result = await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBeInstanceOf(IntegrationError);
@@ -292,12 +292,12 @@ describe("OAuthRefreshManager scheduleRefresh", () => {
 
   it("replaces a previously scheduled refresh for the same integration", async () => {
     const { manager, vault, timers } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    await manager.scheduleRefresh("gmail", successfulRefreshCallback());
+    await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
     expect(timers.scheduledCallbacks.size).toBe(1);
 
-    await manager.scheduleRefresh("gmail", successfulRefreshCallback());
+    await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
     // Old timer should be cleared, new one scheduled
     expect(timers.scheduledCallbacks.size).toBe(1);
   });
@@ -310,9 +310,9 @@ describe("OAuthRefreshManager scheduleRefresh", () => {
     const expired = oauthCredential({
       expires_at: new Date(fixedNow - 1_000).toISOString(),
     });
-    await vault.store("gmail", expired);
+    await vault.store("adapter-alpha", expired);
 
-    const result = await manager.scheduleRefresh("gmail", successfulRefreshCallback());
+    const result = await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe(0);
@@ -323,9 +323,9 @@ describe("OAuthRefreshManager scheduleRefresh", () => {
 
   it("normalizes integration id (case-insensitive, trimmed)", async () => {
     const { manager, vault } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const result = await manager.scheduleRefresh("  Gmail  ", successfulRefreshCallback());
+    const result = await manager.scheduleRefresh("  ADAPTER-ALPHA  ", successfulRefreshCallback());
     expect(result.ok).toBe(true);
   });
 });
@@ -338,14 +338,14 @@ describe("OAuthRefreshManager refreshNow", () => {
   it("refreshes immediately and updates the vault with new tokens", async () => {
     const { manager, vault } = createManager();
     const originalCred = oauthCredential();
-    await vault.store("gmail", originalCred);
+    await vault.store("adapter-alpha", originalCred);
 
     const newPayload: Partial<OAuthRefreshPayload> = {
       access_token: "brand-new-access-token",
       expires_at: futureIso(7_200_000),
     };
 
-    const result = await manager.refreshNow("gmail", successfulRefreshCallback(newPayload));
+    const result = await manager.refreshNow("adapter-alpha", successfulRefreshCallback(newPayload));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -354,7 +354,7 @@ describe("OAuthRefreshManager refreshNow", () => {
     expect(result.value.refresh_token).toBe(originalCred.refresh_token);
 
     // Verify vault was updated
-    const storedResult = await vault.retrieve<OAuthCredential>("gmail");
+    const storedResult = await vault.retrieve<OAuthCredential>("adapter-alpha");
     expect(storedResult.ok).toBe(true);
     if (!storedResult.ok) return;
     expect(storedResult.value!.access_token).toBe("brand-new-access-token");
@@ -366,9 +366,9 @@ describe("OAuthRefreshManager refreshNow", () => {
       scopes: ["email", "profile"],
       token_type: "Bearer",
     });
-    await vault.store("gmail", originalCred);
+    await vault.store("adapter-alpha", originalCred);
 
-    const result = await manager.refreshNow("gmail", successfulRefreshCallback());
+    const result = await manager.refreshNow("adapter-alpha", successfulRefreshCallback());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -378,9 +378,9 @@ describe("OAuthRefreshManager refreshNow", () => {
 
   it("updates refresh token when provided in refresh payload", async () => {
     const { manager, vault } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const result = await manager.refreshNow("gmail", successfulRefreshCallback({
+    const result = await manager.refreshNow("adapter-alpha", successfulRefreshCallback({
       refresh_token: "rotated-refresh-token",
     }));
     expect(result.ok).toBe(true);
@@ -388,7 +388,7 @@ describe("OAuthRefreshManager refreshNow", () => {
 
     expect(result.value.refresh_token).toBe("rotated-refresh-token");
 
-    const storedResult = await vault.retrieve<OAuthCredential>("gmail");
+    const storedResult = await vault.retrieve<OAuthCredential>("adapter-alpha");
     expect(storedResult.ok).toBe(true);
     if (!storedResult.ok) return;
     expect(storedResult.value!.refresh_token).toBe("rotated-refresh-token");
@@ -412,14 +412,14 @@ describe("OAuthRefreshManager refreshNow", () => {
 
   it("uses registered callback when no explicit callback provided", async () => {
     const { manager, vault } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     // Register via scheduleRefresh
-    await manager.scheduleRefresh("gmail", successfulRefreshCallback({
+    await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback({
       access_token: "from-registered-callback",
     }));
 
-    const result = await manager.refreshNow("gmail");
+    const result = await manager.refreshNow("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.access_token).toBe("from-registered-callback");
@@ -427,9 +427,9 @@ describe("OAuthRefreshManager refreshNow", () => {
 
   it("returns error when no callback is registered or provided", async () => {
     const { manager, vault } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const result = await manager.refreshNow("gmail");
+    const result = await manager.refreshNow("adapter-alpha");
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBeInstanceOf(IntegrationError);
@@ -438,13 +438,13 @@ describe("OAuthRefreshManager refreshNow", () => {
 
   it("schedules next refresh after successful refresh", async () => {
     const { manager, vault, timers } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     // Register callback first
-    await manager.scheduleRefresh("gmail", successfulRefreshCallback());
+    await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
     const initialTimerCount = timers.scheduledCallbacks.size;
 
-    const result = await manager.refreshNow("gmail");
+    const result = await manager.refreshNow("adapter-alpha");
     expect(result.ok).toBe(true);
 
     // A new timer should be scheduled for the next refresh
@@ -463,7 +463,7 @@ describe("OAuthRefreshManager retry with backoff", () => {
       initialBackoffMs: 100,
       maxBackoffMs: 1_000,
     });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     // Fail first 2 attempts with transient error, succeed on 3rd
     const { callback, attempts } = countingRefreshCallback({
@@ -471,7 +471,7 @@ describe("OAuthRefreshManager retry with backoff", () => {
       transientMessage: "Network timeout during refresh",
     });
 
-    const result = await manager.refreshNow("gmail", callback);
+    const result = await manager.refreshNow("adapter-alpha", callback);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -488,14 +488,14 @@ describe("OAuthRefreshManager retry with backoff", () => {
 
   it("does not retry on non-transient errors", async () => {
     const { manager, vault, updates } = createManager({ maxAttempts: 3 });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const { callback, attempts } = countingRefreshCallback({
       failUntilAttempt: 999, // Always fail
       transientMessage: "Invalid grant: token revoked", // Not transient
     });
 
-    const result = await manager.refreshNow("gmail", callback);
+    const result = await manager.refreshNow("adapter-alpha", callback);
     expect(result.ok).toBe(false);
 
     // Should only attempt once since the error is not transient
@@ -512,14 +512,14 @@ describe("OAuthRefreshManager retry with backoff", () => {
       initialBackoffMs: 500,
       maxBackoffMs: 1_000,
     });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const { callback } = countingRefreshCallback({
       failUntilAttempt: 3,
       transientMessage: "Network timeout",
     });
 
-    await manager.refreshNow("gmail", callback);
+    await manager.refreshNow("adapter-alpha", callback);
 
     // Backoff: 500*2^0=500, 500*2^1=1000, 500*2^2=2000 → capped at 1000
     expect(sleepCalls[0]).toBe(500);
@@ -529,14 +529,14 @@ describe("OAuthRefreshManager retry with backoff", () => {
 
   it("passes correct attempt and maxAttempts to callback context", async () => {
     const { manager, vault } = createManager({ maxAttempts: 3 });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const { callback, attempts } = countingRefreshCallback({
       failUntilAttempt: 2,
       transientMessage: "Network timeout",
     });
 
-    await manager.refreshNow("gmail", callback);
+    await manager.refreshNow("adapter-alpha", callback);
 
     expect(attempts[0]!.attempt).toBe(1);
     expect(attempts[0]!.maxAttempts).toBe(3);
@@ -547,14 +547,14 @@ describe("OAuthRefreshManager retry with backoff", () => {
   it("provides integration id and credential in callback context", async () => {
     const { manager, vault } = createManager();
     const cred = oauthCredential({ refresh_token: "my-refresh-token" });
-    await vault.store("gmail", cred);
+    await vault.store("adapter-alpha", cred);
 
     const { callback, attempts } = countingRefreshCallback();
 
-    await manager.refreshNow("gmail", callback);
+    await manager.refreshNow("adapter-alpha", callback);
 
     expect(attempts.length).toBe(1);
-    expect(attempts[0]!.integrationId).toBe("gmail");
+    expect(attempts[0]!.integrationId).toBe("adapter-alpha");
     expect(attempts[0]!.refreshToken).toBe("my-refresh-token");
     expect(attempts[0]!.credential.type).toBe("oauth");
   });
@@ -567,14 +567,14 @@ describe("OAuthRefreshManager retry with backoff", () => {
 describe("OAuthRefreshManager permanent failure", () => {
   it("updates status to auth_expired after all retries exhausted", async () => {
     const { manager, vault, updates } = createManager({ maxAttempts: 3 });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const { callback, attempts } = countingRefreshCallback({
       failUntilAttempt: 999,
       transientMessage: "Network timeout",
     });
 
-    const result = await manager.refreshNow("gmail", callback);
+    const result = await manager.refreshNow("adapter-alpha", callback);
     expect(result.ok).toBe(false);
 
     // All 3 attempts should have been made
@@ -582,17 +582,17 @@ describe("OAuthRefreshManager permanent failure", () => {
 
     // Status should be updated to auth_expired
     expect(updates.length).toBe(1);
-    expect(updates[0]!.integrationId).toBe("gmail");
+    expect(updates[0]!.integrationId).toBe("adapter-alpha");
     expect(updates[0]!.indicator).toBe("auth_expired");
     expect(updates[0]!.reason).toContain("timeout");
   });
 
   it("updates status to auth_expired on first non-transient failure", async () => {
     const { manager, vault, updates } = createManager({ maxAttempts: 3 });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const result = await manager.refreshNow(
-      "gmail",
+      "adapter-alpha",
       failingRefreshCallback("Invalid grant: token permanently revoked"),
     );
     expect(result.ok).toBe(false);
@@ -607,10 +607,10 @@ describe("OAuthRefreshManager permanent failure", () => {
       statusUpdater: createFailingStatusUpdater(),
       maxAttempts: 1,
     });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const result = await manager.refreshNow(
-      "gmail",
+      "adapter-alpha",
       failingRefreshCallback("Token expired"),
     );
     expect(result.ok).toBe(false);
@@ -620,14 +620,14 @@ describe("OAuthRefreshManager permanent failure", () => {
 
   it("clears scheduled refresh after permanent failure", async () => {
     const { manager, vault, timers } = createManager({ maxAttempts: 1 });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     // Schedule first
-    await manager.scheduleRefresh("gmail", failingRefreshCallback("Token expired"));
+    await manager.scheduleRefresh("adapter-alpha", failingRefreshCallback("Token expired"));
     expect(timers.scheduledCallbacks.size).toBe(1);
 
     // Trigger the scheduled refresh by calling refreshNow
-    await manager.refreshNow("gmail", failingRefreshCallback("Token expired"));
+    await manager.refreshNow("adapter-alpha", failingRefreshCallback("Token expired"));
 
     // Scheduled refresh should be cleared after permanent failure
     // (the timer was already consumed, and no new one should be scheduled)
@@ -642,11 +642,11 @@ describe("OAuthRefreshManager permanent failure", () => {
 describe("OAuthRefreshManager cancelAll", () => {
   it("clears all scheduled refreshes", async () => {
     const { manager, vault, timers } = createManager();
-    await vault.store("gmail", oauthCredential());
-    await vault.store("spotify", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
+    await vault.store("adapter-beta", oauthCredential());
 
-    await manager.scheduleRefresh("gmail", successfulRefreshCallback());
-    await manager.scheduleRefresh("spotify", successfulRefreshCallback());
+    await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
+    await manager.scheduleRefresh("adapter-beta", successfulRefreshCallback());
     expect(timers.scheduledCallbacks.size).toBe(2);
 
     const result = manager.cancelAll();
@@ -663,10 +663,10 @@ describe("OAuthRefreshManager cancelAll", () => {
 
   it("prevents previously scheduled callbacks from firing", async () => {
     const { manager, vault, timers } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const { callback, attempts } = countingRefreshCallback();
-    await manager.scheduleRefresh("gmail", callback);
+    await manager.scheduleRefresh("adapter-alpha", callback);
 
     manager.cancelAll();
 
@@ -699,14 +699,14 @@ describe("OAuthRefreshManager transient error detection", () => {
   for (const message of transientMessages) {
     it(`retries on transient error: "${message}"`, async () => {
       const { manager, vault } = createManager({ maxAttempts: 2 });
-      await vault.store("gmail", oauthCredential());
+      await vault.store("adapter-alpha", oauthCredential());
 
       const { callback, attempts } = countingRefreshCallback({
         failUntilAttempt: 1,
         transientMessage: message,
       });
 
-      const result = await manager.refreshNow("gmail", callback);
+      const result = await manager.refreshNow("adapter-alpha", callback);
       expect(result.ok).toBe(true);
       expect(attempts.length).toBe(2);
     });
@@ -722,14 +722,14 @@ describe("OAuthRefreshManager transient error detection", () => {
   for (const message of permanentMessages) {
     it(`does not retry on permanent error: "${message}"`, async () => {
       const { manager, vault } = createManager({ maxAttempts: 3 });
-      await vault.store("gmail", oauthCredential());
+      await vault.store("adapter-alpha", oauthCredential());
 
       const { callback, attempts } = countingRefreshCallback({
         failUntilAttempt: 999,
         transientMessage: message,
       });
 
-      const result = await manager.refreshNow("gmail", callback);
+      const result = await manager.refreshNow("adapter-alpha", callback);
       expect(result.ok).toBe(false);
       expect(attempts.length).toBe(1);
     });
@@ -740,14 +740,14 @@ describe("OAuthRefreshManager transient error detection", () => {
       maxAttempts: 2,
       isTransientError: (error) => error.message.includes("CUSTOM_RETRY"),
     });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const { callback, attempts } = countingRefreshCallback({
       failUntilAttempt: 1,
       transientMessage: "CUSTOM_RETRY: please try again",
     });
 
-    const result = await manager.refreshNow("gmail", callback);
+    const result = await manager.refreshNow("adapter-alpha", callback);
     expect(result.ok).toBe(true);
     expect(attempts.length).toBe(2);
   });
@@ -760,9 +760,9 @@ describe("OAuthRefreshManager transient error detection", () => {
 describe("OAuthRefreshManager edge cases", () => {
   it("returns error when credential has empty refresh token", async () => {
     const { manager, vault } = createManager();
-    await vault.store("gmail", oauthCredential({ refresh_token: "   " }));
+    await vault.store("adapter-alpha", oauthCredential({ refresh_token: "   " }));
 
-    const result = await manager.refreshNow("gmail", successfulRefreshCallback());
+    const result = await manager.refreshNow("adapter-alpha", successfulRefreshCallback());
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBeInstanceOf(IntegrationError);
@@ -792,7 +792,7 @@ describe("OAuthRefreshManager edge cases", () => {
 
   it("deduplicates concurrent refreshNow calls for the same integration", async () => {
     const { manager, vault } = createManager();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     let callCount = 0;
     const slowCallback: RefreshCallback = async () => {
@@ -807,8 +807,8 @@ describe("OAuthRefreshManager edge cases", () => {
 
     // Fire two concurrent refreshes
     const [result1, result2] = await Promise.all([
-      manager.refreshNow("gmail", slowCallback),
-      manager.refreshNow("gmail", slowCallback),
+      manager.refreshNow("adapter-alpha", slowCallback),
+      manager.refreshNow("adapter-alpha", slowCallback),
     ]);
 
     // Both should succeed
@@ -821,14 +821,14 @@ describe("OAuthRefreshManager edge cases", () => {
 
   it("handles maxAttempts of 1 (no retries)", async () => {
     const { manager, vault, updates } = createManager({ maxAttempts: 1 });
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const { callback, attempts } = countingRefreshCallback({
       failUntilAttempt: 999,
       transientMessage: "Network timeout",
     });
 
-    const result = await manager.refreshNow("gmail", callback);
+    const result = await manager.refreshNow("adapter-alpha", callback);
     expect(result.ok).toBe(false);
     expect(attempts.length).toBe(1);
     expect(updates.length).toBe(1);
@@ -837,15 +837,15 @@ describe("OAuthRefreshManager edge cases", () => {
 
   it("multiple integrations can have independent refresh schedules", async () => {
     const { manager, vault, timers } = createManager();
-    await vault.store("gmail", oauthCredential());
-    await vault.store("spotify", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
+    await vault.store("adapter-beta", oauthCredential());
 
-    await manager.scheduleRefresh("gmail", successfulRefreshCallback());
-    await manager.scheduleRefresh("spotify", successfulRefreshCallback());
+    await manager.scheduleRefresh("adapter-alpha", successfulRefreshCallback());
+    await manager.scheduleRefresh("adapter-beta", successfulRefreshCallback());
 
     expect(timers.scheduledCallbacks.size).toBe(2);
 
-    // Cancel only gmail by scheduling a new one (which clears the old)
+    // Cancel only adapter-alpha by scheduling a new one (which clears the old)
     // and then cancel all
     manager.cancelAll();
     expect(timers.scheduledCallbacks.size).toBe(0);

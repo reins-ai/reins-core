@@ -181,10 +181,10 @@ describe("InMemoryCredentialVault", () => {
     const vault = new InMemoryCredentialVault();
     const cred = oauthCredential();
 
-    const storeResult = await vault.store("gmail", cred);
+    const storeResult = await vault.store("adapter-alpha", cred);
     expect(storeResult.ok).toBe(true);
 
-    const retrieveResult = await vault.retrieve<OAuthCredential>("gmail");
+    const retrieveResult = await vault.retrieve<OAuthCredential>("adapter-alpha");
     expect(retrieveResult.ok).toBe(true);
     if (!retrieveResult.ok) return;
     expect(retrieveResult.value).not.toBeNull();
@@ -232,14 +232,14 @@ describe("InMemoryCredentialVault", () => {
 
   it("revokes an existing credential and returns true", async () => {
     const vault = new InMemoryCredentialVault();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const revokeResult = await vault.revoke("gmail");
+    const revokeResult = await vault.revoke("adapter-alpha");
     expect(revokeResult.ok).toBe(true);
     if (!revokeResult.ok) return;
     expect(revokeResult.value).toBe(true);
 
-    const retrieveResult = await vault.retrieve("gmail");
+    const retrieveResult = await vault.retrieve("adapter-alpha");
     expect(retrieveResult.ok).toBe(true);
     if (!retrieveResult.ok) return;
     expect(retrieveResult.value).toBeNull();
@@ -284,9 +284,9 @@ describe("InMemoryCredentialVault", () => {
 
   it("getStatus returns valid for a non-expired OAuth credential", async () => {
     const vault = new InMemoryCredentialVault();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const result = await vault.getStatus("gmail");
+    const result = await vault.getStatus("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe("valid");
@@ -297,9 +297,9 @@ describe("InMemoryCredentialVault", () => {
     const expired = oauthCredential({
       expires_at: new Date(Date.now() - 60_000).toISOString(),
     });
-    await vault.store("gmail", expired);
+    await vault.store("adapter-alpha", expired);
 
-    const result = await vault.getStatus("gmail");
+    const result = await vault.getStatus("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe("expired");
@@ -308,9 +308,9 @@ describe("InMemoryCredentialVault", () => {
   it("getStatus returns error for an OAuth credential with invalid expiry", async () => {
     const vault = new InMemoryCredentialVault();
     const badExpiry = oauthCredential({ expires_at: "not-a-date" });
-    await vault.store("gmail", badExpiry);
+    await vault.store("adapter-alpha", badExpiry);
 
-    const result = await vault.getStatus("gmail");
+    const result = await vault.getStatus("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe("error");
@@ -359,14 +359,14 @@ describe("InMemoryCredentialVault", () => {
   it("returns a defensive copy on retrieve (mutations do not affect stored data)", async () => {
     const vault = new InMemoryCredentialVault();
     const cred = oauthCredential();
-    await vault.store("gmail", cred);
+    await vault.store("adapter-alpha", cred);
 
-    const result1 = await vault.retrieve<OAuthCredential>("gmail");
+    const result1 = await vault.retrieve<OAuthCredential>("adapter-alpha");
     expect(result1.ok).toBe(true);
     if (!result1.ok) return;
     result1.value!.access_token = "mutated-token";
 
-    const result2 = await vault.retrieve<OAuthCredential>("gmail");
+    const result2 = await vault.retrieve<OAuthCredential>("adapter-alpha");
     expect(result2.ok).toBe(true);
     if (!result2.ok) return;
     expect(result2.value!.access_token).toBe(cred.access_token);
@@ -374,9 +374,9 @@ describe("InMemoryCredentialVault", () => {
 
   it("normalizes integration ids (case-insensitive, trimmed)", async () => {
     const vault = new InMemoryCredentialVault();
-    await vault.store("  Gmail  ", oauthCredential());
+    await vault.store("  ADAPTER-ALPHA  ", oauthCredential());
 
-    const result = await vault.retrieve("gmail");
+    const result = await vault.retrieve("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).not.toBeNull();
@@ -435,39 +435,39 @@ describe("InMemoryCredentialVault", () => {
 describe("InMemoryCredentialVault isolation", () => {
   it("stores credentials for different integrations independently", async () => {
     const vault = new InMemoryCredentialVault();
-    const gmailCred = oauthCredential({ access_token: "gmail-token" });
-    const spotifyCred = oauthCredential({ access_token: "spotify-token" });
+    const mailCred = oauthCredential({ access_token: "mail-token" });
+    const mediaCred = oauthCredential({ access_token: "media-token" });
 
-    await vault.store("gmail", gmailCred);
-    await vault.store("spotify", spotifyCred);
+    await vault.store("adapter-alpha", mailCred);
+    await vault.store("adapter-beta", mediaCred);
 
-    const gmailResult = await vault.retrieve<OAuthCredential>("gmail");
-    const spotifyResult = await vault.retrieve<OAuthCredential>("spotify");
+    const mailResult = await vault.retrieve<OAuthCredential>("adapter-alpha");
+    const mediaResult = await vault.retrieve<OAuthCredential>("adapter-beta");
 
-    expect(gmailResult.ok).toBe(true);
-    expect(spotifyResult.ok).toBe(true);
-    if (!gmailResult.ok || !spotifyResult.ok) return;
+    expect(mailResult.ok).toBe(true);
+    expect(mediaResult.ok).toBe(true);
+    if (!mailResult.ok || !mediaResult.ok) return;
 
-    expect(gmailResult.value!.access_token).toBe("gmail-token");
-    expect(spotifyResult.value!.access_token).toBe("spotify-token");
+    expect(mailResult.value!.access_token).toBe("mail-token");
+    expect(mediaResult.value!.access_token).toBe("media-token");
   });
 
   it("revoking one integration does not affect another", async () => {
     const vault = new InMemoryCredentialVault();
-    await vault.store("gmail", oauthCredential());
-    await vault.store("spotify", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
+    await vault.store("adapter-beta", oauthCredential());
 
-    await vault.revoke("gmail");
+    await vault.revoke("adapter-alpha");
 
-    const gmailResult = await vault.retrieve("gmail");
-    const spotifyResult = await vault.retrieve("spotify");
+    const mailResult = await vault.retrieve("adapter-alpha");
+    const mediaResult = await vault.retrieve("adapter-beta");
 
-    expect(gmailResult.ok).toBe(true);
-    expect(spotifyResult.ok).toBe(true);
-    if (!gmailResult.ok || !spotifyResult.ok) return;
+    expect(mailResult.ok).toBe(true);
+    expect(mediaResult.ok).toBe(true);
+    if (!mailResult.ok || !mediaResult.ok) return;
 
-    expect(gmailResult.value).toBeNull();
-    expect(spotifyResult.value).not.toBeNull();
+    expect(mailResult.value).toBeNull();
+    expect(mediaResult.value).not.toBeNull();
   });
 
   it("different credential types for the same integration are stored independently", async () => {
@@ -502,10 +502,10 @@ describe("IntegrationCredentialVault", () => {
     const { vault } = createVault();
     const cred = oauthCredential();
 
-    const storeResult = await vault.store("gmail", cred);
+    const storeResult = await vault.store("adapter-alpha", cred);
     expect(storeResult.ok).toBe(true);
 
-    const retrieveResult = await vault.retrieve<OAuthCredential>("gmail");
+    const retrieveResult = await vault.retrieve<OAuthCredential>("adapter-alpha");
     expect(retrieveResult.ok).toBe(true);
     if (!retrieveResult.ok) return;
     expect(retrieveResult.value).not.toBeNull();
@@ -553,9 +553,9 @@ describe("IntegrationCredentialVault", () => {
 
   it("revokes credentials and returns true", async () => {
     const { vault } = createVault();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const revokeResult = await vault.revoke("gmail");
+    const revokeResult = await vault.revoke("adapter-alpha");
     expect(revokeResult.ok).toBe(true);
     if (!revokeResult.ok) return;
     expect(revokeResult.value).toBe(true);
@@ -572,9 +572,9 @@ describe("IntegrationCredentialVault", () => {
 
   it("hasCredentials returns true after storing", async () => {
     const { vault } = createVault();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const result = await vault.hasCredentials("gmail");
+    const result = await vault.hasCredentials("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe(true);
@@ -583,7 +583,7 @@ describe("IntegrationCredentialVault", () => {
   it("hasCredentials returns false when empty", async () => {
     const { vault } = createVault();
 
-    const result = await vault.hasCredentials("gmail");
+    const result = await vault.hasCredentials("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe(false);
@@ -592,7 +592,7 @@ describe("IntegrationCredentialVault", () => {
   it("getStatus returns missing when no credential exists", async () => {
     const { vault } = createVault();
 
-    const result = await vault.getStatus("gmail");
+    const result = await vault.getStatus("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe("missing");
@@ -600,9 +600,9 @@ describe("IntegrationCredentialVault", () => {
 
   it("getStatus returns valid for non-expired OAuth credential", async () => {
     const { vault } = createVault();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
-    const result = await vault.getStatus("gmail");
+    const result = await vault.getStatus("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe("valid");
@@ -610,11 +610,11 @@ describe("IntegrationCredentialVault", () => {
 
   it("getStatus returns expired for expired OAuth credential", async () => {
     const { vault } = createVault();
-    await vault.store("gmail", oauthCredential({
+    await vault.store("adapter-alpha", oauthCredential({
       expires_at: new Date(Date.now() - 60_000).toISOString(),
     }));
 
-    const result = await vault.getStatus("gmail");
+    const result = await vault.getStatus("adapter-alpha");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value).toBe("expired");
@@ -622,14 +622,14 @@ describe("IntegrationCredentialVault", () => {
 
   it("normalizes integration ids for all operations", async () => {
     const { vault } = createVault();
-    await vault.store("  Gmail  ", oauthCredential());
+    await vault.store("  ADAPTER-ALPHA  ", oauthCredential());
 
-    const retrieveResult = await vault.retrieve("gmail");
+    const retrieveResult = await vault.retrieve("adapter-alpha");
     expect(retrieveResult.ok).toBe(true);
     if (!retrieveResult.ok) return;
     expect(retrieveResult.value).not.toBeNull();
 
-    const hasResult = await vault.hasCredentials(" GMAIL ");
+    const hasResult = await vault.hasCredentials(" ADAPTER-ALPHA ");
     expect(hasResult.ok).toBe(true);
     if (!hasResult.ok) return;
     expect(hasResult.value).toBe(true);
@@ -650,7 +650,7 @@ describe("IntegrationCredentialVault", () => {
   it("returns error when encryption fails during store", async () => {
     const { vault } = createVault({ encryption: createFailingEncryption() });
 
-    const result = await vault.store("gmail", oauthCredential());
+    const result = await vault.store("adapter-alpha", oauthCredential());
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBeInstanceOf(IntegrationError);
@@ -667,7 +667,7 @@ describe("IntegrationCredentialVault encryption verification", () => {
     const { vault, mockStore } = createVault();
     const cred = oauthCredential({ access_token: "super-secret-token-abc" });
 
-    await vault.store("gmail", cred);
+    await vault.store("adapter-alpha", cred);
 
     // Inspect the raw data stored in the mock credential store
     const storedEntries = Array.from(mockStore.records.values());
@@ -688,7 +688,7 @@ describe("IntegrationCredentialVault encryption verification", () => {
 
   it("stored data contains encrypted envelope structure", async () => {
     const { vault, mockStore } = createVault();
-    await vault.store("gmail", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
 
     const storedEntries = Array.from(mockStore.records.values());
     expect(storedEntries.length).toBe(1);
@@ -705,7 +705,7 @@ describe("IntegrationCredentialVault encryption verification", () => {
     const { vault, mockStore } = createVault();
     const cred = oauthCredential({ refresh_token: "very-secret-refresh-token" });
 
-    await vault.store("gmail", cred);
+    await vault.store("adapter-alpha", cred);
 
     const storedEntries = Array.from(mockStore.records.values());
     const rawPayload = JSON.stringify(storedEntries[0]!.input.payload);
@@ -743,55 +743,55 @@ describe("IntegrationCredentialVault isolation", () => {
   it("credentials for different integrations are stored under separate keys", async () => {
     const { vault, mockStore } = createVault();
 
-    await vault.store("gmail", oauthCredential({ access_token: "gmail-token" }));
-    await vault.store("spotify", oauthCredential({ access_token: "spotify-token" }));
+    await vault.store("adapter-alpha", oauthCredential({ access_token: "mail-token" }));
+    await vault.store("adapter-beta", oauthCredential({ access_token: "media-token" }));
 
     // Each integration should have its own record in the store
     const keys = Array.from(mockStore.records.keys());
-    const gmailKeys = keys.filter((k) => k.includes("gmail"));
-    const spotifyKeys = keys.filter((k) => k.includes("spotify"));
+    const mailKeys = keys.filter((k) => k.includes("adapter-alpha"));
+    const mediaKeys = keys.filter((k) => k.includes("adapter-beta"));
 
-    expect(gmailKeys.length).toBeGreaterThan(0);
-    expect(spotifyKeys.length).toBeGreaterThan(0);
+    expect(mailKeys.length).toBeGreaterThan(0);
+    expect(mediaKeys.length).toBeGreaterThan(0);
 
     // Verify the key format includes integration id
-    for (const key of gmailKeys) {
-      expect(key).toContain("integration:gmail:");
+    for (const key of mailKeys) {
+      expect(key).toContain("integration:adapter-alpha:");
     }
-    for (const key of spotifyKeys) {
-      expect(key).toContain("integration:spotify:");
+    for (const key of mediaKeys) {
+      expect(key).toContain("integration:adapter-beta:");
     }
   });
 
   it("retrieving one integration does not return another's credentials", async () => {
     const { vault } = createVault();
 
-    await vault.store("gmail", oauthCredential({ access_token: "gmail-only" }));
-    await vault.store("spotify", oauthCredential({ access_token: "spotify-only" }));
+    await vault.store("adapter-alpha", oauthCredential({ access_token: "mail-only" }));
+    await vault.store("adapter-beta", oauthCredential({ access_token: "media-only" }));
 
-    const gmailResult = await vault.retrieve<OAuthCredential>("gmail");
-    const spotifyResult = await vault.retrieve<OAuthCredential>("spotify");
+    const mailResult = await vault.retrieve<OAuthCredential>("adapter-alpha");
+    const mediaResult = await vault.retrieve<OAuthCredential>("adapter-beta");
 
-    expect(gmailResult.ok).toBe(true);
-    expect(spotifyResult.ok).toBe(true);
-    if (!gmailResult.ok || !spotifyResult.ok) return;
+    expect(mailResult.ok).toBe(true);
+    expect(mediaResult.ok).toBe(true);
+    if (!mailResult.ok || !mediaResult.ok) return;
 
-    expect(gmailResult.value!.access_token).toBe("gmail-only");
-    expect(spotifyResult.value!.access_token).toBe("spotify-only");
+    expect(mailResult.value!.access_token).toBe("mail-only");
+    expect(mediaResult.value!.access_token).toBe("media-only");
   });
 
   it("revoking one integration does not affect another", async () => {
     const { vault } = createVault();
 
-    await vault.store("gmail", oauthCredential());
-    await vault.store("spotify", oauthCredential());
+    await vault.store("adapter-alpha", oauthCredential());
+    await vault.store("adapter-beta", oauthCredential());
 
-    await vault.revoke("gmail");
+    await vault.revoke("adapter-alpha");
 
-    const spotifyHas = await vault.hasCredentials("spotify");
-    expect(spotifyHas.ok).toBe(true);
-    if (!spotifyHas.ok) return;
-    expect(spotifyHas.value).toBe(true);
+    const mediaHas = await vault.hasCredentials("adapter-beta");
+    expect(mediaHas.ok).toBe(true);
+    if (!mediaHas.ok) return;
+    expect(mediaHas.value).toBe(true);
   });
 
   it("credential keys use integration:{id}:{type} format", async () => {

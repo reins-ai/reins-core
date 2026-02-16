@@ -169,7 +169,7 @@ describe("Integration System E2E", () => {
       expect(toolRegistry.has(INTEGRATION_META_TOOL_DEFINITION.name)).toBe(true);
     });
 
-    it("activates enabled integrations on start", async () => {
+    it("does not auto-activate integrations on start", async () => {
       const manifest = createMockManifest({ id: "auto-enabled" });
       const integration = new MockIntegration(manifest);
       integration.config.enabled = true;
@@ -182,7 +182,8 @@ describe("Integration System E2E", () => {
       const startResult = await service.start();
 
       expect(startResult.ok).toBe(true);
-      expect(integration.connectCalled).toBe(true);
+      expect(integration.connectCalled).toBe(false);
+      expect(integration.config.enabled).toBe(false);
     });
 
     it("skips disabled integrations on start", async () => {
@@ -218,7 +219,6 @@ describe("Integration System E2E", () => {
     it("disconnects active integrations on stop", async () => {
       const manifest = createMockManifest({ id: "stop-test" });
       const integration = new MockIntegration(manifest);
-      integration.config.enabled = true;
 
       const service = new IntegrationService({
         toolRegistry,
@@ -226,6 +226,8 @@ describe("Integration System E2E", () => {
       });
 
       await service.start();
+      const enableResult = await service.enableIntegration("stop-test");
+      expect(enableResult.ok).toBe(true);
       integration.disconnectCalled = false;
 
       const stopResult = await service.stop();
@@ -251,7 +253,7 @@ describe("Integration System E2E", () => {
       expect(stop2.ok).toBe(true);
     });
 
-    it("returns error when enabled integration fails to activate on start", async () => {
+    it("does not fail startup when pre-enabled integration cannot connect", async () => {
       const manifest = createMockManifest({ id: "fail-start" });
       const integration = new MockIntegration(manifest);
       integration.config.enabled = true;
@@ -264,11 +266,9 @@ describe("Integration System E2E", () => {
 
       const startResult = await service.start();
 
-      expect(startResult.ok).toBe(false);
-      if (!startResult.ok) {
-        expect(startResult.error).toBeInstanceOf(IntegrationError);
-        expect(startResult.error.message).toContain("fail-start");
-      }
+      expect(startResult.ok).toBe(true);
+      expect(integration.connectCalled).toBe(false);
+      expect(integration.config.enabled).toBe(false);
     });
   });
 
@@ -279,7 +279,7 @@ describe("Integration System E2E", () => {
   describe("Meta-Tool Flow: Discover → Activate → Execute", () => {
     let service: IntegrationService;
     let obsidianIntegration: MockIntegration;
-    let gmailIntegration: MockIntegration;
+    let calendarIntegration: MockIntegration;
 
     beforeEach(async () => {
       obsidianIntegration = new MockIntegration(
@@ -315,32 +315,32 @@ describe("Integration System E2E", () => {
         forUser: { kind: "list", title: "Search Results", message: "2 notes found.", data: { items: [{ title: "Note 1", path: "/notes/note1.md" }, { title: "Note 2", path: "/notes/note2.md" }] } },
       });
 
-      gmailIntegration = new MockIntegration(
+      calendarIntegration = new MockIntegration(
         createMockManifest({
-          id: "gmail",
-          name: "Gmail",
+          id: "calendar",
+          name: "Calendar",
           category: "communication",
           auth: {
             type: "oauth2",
-            scopes: ["gmail.readonly", "gmail.send"],
+            scopes: ["calendar.read", "calendar.write"],
           },
           operations: [
             {
-              name: "list-emails",
-              description: "List recent emails",
+              name: "list-events",
+              description: "List upcoming events",
               parameters: { type: "object", properties: {} },
             },
             {
-              name: "send-email",
-              description: "Send an email",
+              name: "create-event",
+              description: "Create a calendar event",
               parameters: {
                 type: "object",
                 properties: {
-                  to: { type: "string", description: "Recipient" },
-                  subject: { type: "string", description: "Subject" },
-                  body: { type: "string", description: "Body" },
+                  title: { type: "string", description: "Event title" },
+                  startsAt: { type: "string", description: "Event start time" },
+                  endsAt: { type: "string", description: "Event end time" },
                 },
-                required: ["to", "subject", "body"],
+                required: ["title", "startsAt", "endsAt"],
               },
             },
           ],
@@ -349,12 +349,12 @@ describe("Integration System E2E", () => {
 
       service = new IntegrationService({
         toolRegistry,
-        integrations: [obsidianIntegration, gmailIntegration],
+        integrations: [obsidianIntegration, calendarIntegration],
       });
 
       await service.start();
       await service.enableIntegration("obsidian");
-      await service.enableIntegration("gmail");
+      await service.enableIntegration("calendar");
     });
 
     it("discovers all active integrations via meta-tool", async () => {
@@ -373,13 +373,13 @@ describe("Integration System E2E", () => {
       expect(payload.capabilityIndex.length).toBe(2);
 
       const obsidianEntry = payload.capabilityIndex.find((e: string) => e.startsWith("obsidian:"));
-      const gmailEntry = payload.capabilityIndex.find((e: string) => e.startsWith("gmail:"));
+      const calendarEntry = payload.capabilityIndex.find((e: string) => e.startsWith("calendar:"));
       expect(obsidianEntry).toBeDefined();
-      expect(gmailEntry).toBeDefined();
+      expect(calendarEntry).toBeDefined();
       expect(obsidianEntry).toContain("search-notes");
       expect(obsidianEntry).toContain("read-note");
-      expect(gmailEntry).toContain("list-emails");
-      expect(gmailEntry).toContain("send-email");
+      expect(calendarEntry).toContain("list-events");
+      expect(calendarEntry).toContain("create-event");
     });
 
     it("activates an integration and returns full operation schemas", async () => {

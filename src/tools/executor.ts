@@ -10,6 +10,10 @@ import {
 export class ToolExecutor {
   constructor(private readonly registry: ToolRegistry) {}
 
+  getRegistry(): ToolRegistry {
+    return this.registry;
+  }
+
   async execute(
     toolCall: ToolCall,
     context: ToolContext,

@@ -23,6 +23,8 @@ import { searchNotes } from "./operations/search-notes";
 import { readNote } from "./operations/read-note";
 import { createNote } from "./operations/create-note";
 import { listNotes } from "./operations/list-notes";
+import { connect as connectOperation } from "./operations/connect";
+import { disconnect as disconnectOperation } from "./operations/disconnect";
 
 // ---------------------------------------------------------------------------
 // Manifest loading
@@ -135,6 +137,16 @@ export class ObsidianIntegration implements Integration {
     operationName: string,
     args: Record<string, unknown>,
   ): Promise<Result<unknown, IntegrationError>> {
+    if (operationName === "connect") {
+      return connectOperation(this.auth, {
+        vault_path: String(args["vault_path"] ?? ""),
+      });
+    }
+
+    if (operationName === "disconnect") {
+      return disconnectOperation(this.auth);
+    }
+
     const vaultPathResult = await this.auth.getVaultPath();
     if (!vaultPathResult.ok) {
       return vaultPathResult;
@@ -144,7 +156,11 @@ export class ObsidianIntegration implements Integration {
     if (!vaultPath) {
       return err(
         new IntegrationError(
-          "Obsidian vault is not connected. Call connect() first.",
+          "Obsidian vault is not connected. To set up Obsidian:\n"
+            + "1. Ask the user for their Obsidian vault path\n"
+            + "2. Use the integration tool with action 'activate' and integration_id 'obsidian' to see available operations\n"
+            + "3. Use action 'execute' with operation 'connect' and args { vault_path: '/absolute/path/to/vault' }\n"
+            + "4. Then retry this operation",
         ),
       );
     }

@@ -17,6 +17,8 @@ import { searchNotes } from "../../../../src/integrations/adapters/obsidian/oper
 import { readNote } from "../../../../src/integrations/adapters/obsidian/operations/read-note";
 import { createNote } from "../../../../src/integrations/adapters/obsidian/operations/create-note";
 import { listNotes } from "../../../../src/integrations/adapters/obsidian/operations/list-notes";
+import { connect } from "../../../../src/integrations/adapters/obsidian/operations/connect";
+import { disconnect } from "../../../../src/integrations/adapters/obsidian/operations/disconnect";
 import type { IntegrationResult } from "../../../../src/integrations/result";
 
 // ---------------------------------------------------------------------------
@@ -94,7 +96,7 @@ describe("ObsidianManifest", () => {
     expect(manifest.category).toBe("productivity");
     expect(manifest.auth.type).toBe("local_path");
     expect(manifest.platforms).toContain("daemon");
-    expect(manifest.operations).toHaveLength(4);
+    expect(manifest.operations).toHaveLength(6);
   });
 
   it("passes validateIntegrationManifest with the raw JSON", async () => {
@@ -104,16 +106,69 @@ describe("ObsidianManifest", () => {
     expect(result.valid).toBe(true);
   });
 
-  it("includes all four operations in the manifest", async () => {
+  it("includes all operations in the manifest", async () => {
     const result = await loadObsidianManifest();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const opNames = result.value.operations.map((op) => op.name);
+    expect(opNames).toContain("connect");
+    expect(opNames).toContain("disconnect");
     expect(opNames).toContain("search-notes");
     expect(opNames).toContain("read-note");
     expect(opNames).toContain("create-note");
     expect(opNames).toContain("list-notes");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connect operation
+// ---------------------------------------------------------------------------
+
+describe("connect", () => {
+  it("connects to a valid vault and returns dual-channel success", async () => {
+    const vault = new InMemoryCredentialVault();
+    const auth = new ObsidianAuth({ vault });
+
+    const result = await connect(auth, { vault_path: testVaultPath });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const data = result.value;
+    const modelData = data.forModel.data as { connected: boolean; path: string };
+    expect(modelData.connected).toBe(true);
+    expect(modelData.path).toBe(testVaultPath);
+    expect(data.forUser.message).toContain(`Connected to Obsidian vault at ${testVaultPath}`);
+
+    const status = auth.getStatus();
+    expect(status.state).toBe(IntegrationState.CONNECTED);
+  });
+
+  it("rejects an empty vault_path", async () => {
+    const vault = new InMemoryCredentialVault();
+    const auth = new ObsidianAuth({ vault });
+
+    const result = await connect(auth, { vault_path: "   " });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("vault_path");
+  });
+});
+
+describe("disconnect", () => {
+  it("disconnects and returns dual-channel success", async () => {
+    const vault = new InMemoryCredentialVault();
+    const auth = new ObsidianAuth({ vault });
+
+    await auth.connect(testVaultPath);
+
+    const result = await disconnect(auth);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const modelData = result.value.forModel.data as { connected: boolean };
+    expect(modelData.connected).toBe(false);
+    expect(result.value.forUser.message).toContain("cleared saved vault credentials");
   });
 });
 
@@ -749,10 +804,9 @@ describe("ObsidianIntegration", () => {
     const integration = new ObsidianIntegration({
       vault,
       manifest: manifestResult.value,
-      config: { settings: { vaultPath: testVaultPath } },
     });
 
-    const connectResult = await integration.connect();
+    const connectResult = await integration.execute("connect", { vault_path: testVaultPath });
     expect(connectResult.ok).toBe(true);
 
     const execResult = await integration.execute("search-notes", { query: "welcome" });
@@ -767,10 +821,9 @@ describe("ObsidianIntegration", () => {
     const integration = new ObsidianIntegration({
       vault,
       manifest: manifestResult.value,
-      config: { settings: { vaultPath: testVaultPath } },
     });
 
-    await integration.connect();
+    await integration.execute("connect", { vault_path: testVaultPath });
 
     const execResult = await integration.execute("read-note", { path: "welcome.md" });
     expect(execResult.ok).toBe(true);
@@ -784,10 +837,9 @@ describe("ObsidianIntegration", () => {
     const integration = new ObsidianIntegration({
       vault,
       manifest: manifestResult.value,
-      config: { settings: { vaultPath: testVaultPath } },
     });
 
-    await integration.connect();
+    await integration.execute("connect", { vault_path: testVaultPath });
 
     const execResult = await integration.execute("create-note", {
       title: "Integration Test",
@@ -804,10 +856,9 @@ describe("ObsidianIntegration", () => {
     const integration = new ObsidianIntegration({
       vault,
       manifest: manifestResult.value,
-      config: { settings: { vaultPath: testVaultPath } },
     });
 
-    await integration.connect();
+    await integration.execute("connect", { vault_path: testVaultPath });
 
     const execResult = await integration.execute("list-notes", {});
     expect(execResult.ok).toBe(true);
@@ -821,10 +872,9 @@ describe("ObsidianIntegration", () => {
     const integration = new ObsidianIntegration({
       vault,
       manifest: manifestResult.value,
-      config: { settings: { vaultPath: testVaultPath } },
     });
 
-    await integration.connect();
+    await integration.execute("connect", { vault_path: testVaultPath });
 
     const execResult = await integration.execute("unknown-op", {});
     expect(execResult.ok).toBe(false);
@@ -865,6 +915,47 @@ describe("ObsidianIntegration", () => {
     expect(connectResult.error.message).toContain("Vault path is required");
   });
 
+  it("connects through execute with the connect operation", async () => {
+    const vault = new InMemoryCredentialVault();
+    const manifestResult = await loadObsidianManifest();
+    if (!manifestResult.ok) return;
+
+    const integration = new ObsidianIntegration({
+      vault,
+      manifest: manifestResult.value,
+    });
+
+    const connectResult = await integration.execute("connect", { vault_path: testVaultPath });
+    expect(connectResult.ok).toBe(true);
+    if (!connectResult.ok) return;
+
+    const data = connectResult.value as IntegrationResult;
+    const modelData = data.forModel.data as { connected: boolean; path: string };
+    expect(modelData.connected).toBe(true);
+    expect(modelData.path).toBe(testVaultPath);
+  });
+
+  it("disconnects through execute with the disconnect operation", async () => {
+    const vault = new InMemoryCredentialVault();
+    const manifestResult = await loadObsidianManifest();
+    if (!manifestResult.ok) return;
+
+    const integration = new ObsidianIntegration({
+      vault,
+      manifest: manifestResult.value,
+    });
+
+    const connectResult = await integration.execute("connect", { vault_path: testVaultPath });
+    expect(connectResult.ok).toBe(true);
+
+    const disconnectResult = await integration.execute("disconnect", {});
+    expect(disconnectResult.ok).toBe(true);
+    if (!disconnectResult.ok) return;
+
+    const modelData = (disconnectResult.value as IntegrationResult).forModel.data as { connected: boolean };
+    expect(modelData.connected).toBe(false);
+  });
+
   it("resolves vault path from authConfig when settings is absent", async () => {
     const vault = new InMemoryCredentialVault();
     const manifestResult = await loadObsidianManifest();
@@ -891,8 +982,10 @@ describe("ObsidianIntegration", () => {
     });
 
     const operations = integration.getOperations();
-    expect(operations).toHaveLength(4);
+    expect(operations).toHaveLength(6);
     const opNames = operations.map((op) => op.name);
+    expect(opNames).toContain("connect");
+    expect(opNames).toContain("disconnect");
     expect(opNames).toContain("search-notes");
     expect(opNames).toContain("read-note");
     expect(opNames).toContain("create-note");
