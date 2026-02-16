@@ -20,4 +20,5 @@ export interface Skill {
   hasScripts: boolean;
   hasIntegration: boolean;
   scriptFiles: string[];
+  categories: string[];
 }

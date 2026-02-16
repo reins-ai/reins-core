@@ -13,5 +13,6 @@ export {
   readSkillMd,
   type ParsedSkill,
 } from "./parser";
+export { normalizeSkillName, SkillRegistry } from "./registry";
 export * from "./types";
 export { validateSkillDirectory, type SkillDirectoryInfo } from "./validator";
