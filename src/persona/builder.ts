@@ -2,6 +2,8 @@ import type { ToolDefinition } from "../types";
 import { parseBoundariesPolicy } from "../environment/boundaries-policy";
 import { parseToolsPolicy } from "../environment/tools-policy";
 import type { EnvironmentDocumentMap } from "../environment/types";
+import { formatSkillIndex } from "../skills/prompt-formatter";
+import type { SkillSummary } from "../skills/types";
 import type { Persona, ToolPermissionSet } from "./persona";
 import { DEFAULT_SECTION_BUDGETS } from "./prompt-budgets";
 import { truncateSection } from "./truncate";
@@ -9,6 +11,7 @@ import { truncateSection } from "./truncate";
 export interface BuildOptions {
   persona: Persona;
   availableTools?: ToolDefinition[];
+  skillSummaries?: SkillSummary[];
   userContext?: string;
   additionalInstructions?: string[];
   currentDate?: Date;
@@ -65,6 +68,11 @@ export class SystemPromptBuilder {
       sections.push(toolsSection);
     }
 
+    const skillIndexSection = this.buildSkillIndexSection(options.skillSummaries);
+    if (skillIndexSection) {
+      sections.push(skillIndexSection);
+    }
+
     const dynamicContextSection = this.buildDynamicContextSection(
       options.environmentDocuments,
       boundariesDocument,
@@ -98,6 +106,11 @@ export class SystemPromptBuilder {
     const toolsSection = this.buildToolsSection(options.persona, options.availableTools ?? []);
     if (toolsSection) {
       sections.push(toolsSection);
+    }
+
+    const skillIndexSection = this.buildSkillIndexSection(options.skillSummaries);
+    if (skillIndexSection) {
+      sections.push(skillIndexSection);
     }
 
     const additionalInstructions = options.additionalInstructions?.filter(
@@ -244,6 +257,15 @@ export class SystemPromptBuilder {
   private buildAdditionalInstructionsSection(additionalInstructions: string[]): string {
     const lines = additionalInstructions.map((instruction) => `- ${instruction}`);
     return ["## Additional Instructions", ...lines].join("\n");
+  }
+
+  private buildSkillIndexSection(skillSummaries?: SkillSummary[]): string | undefined {
+    if (!skillSummaries || skillSummaries.length === 0) {
+      return undefined;
+    }
+
+    const formatted = formatSkillIndex(skillSummaries);
+    return formatted.length > 0 ? formatted : undefined;
   }
 
   private isToolPermitted(toolName: string, permissions: ToolPermissionSet): boolean {

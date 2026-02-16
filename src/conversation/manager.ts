@@ -5,6 +5,7 @@ import { getPresetPromptModifier } from "../onboarding/personality-prompts";
 import type { EnvironmentContextProvider } from "../persona/environment-context";
 import type { PersonaRegistry } from "../persona/registry";
 import { err, ok, type Result } from "../result";
+import type { SkillSummary } from "../skills/types";
 import type {
   ChannelSource,
   ContentBlock,
@@ -102,6 +103,9 @@ export interface ConversationManagerCompactionOptions {
 export interface ConversationManagerEnvironmentOptions {
   personaRegistry?: PersonaRegistry;
   environmentContextProvider?: EnvironmentContextProvider;
+  skillSummaryProvider?: {
+    getSummaries(): SkillSummary[];
+  };
   readUserConfig?: typeof readUserConfig;
 }
 
@@ -579,8 +583,10 @@ export class ConversationManager {
     }
 
     const personalityInstruction = await this.resolvePersonalityInstruction();
+    const skillSummaries = this.environmentOptions?.skillSummaryProvider?.getSummaries();
     const promptResult = await provider.buildEnvironmentPrompt(persona, {
       additionalInstructions: personalityInstruction ? [personalityInstruction] : undefined,
+      skillSummaries,
     });
     if (!promptResult.ok) {
       return persona.systemPrompt;

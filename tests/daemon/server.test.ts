@@ -15,6 +15,7 @@ import { MockProvider } from "../../src/providers/mock";
 import { ProviderRegistry } from "../../src/providers/registry";
 import { ModelRouter } from "../../src/providers/router";
 import { bootstrapInstallRoot } from "../../src/environment/bootstrap";
+import { SkillDaemonService } from "../../src/skills";
 import { ToolExecutor, ToolRegistry } from "../../src/tools";
 import type { DaemonManagedService } from "../../src/daemon/types";
 import type { ConversationAuthCheck } from "../../src/providers/auth-service";
@@ -125,6 +126,35 @@ function createToolExecutorForTests(name: string): ToolExecutor {
 
   registry.register(tool);
   return new ToolExecutor(registry);
+}
+
+async function writeSkillFixture(options: {
+  skillsDir: string;
+  skillName: string;
+  description: string;
+  trustLevel?: "trusted" | "verified" | "untrusted";
+  scriptName?: string;
+  scriptContent?: string;
+}): Promise<void> {
+  const skillDir = join(options.skillsDir, options.skillName);
+  await mkdir(skillDir, { recursive: true });
+
+  const trustLevel = options.trustLevel ?? "untrusted";
+  await writeFile(
+    join(skillDir, "SKILL.md"),
+    `---\nname: ${options.skillName}\ndescription: ${options.description}\ntrustLevel: ${trustLevel}\n---\n\n# ${options.skillName}\n`,
+    "utf8",
+  );
+
+  if (options.scriptName) {
+    const scriptsDir = join(skillDir, "scripts");
+    await mkdir(scriptsDir, { recursive: true });
+    await writeFile(
+      join(scriptsDir, options.scriptName),
+      options.scriptContent ?? "#!/usr/bin/env bash\necho \"skill script ran\"\n",
+      "utf8",
+    );
+  }
 }
 
 function createHarnessTwoTurnProvider(modelId: string): Provider {
@@ -858,6 +888,164 @@ describe("DaemonHttpServer environment routes", () => {
     expect(payload.activeEnvironment).toBe("work");
     expect(payload.resolution.activeEnvironment).toBe("work");
     expect(payload.resolution.fallbackEnvironment).toBe("default");
+  });
+});
+
+describe("DaemonHttpServer skill runtime wiring", () => {
+  const servers: DaemonHttpServer[] = [];
+  const skillServices: SkillDaemonService[] = [];
+  const tempHomes: string[] = [];
+  let testPort = 17250;
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+
+    for (const skillService of skillServices) {
+      await skillService.stop();
+    }
+    skillServices.length = 0;
+
+    for (const tempHome of tempHomes) {
+      await rm(tempHome, { recursive: true, force: true });
+    }
+    tempHomes.length = 0;
+  });
+
+  it("injects skill summaries into the environment system prompt", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "reins-skill-wiring-"));
+    tempHomes.push(tempHome);
+
+    await bootstrapInstallRoot({
+      platform: "linux",
+      homeDirectory: tempHome,
+      env: {},
+    });
+
+    const skillsDir = join(tempHome, ".reins", "skills");
+    await writeSkillFixture({
+      skillsDir,
+      skillName: "git-helper",
+      description: "Assist with git workflows.",
+      trustLevel: "trusted",
+    });
+
+    const skillService = new SkillDaemonService({ skillsDir });
+    skillServices.push(skillService);
+    const skillStart = await skillService.start();
+    expect(skillStart.ok).toBe(true);
+
+    const conversationDbPath = join(tempHome, ".reins", "data", "conversation.db");
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      skillService,
+      environment: {
+        daemonPathOptions: {
+          platform: "linux",
+          homeDirectory: tempHome,
+          env: {},
+        },
+      },
+      conversation: {
+        sqliteStorePath: conversationDbPath,
+      },
+    });
+    servers.push(server);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    const manager = server.getConversationManager();
+    expect(manager).not.toBeNull();
+
+    const prompt = await manager?.getEnvironmentSystemPrompt();
+    expect(prompt).toContain("## Available Skills");
+    expect(prompt).toContain("**git-helper**: Assist with git workflows.");
+  });
+
+  it("registers skill tools and executes scripts through runtime tool executor", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "reins-skill-tools-"));
+    tempHomes.push(tempHome);
+
+    const skillsDir = join(tempHome, "skills");
+    await writeSkillFixture({
+      skillsDir,
+      skillName: "terminal-helper",
+      description: "Run terminal helper scripts.",
+      trustLevel: "trusted",
+      scriptName: "hello.sh",
+      scriptContent: "#!/usr/bin/env bash\necho \"hello from skill\"\n",
+    });
+
+    const skillService = new SkillDaemonService({ skillsDir });
+    skillServices.push(skillService);
+    const skillStart = await skillService.start();
+    expect(skillStart.ok).toBe(true);
+
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      skillService,
+      conversation: {
+        conversationManager: new ConversationManager(new InMemoryConversationStore()),
+      },
+    });
+    servers.push(server);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    const internals = server as unknown as { toolExecutor: ToolExecutor; toolDefinitions: ToolDefinition[] };
+    const toolRegistry = internals.toolExecutor.getRegistry();
+    expect(toolRegistry.has("load_skill")).toBe(true);
+    expect(toolRegistry.has("run_skill_script")).toBe(true);
+    expect(internals.toolDefinitions.some((definition) => definition.name === "load_skill")).toBe(true);
+    expect(internals.toolDefinitions.some((definition) => definition.name === "run_skill_script")).toBe(true);
+
+    const loadResult = await internals.toolExecutor.execute(
+      {
+        id: "load-1",
+        name: "load_skill",
+        arguments: {
+          name: "terminal-helper",
+        },
+      },
+      {
+        conversationId: "conv-1",
+        userId: "user-1",
+      },
+    );
+    expect(loadResult.error).toBeUndefined();
+
+    const scriptResult = await internals.toolExecutor.execute(
+      {
+        id: "script-1",
+        name: "run_skill_script",
+        arguments: {
+          skill: "terminal-helper",
+          script: "hello.sh",
+          timeout: 5_000,
+        },
+      },
+      {
+        conversationId: "conv-1",
+        userId: "user-1",
+      },
+    );
+
+    expect(scriptResult.error).toBeUndefined();
+    expect(scriptResult.result).toMatchObject({
+      exitCode: 0,
+      timedOut: false,
+    });
+
+    const output = scriptResult.result as { stdout: string };
+    expect(output.stdout).toContain("hello from skill");
   });
 });
 

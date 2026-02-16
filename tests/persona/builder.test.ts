@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { SystemPromptBuilder } from "../../src/persona/builder";
 import type { EnvironmentDocumentMap } from "../../src/environment/types";
 import type { Persona } from "../../src/persona/persona";
+import type { SkillSummary } from "../../src/skills/types";
 import type { ToolDefinition } from "../../src/types";
 
 const createPersona = (toolMode: Persona["toolPermissions"]["mode"], tools?: string[]): Persona => ({
@@ -121,6 +122,28 @@ describe("SystemPromptBuilder", () => {
     expect(prompt).toContain("## Additional Instructions");
     expect(prompt).toContain("- Prioritize urgent items");
     expect(prompt).toContain("- Confirm before deleting reminders");
+  });
+
+  it("includes skill index when skill summaries are provided", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+    const skillSummaries: SkillSummary[] = [
+      { name: "code-review", description: "Reviews code for correctness and quality" },
+    ];
+
+    const prompt = builder.build({ persona, skillSummaries });
+
+    expect(prompt).toContain("## Available Skills");
+    expect(prompt).toContain("- **code-review**: Reviews code for correctness and quality");
+  });
+
+  it("omits skill index when skill summaries are empty", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+
+    const prompt = builder.build({ persona, skillSummaries: [] });
+
+    expect(prompt).not.toContain("## Available Skills");
   });
 
   it("combines all sections in the expected order", () => {

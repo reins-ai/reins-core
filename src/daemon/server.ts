@@ -41,6 +41,12 @@ import { PersonaRegistry } from "../persona/registry";
 import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
 import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
+import {
+  SKILL_TOOL_DEFINITION,
+  ScriptRunner,
+  SkillTool,
+  type SkillDaemonService,
+} from "../skills";
 
 import {
   parseListMemoryQueryParams,
@@ -327,6 +333,7 @@ export interface DaemonHttpServerOptions {
   memoryService?: MemoryService;
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
   channelService?: ChannelDaemonService;
+  skillService?: SkillDaemonService;
 }
 
 interface ProviderExecutionContext {
@@ -544,6 +551,34 @@ const ENVIRONMENTS_ROUTE = {
 const WEBSOCKET_ROUTE = "/ws";
 const WS_HEARTBEAT_INTERVAL_MS = 15_000;
 const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
+
+const RUN_SKILL_SCRIPT_TOOL_DEFINITION: ToolDefinition = {
+  name: "run_skill_script",
+  description:
+    "Execute a script from a trusted or verified skill and return stdout/stderr output.",
+  parameters: {
+    type: "object",
+    properties: {
+      skill: {
+        type: "string",
+        description: "Skill name that owns the script.",
+      },
+      script: {
+        type: "string",
+        description: "Script file name from the skill's scripts directory.",
+      },
+      timeout: {
+        type: "number",
+        description: "Optional timeout in milliseconds for script execution.",
+      },
+      env: {
+        type: "object",
+        description: "Optional environment variables passed to the script.",
+      },
+    },
+    required: ["skill", "script"],
+  },
+};
 
 export const DAEMON_CONTRACT_COMPATIBILITY_NOTES = [
   "HTTP compatibility aliases remain active while TUI transport migrates from /messages and /conversations to /api-prefixed paths.",
@@ -801,6 +836,100 @@ function createSystemToolAdapter(options: {
   };
 }
 
+function createSkillScriptTool(scriptRunner: ScriptRunner): Tool {
+  return {
+    definition: RUN_SKILL_SCRIPT_TOOL_DEFINITION,
+    async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+      const skill = readRequiredString(args["skill"]);
+      const script = readRequiredString(args["script"]);
+      if (!skill || !script) {
+        return {
+          callId: "run-skill-script",
+          name: RUN_SKILL_SCRIPT_TOOL_DEFINITION.name,
+          result: null,
+          error: "Missing required arguments: skill and script.",
+        };
+      }
+
+      const timeout = readPositiveNumber(args["timeout"]);
+      if (typeof args["timeout"] !== "undefined" && typeof timeout === "undefined") {
+        return {
+          callId: "run-skill-script",
+          name: RUN_SKILL_SCRIPT_TOOL_DEFINITION.name,
+          result: null,
+          error: "Invalid timeout argument. Expected a positive number.",
+        };
+      }
+
+      const env = readStringRecord(args["env"]);
+      if (typeof args["env"] !== "undefined" && typeof env === "undefined") {
+        return {
+          callId: "run-skill-script",
+          name: RUN_SKILL_SCRIPT_TOOL_DEFINITION.name,
+          result: null,
+          error: "Invalid env argument. Expected an object with string values.",
+        };
+      }
+
+      const result = await scriptRunner.execute(skill, script, {
+        timeout,
+        env,
+        signal: context.abortSignal,
+      });
+
+      if (!result.ok) {
+        return {
+          callId: "run-skill-script",
+          name: RUN_SKILL_SCRIPT_TOOL_DEFINITION.name,
+          result: null,
+          error: result.error.message,
+        };
+      }
+
+      return {
+        callId: "run-skill-script",
+        name: RUN_SKILL_SCRIPT_TOOL_DEFINITION.name,
+        result: result.value,
+      };
+    },
+  };
+}
+
+function readRequiredString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readPositiveNumber(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function readStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  const env: Record<string, string> = {};
+
+  for (const [key, item] of entries) {
+    if (typeof item !== "string") {
+      return undefined;
+    }
+    env[key] = item;
+  }
+
+  return env;
+}
+
 /**
  * Daemon HTTP server as a managed service.
  */
@@ -837,6 +966,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private environmentContextProvider: EnvironmentContextProvider | null = null;
   private personaRegistry: PersonaRegistry | null = null;
   private integrationService: IntegrationService | null = null;
+  private readonly skillService: SkillDaemonService | null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
     registeredCount: 0,
@@ -853,6 +983,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.memoryService = options.memoryService ?? null;
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
     this.providedChannelService = options.channelService ?? null;
+    this.skillService = options.skillService ?? null;
 
     // Create auth services first so credential store is available for tool registration
     const legacyService = options.authService;
@@ -960,6 +1091,8 @@ export class DaemonHttpServer implements DaemonManagedService {
         error: message,
       });
     }
+
+    this.initializeSkillTools();
 
     try {
       const requestHandler = this.machineAuthService
@@ -1435,6 +1568,32 @@ export class DaemonHttpServer implements DaemonManagedService {
       registeredIntegrations: registeredCount,
       activeIntegrations: activeCount,
     });
+  }
+
+  private initializeSkillTools(): void {
+    if (!this.skillService) {
+      return;
+    }
+
+    const registry = this.skillService.getRegistry();
+    const scanner = this.skillService.getScanner();
+    if (!registry || !scanner) {
+      log("warn", "Skill service is not ready; skipping skill tool registration");
+      return;
+    }
+
+    const toolRegistry = this.toolExecutor.getRegistry();
+
+    if (!toolRegistry.has(SKILL_TOOL_DEFINITION.name)) {
+      toolRegistry.register(new SkillTool(registry, scanner));
+    }
+    this.ensureToolDefinition(SKILL_TOOL_DEFINITION);
+
+    if (!toolRegistry.has(RUN_SKILL_SCRIPT_TOOL_DEFINITION.name)) {
+      const scriptRunner = new ScriptRunner(registry);
+      toolRegistry.register(createSkillScriptTool(scriptRunner));
+    }
+    this.ensureToolDefinition(RUN_SKILL_SCRIPT_TOOL_DEFINITION);
   }
 
   private async registerBuiltinIntegrations(integrationService: IntegrationService): Promise<void> {
@@ -3156,6 +3315,11 @@ export class DaemonHttpServer implements DaemonManagedService {
         ? {
             personaRegistry: this.personaRegistry,
             environmentContextProvider: this.environmentContextProvider,
+            skillSummaryProvider: this.skillService
+              ? {
+                  getSummaries: () => this.skillService?.getRegistry()?.getSummaries() ?? [],
+                }
+              : undefined,
           }
         : undefined,
     );
