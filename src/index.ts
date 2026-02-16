@@ -21,6 +21,7 @@ export * from "./environment";
 export * from "./errors";
 export * from "./harness";
 export * from "./heartbeat";
+export * from "./integrations";
 export * from "./memory";
 export * from "./persona";
 export * from "./plugins";
