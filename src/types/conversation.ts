@@ -3,6 +3,13 @@ import type { Result } from "../result";
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
+export type ChannelSourcePlatform = "tui" | "telegram" | "discord";
+
+export interface ChannelSource {
+  platform: ChannelSourcePlatform;
+  channelId: string;
+}
+
 export interface TextBlock {
   type: "text";
   text: string;
@@ -100,6 +107,7 @@ export interface Message {
   id: string;
   role: MessageRole;
   content: string | ContentBlock[];
+  channelSource?: ChannelSource;
   toolCalls?: ToolCall[];
   toolResultId?: string;
   createdAt: Date;

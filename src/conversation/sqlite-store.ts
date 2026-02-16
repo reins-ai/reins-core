@@ -6,7 +6,16 @@ import { Database } from "bun:sqlite";
 
 import { ConversationError } from "../errors";
 import { err, ok } from "../result";
-import { deserializeContent, getTextContent, type ContentBlock, type Conversation, type ConversationSummary, type Message, type MessageRole } from "../types";
+import {
+  deserializeContent,
+  getTextContent,
+  type ChannelSource,
+  type ContentBlock,
+  type Conversation,
+  type ConversationSummary,
+  type Message,
+  type MessageRole,
+} from "../types";
 import type { ConversationStore, ConversationStoreResult, ListOptions } from "./store";
 
 const CURRENT_SCHEMA_VERSION = 2;
@@ -274,6 +283,7 @@ export class SQLiteConversationStore implements ConversationStore {
         const metadata: Record<string, unknown> = {
           ...(messageMetadataResult.value ?? {}),
         };
+        const channelSource = this.parseChannelSource(metadata.channelSource);
 
         if (messageRow.provider) {
           metadata.provider = messageRow.provider;
@@ -301,6 +311,7 @@ export class SQLiteConversationStore implements ConversationStore {
           id: messageRow.id,
           role: messageRow.role,
           content,
+          channelSource,
           toolCalls: toolCallsResult.value,
           createdAt: new Date(messageRow.created_at),
           metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
@@ -504,6 +515,29 @@ export class SQLiteConversationStore implements ConversationStore {
     } catch (cause) {
       return err(this.asConversationError("Failed to parse persisted JSON payload", cause));
     }
+  }
+
+  private parseChannelSource(value: unknown): ChannelSource | undefined {
+    if (!value || typeof value !== "object") {
+      return undefined;
+    }
+
+    const source = value as Record<string, unknown>;
+    const platform = source.platform;
+    const channelId = source.channelId;
+
+    if (
+      (platform === "tui" || platform === "telegram" || platform === "discord")
+      && typeof channelId === "string"
+      && channelId.length > 0
+    ) {
+      return {
+        platform,
+        channelId,
+      };
+    }
+
+    return undefined;
   }
 
   private safeRollback(): void {

@@ -6,6 +6,7 @@ import type { EnvironmentContextProvider } from "../persona/environment-context"
 import type { PersonaRegistry } from "../persona/registry";
 import { err, ok, type Result } from "../result";
 import type {
+  ChannelSource,
   ContentBlock,
   Conversation,
   Message,
@@ -179,8 +180,19 @@ export class ConversationManager {
   ): Promise<Message> {
     const conversation = await this.load(conversationId);
 
+    const channelSource = this.resolveChannelSource(message.channelSource, message.metadata);
+    const metadata = message.metadata
+      ? { ...message.metadata }
+      : {};
+
+    if (channelSource) {
+      metadata.channelSource = channelSource;
+    }
+
     const nextMessage: Message = {
       ...message,
+      channelSource,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
       id: generateId("msg"),
       createdAt: new Date(),
     };
@@ -671,6 +683,41 @@ export class ConversationManager {
     logger.info(
       `Memory write-through complete: extracted=${telemetry.extractedCount} persisted=${telemetry.persistedCount} duplicates=${telemetry.skippedDuplicates}`,
     );
+  }
+
+  private resolveChannelSource(
+    channelSource: ChannelSource | undefined,
+    metadata: Record<string, unknown> | undefined,
+  ): ChannelSource | undefined {
+    if (channelSource) {
+      return channelSource;
+    }
+
+    if (!metadata) {
+      return undefined;
+    }
+
+    const rawSource = metadata.channelSource;
+    if (!rawSource || typeof rawSource !== "object") {
+      return undefined;
+    }
+
+    const sourceRecord = rawSource as Record<string, unknown>;
+    const platform = sourceRecord.platform;
+    const channelId = sourceRecord.channelId;
+
+    if (
+      (platform === "tui" || platform === "telegram" || platform === "discord")
+      && typeof channelId === "string"
+      && channelId.length > 0
+    ) {
+      return {
+        platform,
+        channelId,
+      };
+    }
+
+    return undefined;
   }
 }
 
