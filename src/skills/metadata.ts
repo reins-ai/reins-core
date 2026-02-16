@@ -1,4 +1,4 @@
-import { SkillError } from "./errors";
+import { SkillError, SKILL_ERROR_CODES } from "./errors";
 import type { SkillTrustLevel } from "./types";
 import { type Result, err, ok } from "../result";
 
@@ -66,7 +66,7 @@ function validateOptionalStringArrayField(
   }
 
   if (!isStringArray(value)) {
-    return err(new SkillError(`Metadata field \"${key}\" must be a string array`));
+    return err(new SkillError(`Metadata field \"${key}\" must be a string array`, SKILL_ERROR_CODES.VALIDATION));
   }
 
   return ok(value);
@@ -84,6 +84,7 @@ function validateTrustLevel(value: unknown): Result<SkillTrustLevel | undefined,
   return err(
     new SkillError(
       "Metadata field \"trustLevel\" must be one of: trusted, untrusted, verified",
+      SKILL_ERROR_CODES.VALIDATION,
     ),
   );
 }
@@ -94,17 +95,17 @@ function validateConfig(value: unknown): Result<SkillMetadataConfig | undefined,
   }
 
   if (!isRecord(value)) {
-    return err(new SkillError('Metadata field "config" must be an object'));
+    return err(new SkillError('Metadata field "config" must be an object', SKILL_ERROR_CODES.VALIDATION));
   }
 
   const envVars = value.envVars;
   if (envVars !== undefined && !isStringArray(envVars)) {
-    return err(new SkillError('Metadata field "config.envVars" must be a string array'));
+    return err(new SkillError('Metadata field "config.envVars" must be a string array', SKILL_ERROR_CODES.VALIDATION));
   }
 
   const stateDirs = value.stateDirs;
   if (stateDirs !== undefined && !isStringArray(stateDirs)) {
-    return err(new SkillError('Metadata field "config.stateDirs" must be a string array'));
+    return err(new SkillError('Metadata field "config.stateDirs" must be a string array', SKILL_ERROR_CODES.VALIDATION));
   }
 
   return ok({
@@ -123,7 +124,7 @@ function validateOptionalStringField(
   }
 
   if (typeof value !== "string") {
-    return err(new SkillError(`Metadata field \"${key}\" must be a string`));
+    return err(new SkillError(`Metadata field \"${key}\" must be a string`, SKILL_ERROR_CODES.VALIDATION));
   }
 
   return ok(value);
@@ -132,39 +133,41 @@ function validateOptionalStringField(
 export function validateMetadata(raw: Record<string, unknown>): Result<SkillMetadata, SkillError> {
   const name = raw.name;
   if (typeof name !== "string") {
-    return err(new SkillError('Metadata field "name" is required and must be a string'));
+    return err(new SkillError('Metadata field "name" is required and must be a string', SKILL_ERROR_CODES.VALIDATION));
   }
 
   if (name.length > MAX_NAME_LENGTH) {
     return err(
       new SkillError(
         `Metadata field \"name\" must be at most ${MAX_NAME_LENGTH} characters long`,
+        SKILL_ERROR_CODES.VALIDATION,
       ),
     );
   }
 
   if (!NAME_PATTERN.test(name)) {
-    return err(new SkillError('Metadata field "name" must match /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/'));
+    return err(new SkillError('Metadata field "name" must match /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/', SKILL_ERROR_CODES.VALIDATION));
   }
 
   const lowerName = name.toLowerCase();
   if (RESERVED_NAME_TERMS.some((term) => lowerName.includes(term))) {
-    return err(new SkillError('Metadata field "name" cannot contain reserved terms: anthropic, claude'));
+    return err(new SkillError('Metadata field "name" cannot contain reserved terms: anthropic, claude', SKILL_ERROR_CODES.VALIDATION));
   }
 
   const description = raw.description;
   if (typeof description !== "string") {
-    return err(new SkillError('Metadata field "description" is required and must be a string'));
+    return err(new SkillError('Metadata field "description" is required and must be a string', SKILL_ERROR_CODES.VALIDATION));
   }
 
   if (description.trim().length === 0) {
-    return err(new SkillError('Metadata field "description" must not be empty'));
+    return err(new SkillError('Metadata field "description" must not be empty', SKILL_ERROR_CODES.VALIDATION));
   }
 
   if (description.length > MAX_DESCRIPTION_LENGTH) {
     return err(
       new SkillError(
         `Metadata field \"description\" must be at most ${MAX_DESCRIPTION_LENGTH} characters long`,
+        SKILL_ERROR_CODES.VALIDATION,
       ),
     );
   }

@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, basename, resolve } from "node:path";
 
-import { SkillError } from "./errors";
+import { SkillError, SKILL_ERROR_CODES } from "./errors";
 import { type Result, err, ok } from "../result";
 
 /**
@@ -51,11 +51,11 @@ export async function validateSkillDirectory(
   try {
     dirStat = await stat(absolutePath);
   } catch {
-    return err(new SkillError(`Skill directory does not exist: "${absolutePath}"`));
+    return err(new SkillError(`Skill directory does not exist: "${absolutePath}"`, SKILL_ERROR_CODES.NOT_FOUND));
   }
 
   if (!dirStat.isDirectory()) {
-    return err(new SkillError(`Path is not a directory: "${absolutePath}"`));
+    return err(new SkillError(`Path is not a directory: "${absolutePath}"`, SKILL_ERROR_CODES.VALIDATION));
   }
 
   // 2. Read directory entries
@@ -64,7 +64,7 @@ export async function validateSkillDirectory(
     entries = await readdir(absolutePath, { withFileTypes: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return err(new SkillError(`Failed to read skill directory "${absolutePath}": ${message}`));
+    return err(new SkillError(`Failed to read skill directory "${absolutePath}": ${message}`, SKILL_ERROR_CODES.PERMISSION));
   }
 
   // 3. Check for required SKILL.md
@@ -74,7 +74,7 @@ export async function validateSkillDirectory(
 
   if (!hasSkillMd) {
     return err(
-      new SkillError(`Skill directory is missing required ${SKILL_MD}: "${absolutePath}"`),
+      new SkillError(`Skill directory is missing required ${SKILL_MD}: "${absolutePath}"`, SKILL_ERROR_CODES.NOT_FOUND),
     );
   }
 
@@ -97,7 +97,7 @@ export async function validateSkillDirectory(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return err(
-        new SkillError(`Failed to read scripts directory "${join(absolutePath, SCRIPTS_DIR)}": ${message}`),
+        new SkillError(`Failed to read scripts directory "${join(absolutePath, SCRIPTS_DIR)}": ${message}`, SKILL_ERROR_CODES.PERMISSION),
       );
     }
   }

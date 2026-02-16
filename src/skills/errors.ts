@@ -1,8 +1,10 @@
 import { ReinsError } from "../errors";
 
 export class SkillError extends ReinsError {
-  constructor(message: string, cause?: Error) {
-    super(message, "SKILL_ERROR", cause);
+  constructor(message: string, codeOrCause?: SkillErrorCode | string | Error, cause?: Error) {
+    const resolvedCode = typeof codeOrCause === "string" ? codeOrCause : "SKILL_ERROR";
+    const resolvedCause = codeOrCause instanceof Error ? codeOrCause : cause;
+    super(message, resolvedCode, resolvedCause);
     this.name = "SkillError";
   }
 }

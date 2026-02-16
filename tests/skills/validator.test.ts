@@ -5,7 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 import { validateSkillDirectory } from "../../src/skills/validator";
-import { SkillError } from "../../src/skills/errors";
+import { SkillError, SKILL_ERROR_CODES } from "../../src/skills/errors";
 
 const tempDirs: string[] = [];
 
@@ -177,6 +177,7 @@ describe("validateSkillDirectory", () => {
       if (result.ok) return;
       expect(result.error).toBeInstanceOf(SkillError);
       expect(result.error.message).toContain("does not exist");
+      expect(result.error.code).toBe(SKILL_ERROR_CODES.NOT_FOUND);
     });
 
     it("returns error when path points to a file", async () => {
@@ -190,6 +191,7 @@ describe("validateSkillDirectory", () => {
       if (result.ok) return;
       expect(result.error).toBeInstanceOf(SkillError);
       expect(result.error.message).toContain("not a directory");
+      expect(result.error.code).toBe(SKILL_ERROR_CODES.VALIDATION);
     });
 
     it("returns error when SKILL.md is missing", async () => {
@@ -204,6 +206,7 @@ describe("validateSkillDirectory", () => {
       if (result.ok) return;
       expect(result.error).toBeInstanceOf(SkillError);
       expect(result.error.message).toContain("missing required SKILL.md");
+      expect(result.error.code).toBe(SKILL_ERROR_CODES.NOT_FOUND);
     });
 
     it("returns error for empty directory (no SKILL.md)", async () => {
@@ -217,6 +220,7 @@ describe("validateSkillDirectory", () => {
       if (result.ok) return;
       expect(result.error).toBeInstanceOf(SkillError);
       expect(result.error.message).toContain("missing required SKILL.md");
+      expect(result.error.code).toBe(SKILL_ERROR_CODES.NOT_FOUND);
     });
 
     it("does not treat a SKILL.md directory as valid", async () => {
@@ -232,6 +236,7 @@ describe("validateSkillDirectory", () => {
       if (result.ok) return;
       expect(result.error).toBeInstanceOf(SkillError);
       expect(result.error.message).toContain("missing required SKILL.md");
+      expect(result.error.code).toBe(SKILL_ERROR_CODES.NOT_FOUND);
     });
   });
 

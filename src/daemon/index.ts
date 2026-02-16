@@ -20,6 +20,7 @@ import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
 import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
 import { MemoryCapabilitiesResolver } from "./memory-capabilities";
 import { bootstrapInstallRoot } from "../environment";
+import { SkillDaemonService } from "../skills";
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryService;
@@ -157,11 +158,19 @@ async function main() {
 
   const memoryRuntime = memoryRuntimeResult.value;
   const memoryCapabilitiesResolver = new MemoryCapabilitiesResolver({ dataRoot });
+  const configuredSkillsDir = process.env.REINS_SKILLS_DIR?.trim();
+  const skillsDir = configuredSkillsDir && configuredSkillsDir.length > 0
+    ? configuredSkillsDir
+    : join(dataRoot, "skills");
+  const skillService = new SkillDaemonService({
+    skillsDir,
+  });
   const conversationDbPath = join(dataRoot, "conversation.db");
   const httpServer = new DaemonHttpServer({
     toolDefinitions: getBuiltinToolDefinitions(),
     memoryService: memoryRuntime.memoryService,
     memoryCapabilitiesResolver,
+    skillService,
     conversation: {
       sqliteStorePath: conversationDbPath,
     },
@@ -176,16 +185,22 @@ async function main() {
     capabilitiesResolver: memoryCapabilitiesResolver,
   });
 
-  // Register HTTP server as managed service
-  const httpRegistration = runtime.registerService(httpServer);
-  if (!httpRegistration.ok) {
-    console.error("Failed to register HTTP service:", httpRegistration.error.message);
+  const skillRegistration = runtime.registerService(skillService);
+  if (!skillRegistration.ok) {
+    console.error("Failed to register skill service:", skillRegistration.error.message);
     process.exit(1);
   }
 
   const memoryRegistration = runtime.registerService(memoryService);
   if (!memoryRegistration.ok) {
     console.error("Failed to register memory service:", memoryRegistration.error.message);
+    process.exit(1);
+  }
+
+  // Register HTTP server after dependent managed services.
+  const httpRegistration = runtime.registerService(httpServer);
+  if (!httpRegistration.ok) {
+    console.error("Failed to register HTTP service:", httpRegistration.error.message);
     process.exit(1);
   }
 

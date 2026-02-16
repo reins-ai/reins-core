@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { SkillError } from "./errors";
+import { SkillError, SKILL_ERROR_CODES } from "./errors";
 import { validateMetadata, type SkillMetadata } from "./metadata";
 import { type Result, err, ok } from "../result";
 
@@ -38,19 +38,19 @@ export function parseYamlFrontmatter(yaml: string): Result<Record<string, unknow
 
     // Must be a top-level key (no leading whitespace)
     if (line.startsWith(" ") || line.startsWith("\t")) {
-      return err(new SkillError(`Failed to parse YAML frontmatter: unexpected indentation at line ${i + 1}`));
+      return err(new SkillError(`Failed to parse YAML frontmatter: unexpected indentation at line ${i + 1}`, SKILL_ERROR_CODES.PARSE));
     }
 
     const colonIndex = line.indexOf(":");
     if (colonIndex === -1) {
-      return err(new SkillError(`Failed to parse YAML frontmatter: missing colon at line ${i + 1}`));
+      return err(new SkillError(`Failed to parse YAML frontmatter: missing colon at line ${i + 1}`, SKILL_ERROR_CODES.PARSE));
     }
 
     const key = line.slice(0, colonIndex).trim();
     const rawValue = line.slice(colonIndex + 1).trim();
 
     if (key === "") {
-      return err(new SkillError(`Failed to parse YAML frontmatter: empty key at line ${i + 1}`));
+      return err(new SkillError(`Failed to parse YAML frontmatter: empty key at line ${i + 1}`, SKILL_ERROR_CODES.PARSE));
     }
 
     if (rawValue === "") {
@@ -227,7 +227,7 @@ function parseNestedObject(
  */
 function parseInlineArray(raw: string, lineNumber: number): Result<string[], SkillError> {
   if (!raw.endsWith("]")) {
-    return err(new SkillError(`Failed to parse YAML frontmatter: unclosed inline array at line ${lineNumber}`));
+    return err(new SkillError(`Failed to parse YAML frontmatter: unclosed inline array at line ${lineNumber}`, SKILL_ERROR_CODES.PARSE));
   }
 
   const inner = raw.slice(1, -1).trim();
@@ -296,7 +296,7 @@ function extractFrontmatter(content: string): Result<{ yaml: string; body: strin
   const trimmed = content.trimStart();
 
   if (!trimmed.startsWith(FRONTMATTER_DELIMITER)) {
-    return err(new SkillError("SKILL.md must start with YAML frontmatter delimiters (---)"));
+    return err(new SkillError("SKILL.md must start with YAML frontmatter delimiters (---)", SKILL_ERROR_CODES.PARSE));
   }
 
   // Find the closing delimiter after the opening one
@@ -304,7 +304,7 @@ function extractFrontmatter(content: string): Result<{ yaml: string; body: strin
   const closingIndex = afterOpening.indexOf(`\n${FRONTMATTER_DELIMITER}`);
 
   if (closingIndex === -1) {
-    return err(new SkillError("SKILL.md is missing closing frontmatter delimiter (---)"));
+    return err(new SkillError("SKILL.md is missing closing frontmatter delimiter (---)", SKILL_ERROR_CODES.PARSE));
   }
 
   const yaml = afterOpening.slice(0, closingIndex).trim();
@@ -325,7 +325,7 @@ function extractFrontmatter(content: string): Result<{ yaml: string; body: strin
  */
 export function parseSkillMd(content: string): Result<ParsedSkill, SkillError> {
   if (content.trim() === "") {
-    return err(new SkillError("SKILL.md content is empty"));
+    return err(new SkillError("SKILL.md content is empty", SKILL_ERROR_CODES.PARSE));
   }
 
   const frontmatterResult = extractFrontmatter(content);
@@ -336,7 +336,7 @@ export function parseSkillMd(content: string): Result<ParsedSkill, SkillError> {
   const { yaml, body } = frontmatterResult.value;
 
   if (yaml.trim() === "") {
-    return err(new SkillError("SKILL.md frontmatter is empty"));
+    return err(new SkillError("SKILL.md frontmatter is empty", SKILL_ERROR_CODES.PARSE));
   }
 
   const yamlResult = parseYamlFrontmatter(yaml);
@@ -367,7 +367,7 @@ export async function readSkillMd(filePath: string): Promise<Result<ParsedSkill,
     content = await readFile(filePath, "utf-8");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return err(new SkillError(`Failed to read SKILL.md at "${filePath}": ${message}`));
+    return err(new SkillError(`Failed to read SKILL.md at "${filePath}": ${message}`, SKILL_ERROR_CODES.NOT_FOUND));
   }
 
   return parseSkillMd(content);

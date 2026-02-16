@@ -1,6 +1,7 @@
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
 
 import { getIntegrationStatus, type IntegrationStatus } from "./integration-reader";
+import { SkillMatcher } from "./matcher";
 import type { SkillMetadata } from "./metadata";
 import type { SkillRegistry } from "./registry";
 import type { SkillScanner } from "./scanner";
@@ -30,6 +31,7 @@ type SkillToolResult = {
 
 export class SkillTool implements Tool {
   readonly definition: ToolDefinition = SKILL_TOOL_DEFINITION;
+  private readonly matcher = new SkillMatcher();
 
   constructor(
     private readonly registry: SkillRegistry,
@@ -44,7 +46,7 @@ export class SkillTool implements Tool {
       return this.errorResult(callId, "Missing or invalid 'name' argument.");
     }
 
-    const skill = this.registry.get(name);
+    const skill = this.resolveSkill(name);
     if (!skill) {
       return this.errorResult(callId, `Skill not found: ${name}`);
     }
@@ -112,5 +114,19 @@ export class SkillTool implements Tool {
     }
 
     return "Skill tool execution failed.";
+  }
+
+  private resolveSkill(name: string) {
+    const exactMatch = this.registry.get(name);
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    const matches = this.matcher.match(name, this.registry.listEnabled());
+    if (matches.length === 1) {
+      return matches[0]?.skill;
+    }
+
+    return undefined;
   }
 }

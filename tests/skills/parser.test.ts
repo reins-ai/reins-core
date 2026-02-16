@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 
 import { parseSkillMd, parseYamlFrontmatter, readSkillMd } from "../../src/skills/parser";
-import { SkillError } from "../../src/skills/errors";
+import { SkillError, SKILL_ERROR_CODES } from "../../src/skills/errors";
 
 const VALID_FULL_SKILL = `---
 name: email-automation
@@ -184,6 +184,7 @@ describe("parseYamlFrontmatter", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("missing colon");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns error for unexpected indentation", () => {
@@ -195,6 +196,7 @@ describe("parseYamlFrontmatter", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("unexpected indentation");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns error for unclosed inline array", () => {
@@ -206,6 +208,7 @@ describe("parseYamlFrontmatter", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("unclosed inline array");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("handles mixed scalar and array fields", () => {
@@ -311,6 +314,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("empty");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns error when content is only whitespace", () => {
@@ -321,6 +325,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("empty");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns error when opening frontmatter delimiter is missing", () => {
@@ -331,6 +336,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("must start with YAML frontmatter delimiters");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns error when closing frontmatter delimiter is missing", () => {
@@ -341,6 +347,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("missing closing frontmatter delimiter");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns error when frontmatter is empty between delimiters", () => {
@@ -351,6 +358,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("frontmatter is empty");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns error when frontmatter has only whitespace between delimiters", () => {
@@ -361,6 +369,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("frontmatter is empty");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("returns validation error when required name field is missing", () => {
@@ -372,6 +381,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("name");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.VALIDATION);
   });
 
   it("returns validation error when required description field is missing", () => {
@@ -383,6 +393,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("description");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.VALIDATION);
   });
 
   it("returns validation error for invalid name format", () => {
@@ -394,6 +405,7 @@ describe("parseSkillMd", () => {
 
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("name");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.VALIDATION);
   });
 
   it("returns error for invalid YAML in frontmatter", () => {
@@ -404,6 +416,7 @@ describe("parseSkillMd", () => {
     if (result.ok) return;
 
     expect(result.error).toBeInstanceOf(SkillError);
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
   });
 
   it("stores the raw content in the result", () => {
@@ -488,6 +501,7 @@ describe("readSkillMd", () => {
     expect(result.error).toBeInstanceOf(SkillError);
     expect(result.error.message).toContain("Failed to read SKILL.md");
     expect(result.error.message).toContain("/nonexistent/path/SKILL.md");
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.NOT_FOUND);
   });
 
   it("returns parse error for invalid file content", async () => {
@@ -503,6 +517,7 @@ describe("readSkillMd", () => {
 
       expect(result.error).toBeInstanceOf(SkillError);
       expect(result.error.message).toContain("must start with YAML frontmatter delimiters");
+      expect(result.error.code).toBe(SKILL_ERROR_CODES.PARSE);
     } finally {
       await teardown();
     }
@@ -521,6 +536,7 @@ describe("readSkillMd", () => {
 
       expect(result.error).toBeInstanceOf(SkillError);
       expect(result.error.message).toContain("description");
+      expect(result.error.code).toBe(SKILL_ERROR_CODES.VALIDATION);
     } finally {
       await teardown();
     }

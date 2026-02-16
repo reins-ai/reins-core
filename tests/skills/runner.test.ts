@@ -1,11 +1,16 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { SKILL_ERROR_CODES } from "../../src/skills/errors";
+import {
+  AutoDenyPermissionChecker,
+  AutoGrantPermissionChecker,
+} from "../../src/skills/permissions";
 import { SkillRegistry } from "../../src/skills/registry";
 import { ScriptRunner } from "../../src/skills/runner";
-import type { Skill } from "../../src/skills/types";
+import type { Skill, SkillTrustLevel } from "../../src/skills/types";
 
 const tempDirs: string[] = [];
 
@@ -21,7 +26,10 @@ afterAll(async () => {
   }
 });
 
-async function createSkillWithScripts(scripts: Record<string, string>): Promise<Skill> {
+async function createSkillWithScripts(
+  scripts: Record<string, string>,
+  trustLevel: SkillTrustLevel = "trusted",
+): Promise<Skill> {
   const skillDir = await createTempDir();
   const scriptsDir = join(skillDir, "scripts");
   await mkdir(scriptsDir);
@@ -37,7 +45,7 @@ async function createSkillWithScripts(scripts: Record<string, string>): Promise<
     config: {
       name: "script-skill",
       enabled: true,
-      trustLevel: "trusted",
+      trustLevel,
       path: skillDir,
     },
     summary: {
@@ -52,10 +60,13 @@ async function createSkillWithScripts(scripts: Record<string, string>): Promise<
   };
 }
 
-function createRunner(skill: Skill): ScriptRunner {
+function createRunner(
+  skill: Skill,
+  options?: ConstructorParameters<typeof ScriptRunner>[1],
+): ScriptRunner {
   const registry = new SkillRegistry();
   registry.register(skill);
-  return new ScriptRunner(registry);
+  return new ScriptRunner(registry, options);
 }
 
 describe("ScriptRunner", () => {
@@ -174,5 +185,79 @@ describe("ScriptRunner", () => {
     if (!result.ok) return;
     expect(result.value.durationMs).toBeGreaterThanOrEqual(0);
     expect(result.value.durationMs).toBeLessThan(5_000);
+  });
+
+  it("denies execution when permission checker denies", async () => {
+    const markerPath = join(await createTempDir(), "denied-marker.txt");
+    const skill = await createSkillWithScripts(
+      {
+        "guarded.sh": `#!/bin/bash\necho "blocked" > "${markerPath}"\n`,
+      },
+      "untrusted",
+    );
+    const runner = createRunner(skill, {
+      permissionChecker: new AutoDenyPermissionChecker(),
+    });
+
+    const result = await runner.execute("script-skill", "guarded.sh");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PERMISSION);
+    expect(result.error.message).toContain("Permission denied");
+    await expect(access(markerPath)).rejects.toThrow();
+  });
+
+  it("executes when permission checker grants", async () => {
+    const markerPath = join(await createTempDir(), "granted-marker.txt");
+    const skill = await createSkillWithScripts(
+      {
+        "allowed.sh": `#!/bin/bash\necho "ran" > "${markerPath}"\n`,
+      },
+      "untrusted",
+    );
+    const runner = createRunner(skill, {
+      permissionChecker: new AutoGrantPermissionChecker(),
+    });
+
+    const result = await runner.execute("script-skill", "allowed.sh");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    await expect(access(markerPath)).resolves.toBeNull();
+  });
+
+  it("auto-grants trusted skills through permission policy", async () => {
+    const markerPath = join(await createTempDir(), "trusted-marker.txt");
+    const skill = await createSkillWithScripts({
+      "trusted.sh": `#!/bin/bash\necho "trusted" > "${markerPath}"\n`,
+    });
+    const runner = createRunner(skill, {
+      permissionChecker: new AutoDenyPermissionChecker(),
+    });
+
+    const result = await runner.execute("script-skill", "trusted.sh");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    await expect(access(markerPath)).resolves.toBeNull();
+  });
+
+  it("denies by default when no permission checker is provided", async () => {
+    const markerPath = join(await createTempDir(), "default-denied-marker.txt");
+    const skill = await createSkillWithScripts(
+      {
+        "default-guarded.sh": `#!/bin/bash\necho "blocked" > "${markerPath}"\n`,
+      },
+      "untrusted",
+    );
+    const runner = createRunner(skill);
+
+    const result = await runner.execute("script-skill", "default-guarded.sh");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe(SKILL_ERROR_CODES.PERMISSION);
+    await expect(access(markerPath)).rejects.toThrow();
   });
 });

@@ -14,6 +14,8 @@ import { SystemPromptBuilder } from "../../src/persona/builder";
 import { EnvironmentContextProvider } from "../../src/persona/environment-context";
 import { PersonaRegistry } from "../../src/persona/registry";
 import { LocalFileMemoryStore } from "../../src/memory/local-store";
+import { SkillRegistry } from "../../src/skills/registry";
+import type { Skill } from "../../src/skills/types";
 import type { ContentBlock, ToolUseBlock, ToolResultBlock, TextBlock } from "../../src/types";
 import type { OverlayResolution } from "../../src/environment/types";
 
@@ -124,6 +126,26 @@ function createOverlayResolution(personality: string, user: string): OverlayReso
   };
 }
 
+function createTestSkill(name: string, enabled: boolean, description: string): Skill {
+  return {
+    config: {
+      name,
+      enabled,
+      trustLevel: "untrusted",
+      path: `/home/user/.reins/skills/${name}`,
+    },
+    summary: {
+      name,
+      description,
+    },
+    hasScripts: false,
+    hasIntegration: false,
+    scriptFiles: [],
+    categories: [],
+    triggers: [],
+  };
+}
+
 describe("ConversationManager", () => {
   test("creates conversations with system prompt and options", async () => {
     const manager = new ConversationManager(new InMemoryConversationStore());
@@ -226,6 +248,62 @@ describe("ConversationManager", () => {
     expect(conversation.messages).toHaveLength(1);
     expect(conversation.messages[0]?.content).toContain("## Additional Instructions");
     expect(conversation.messages[0]?.content).toContain("Keep responses brief and to the point");
+  });
+
+  test("injects only enabled skill summaries into environment system prompt", async () => {
+    const personaRegistry = new PersonaRegistry();
+    const provider = new EnvironmentContextProvider(
+      {
+        getResolvedDocuments: async () =>
+          ok(
+            createOverlayResolution(
+              "You are an environment-specific assistant.",
+              "User profile from USER.md",
+            ),
+          ),
+      },
+      new SystemPromptBuilder(),
+    );
+
+    const skillRegistry = new SkillRegistry();
+    skillRegistry.register(
+      createTestSkill(
+        "code-review",
+        true,
+        "Reviews code for correctness and quality",
+      ),
+    );
+    skillRegistry.register(
+      createTestSkill(
+        "disabled-helper",
+        false,
+        "Should not appear in prompt",
+      ),
+    );
+
+    const manager = new ConversationManager(
+      new InMemoryConversationStore(),
+      undefined,
+      undefined,
+      {
+        personaRegistry,
+        environmentContextProvider: provider,
+        skillSummaryProvider: skillRegistry,
+      },
+    );
+
+    const conversation = await manager.create({
+      title: "Skill Session",
+      model: "gpt-4o-mini",
+      provider: "openai",
+    });
+
+    const systemPrompt = conversation.messages[0]?.content;
+    expect(systemPrompt).toContain("## Available Skills");
+    expect(systemPrompt).toContain(
+      "- **code-review**: Reviews code for correctness and quality",
+    );
+    expect(systemPrompt).not.toContain("disabled-helper");
   });
 
   test("preserves explicit system prompt when provided", async () => {

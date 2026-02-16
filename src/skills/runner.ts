@@ -2,7 +2,12 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 import { err, ok, type Result } from "../result";
-import { SkillError } from "./errors";
+import { SkillError, SKILL_ERROR_CODES } from "./errors";
+import {
+  AutoDenyPermissionChecker,
+  SkillPermissionPolicy,
+  type SkillPermissionChecker,
+} from "./permissions";
 import type { SkillRegistry } from "./registry";
 
 export interface ScriptResult {
@@ -22,15 +27,20 @@ export interface ScriptRunnerOptions {
 
 interface ScriptRunnerConfig {
   defaultTimeout?: number;
+  permissionChecker?: SkillPermissionChecker;
 }
 
 export class ScriptRunner {
   private readonly registry: SkillRegistry;
   private readonly defaultTimeout: number;
+  private readonly permissionPolicy: SkillPermissionPolicy;
 
   constructor(registry: SkillRegistry, options?: ScriptRunnerConfig) {
     this.registry = registry;
     this.defaultTimeout = options?.defaultTimeout ?? 30_000;
+    this.permissionPolicy = new SkillPermissionPolicy(
+      options?.permissionChecker ?? new AutoDenyPermissionChecker(),
+    );
   }
 
   async execute(
@@ -45,6 +55,15 @@ export class ScriptRunner {
 
     if (!skill.hasScripts || !skill.scriptFiles.includes(scriptName)) {
       return err(new SkillError(`Script "${scriptName}" not found in skill "${skillName}"`));
+    }
+
+    const permissionResult = await this.permissionPolicy.checkPermission(skill, scriptName);
+    if (permissionResult === "denied") {
+      const permissionError = new SkillError(
+        `Permission denied to execute script "${scriptName}" for skill "${skillName}"`,
+      );
+      permissionError.code = SKILL_ERROR_CODES.PERMISSION;
+      return err(permissionError);
     }
 
     const timeoutMs = options?.timeout ?? this.defaultTimeout;

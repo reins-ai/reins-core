@@ -18,9 +18,21 @@ describe("SkillError", () => {
     expect(error.name).toBe("SkillError");
   });
 
-  it("has correct code property", () => {
+  it("has correct default code property", () => {
     const error = new SkillError("test error");
     expect(error.code).toBe("SKILL_ERROR");
+  });
+
+  it("accepts a specific error code", () => {
+    const error = new SkillError("parse failed", SKILL_ERROR_CODES.PARSE);
+    expect(error.code).toBe("SKILL_PARSE_ERROR");
+  });
+
+  it("accepts a specific error code with cause", () => {
+    const cause = new Error("underlying");
+    const error = new SkillError("validation failed", SKILL_ERROR_CODES.VALIDATION, cause);
+    expect(error.code).toBe("SKILL_VALIDATION_ERROR");
+    expect(error.cause).toBe(cause);
   });
 
   it("stores the error message", () => {
