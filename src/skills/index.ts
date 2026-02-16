@@ -21,3 +21,8 @@ export {
 } from "./scanner";
 export * from "./types";
 export { validateSkillDirectory, type SkillDirectoryInfo } from "./validator";
+export {
+  SkillWatcher,
+  type SkillWatcherCallbacks,
+  type SkillWatcherOptions,
+} from "./watcher";
