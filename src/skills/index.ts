@@ -14,3 +14,4 @@ export {
   type ParsedSkill,
 } from "./parser";
 export * from "./types";
+export { validateSkillDirectory, type SkillDirectoryInfo } from "./validator";
