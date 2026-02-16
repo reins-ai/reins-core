@@ -1,3 +1,4 @@
+export * from "./cache";
 export * from "./errors";
 export * from "./registry";
 export * from "./reins-source";
