@@ -24,7 +24,8 @@
     "./types": "./src/types/index.ts",
     "./utils": "./src/utils/index.ts",
     "./voice": "./src/voice/index.ts",
-    "./onboarding": "./src/onboarding/index.ts"
+    "./onboarding": "./src/onboarding/index.ts",
+    "./skills": "./src/skills/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
