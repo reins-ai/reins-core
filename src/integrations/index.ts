@@ -70,3 +70,21 @@ export {
   type DetectedIntent,
   type FallbackInjection,
 } from "./intent-router";
+
+// Integration state machine
+export {
+  IntegrationStateMachine,
+  type StateChangeListener,
+} from "./state-machine";
+
+export {
+  InMemoryCredentialVault,
+  IntegrationCredentialVault,
+  type ApiKeyCredential,
+  type CredentialStatus,
+  type CredentialVault,
+  type IntegrationCredential,
+  type IntegrationCredentialVaultOptions,
+  type LocalPathCredential,
+  type OAuthCredential,
+} from "./credentials";
