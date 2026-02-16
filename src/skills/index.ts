@@ -1,5 +1,12 @@
 export * from "./errors";
 export {
+  readIntegrationMd,
+  getIntegrationStatus,
+  type IntegrationGuide,
+  type IntegrationSection,
+  type IntegrationStatus,
+} from "./integration-reader";
+export {
   validateMetadata,
   MAX_NAME_LENGTH,
   MAX_DESCRIPTION_LENGTH,
@@ -14,6 +21,11 @@ export {
   type ParsedSkill,
 } from "./parser";
 export { normalizeSkillName, SkillRegistry } from "./registry";
+export {
+  ScriptRunner,
+  type ScriptResult,
+  type ScriptRunnerOptions,
+} from "./runner";
 export {
   SkillScanner,
   type DiscoveryReport,
