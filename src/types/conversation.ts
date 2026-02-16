@@ -1,5 +1,6 @@
 import type { ToolCall } from "./tool";
 import type { Result } from "../result";
+import type { ThinkingLevel } from "./provider";
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
@@ -139,7 +140,6 @@ export interface ConversationSummary {
 }
 
 export type DaemonMessageRole = Extract<MessageRole, "system" | "user" | "assistant">;
-
 export interface DaemonMessageRecordDto {
   id: string;
   role: DaemonMessageRole;
@@ -180,6 +180,7 @@ export interface DaemonPostMessageRequestDto {
   role?: DaemonMessageRole;
   model?: string;
   provider?: string;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface DaemonPostMessageResponseDto {
@@ -196,7 +197,12 @@ export interface DaemonStreamSubscribeRequestDto {
   assistantMessageId: string;
 }
 
-export type DaemonStreamLifecycleEventType = "message_start" | "content_chunk" | "message_complete" | "error";
+export type DaemonStreamLifecycleEventType =
+  | "message_start"
+  | "thinking_chunk"
+  | "content_chunk"
+  | "message_complete"
+  | "error";
 export type DaemonStreamLegacyEventType = "start" | "delta" | "complete" | "error";
 
 export type DaemonStreamEventType = DaemonStreamLifecycleEventType | DaemonStreamLegacyEventType;

@@ -1,5 +1,6 @@
 import type { ContentBlock, Message, Provider, ToolCall, ToolContext, ToolResult, TokenUsage } from "../types";
 import type { ToolDefinition } from "../types";
+import type { ThinkingLevel } from "../types/provider";
 import type { TypedEventBus } from "./event-bus";
 import type { HarnessEventMap } from "./events";
 import { DoomLoopGuard } from "./doom-loop-guard";
@@ -64,6 +65,7 @@ export interface ProviderLoopOptions {
   provider: Provider;
   model: string;
   messages: Message[];
+  thinkingLevel?: ThinkingLevel;
   toolExecutor: ToolExecutor;
   toolContext: ToolContext;
   tools?: ToolDefinition[];
@@ -73,6 +75,7 @@ export interface ProviderLoopOptions {
 
 export type LoopEvent =
   | { type: "token"; content: string }
+  | { type: "thinking"; content: string }
   | { type: "tool_call_start"; toolCall: ToolCall }
   | { type: "tool_call_end"; result: ToolResult }
   | {
@@ -237,6 +240,7 @@ export class AgentLoop {
         messages,
         tools: options.tools,
         systemPrompt: options.systemPrompt,
+        thinkingLevel: options.thinkingLevel,
         signal: loopSignal,
       };
 
@@ -254,6 +258,14 @@ export class AgentLoop {
           textOutput += event.content;
           yield {
             type: "token",
+            content: event.content,
+          };
+          continue;
+        }
+
+        if (event.type === "thinking") {
+          yield {
+            type: "thinking",
             content: event.content,
           };
           continue;

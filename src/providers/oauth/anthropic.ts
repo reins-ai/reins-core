@@ -72,6 +72,14 @@ interface AnthropicThinking {
   budget_tokens: number;
 }
 
+function debugThinking(event: string, details: Record<string, unknown>): void {
+  if (process.env.REINS_DEBUG_THINKING !== "1") {
+    return;
+  }
+
+  console.log("[thinking-debug]", event, details);
+}
+
 interface PendingOAuthSession {
   state: string;
   codeVerifier: string;
@@ -255,8 +263,21 @@ function resolveThinking(request: ChatRequest, maxTokens: number): AnthropicThin
     || budgetTokens < MIN_THINKING_BUDGET_TOKENS
     || budgetTokens >= maxTokens
   ) {
+    debugThinking("resolveThinking.invalid", {
+      model: request.model,
+      thinkingLevel,
+      maxTokens,
+      budgetTokens,
+    });
     return undefined;
   }
+
+  debugThinking("resolveThinking", {
+    model: request.model,
+    thinkingLevel,
+    maxTokens,
+    budgetTokens,
+  });
 
   return {
     type: "enabled",
@@ -580,21 +601,33 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
     const mappedTools = mapTools(request.tools);
     const url = transformUrl(`${this.baseUrl}/v1/messages`);
+    const body = {
+      model: apiModel,
+      system: transformSystemPrompt(request.systemPrompt),
+      messages: prefixMessageToolNames(mapMessages(request)),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      ...(thinking ? { thinking } : {}),
+      ...(prefixToolDefinitions(mappedTools)
+        ? { tools: prefixToolDefinitions(mappedTools) }
+        : {}),
+    };
+
+    debugThinking("oauth.chat.request", {
+      model: apiModel,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-beta": claudeCodeHeaders(token)["anthropic-beta"],
+      },
+      body,
+    });
 
     const response = await fetch(url, {
       method: "POST",
       headers: claudeCodeHeaders(token),
-      body: JSON.stringify({
-        model: apiModel,
-        system: transformSystemPrompt(request.systemPrompt),
-        messages: prefixMessageToolNames(mapMessages(request)),
-        max_tokens: maxTokens,
-        temperature: request.temperature,
-        ...(thinking ? { thinking } : {}),
-        ...(prefixToolDefinitions(mappedTools)
-          ? { tools: prefixToolDefinitions(mappedTools) }
-          : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -635,22 +668,34 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
     const mappedTools = mapTools(request.tools);
     const url = transformUrl(`${this.baseUrl}/v1/messages`);
+    const body = {
+      model: apiModel,
+      system: transformSystemPrompt(request.systemPrompt),
+      messages: prefixMessageToolNames(mapMessages(request)),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      stream: true,
+      ...(thinking ? { thinking } : {}),
+      ...(prefixToolDefinitions(mappedTools)
+        ? { tools: prefixToolDefinitions(mappedTools) }
+        : {}),
+    };
+
+    debugThinking("oauth.stream.request", {
+      model: apiModel,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-beta": claudeCodeHeaders(token)["anthropic-beta"],
+      },
+      body,
+    });
 
     const response = await fetch(url, {
       method: "POST",
       headers: claudeCodeHeaders(token),
-      body: JSON.stringify({
-        model: apiModel,
-        system: transformSystemPrompt(request.systemPrompt),
-        messages: prefixMessageToolNames(mapMessages(request)),
-        max_tokens: maxTokens,
-        temperature: request.temperature,
-        stream: true,
-        ...(thinking ? { thinking } : {}),
-        ...(prefixToolDefinitions(mappedTools)
-          ? { tools: prefixToolDefinitions(mappedTools) }
-          : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok || !response.body) {

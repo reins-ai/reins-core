@@ -106,7 +106,7 @@ interface ActiveExecution {
 /**
  * Stream lifecycle event emitted over WebSocket during provider generation.
  * Events follow a deterministic order per assistant message:
- *   message_start → content_chunk* → message_complete | error
+ *   message_start → (thinking_chunk | content_chunk)* → message_complete | error
  *
  * Each event carries a monotonic sequence number for ordering guarantees.
  */
@@ -120,6 +120,14 @@ export type StreamLifecycleEvent =
     }
   | {
       type: "content_chunk";
+      conversationId: string;
+      messageId: string;
+      delta: string;
+      sequence: number;
+      timestamp: string;
+    }
+  | {
+      type: "thinking_chunk";
       conversationId: string;
       messageId: string;
       delta: string;
@@ -324,6 +332,7 @@ interface ProviderExecutionContext {
   assistantMessageId: string;
   requestedProvider?: string;
   requestedModel?: string;
+  thinkingLevel?: "none" | "low" | "medium" | "high";
 }
 
 function isProviderAuthService(value: unknown): value is ProviderAuthService {
@@ -411,6 +420,14 @@ type DaemonStreamLifecycleEnvelope = {
       }
     | {
         type: "content_chunk";
+        conversationId: string;
+        messageId: string;
+        chunk: string;
+        sequence: number;
+        timestamp: string;
+      }
+    | {
+        type: "thinking_chunk";
         conversationId: string;
         messageId: string;
         chunk: string;
@@ -615,6 +632,16 @@ export function isPostMessagePayload(payload: unknown): payload is DaemonPostMes
     if (!allowedRoles.has(request.role)) {
       return false;
     }
+  }
+
+  if (
+    typeof request.thinkingLevel !== "undefined"
+    && request.thinkingLevel !== "none"
+    && request.thinkingLevel !== "low"
+    && request.thinkingLevel !== "medium"
+    && request.thinkingLevel !== "high"
+  ) {
+    return false;
   }
 
   return true;
@@ -1858,6 +1885,7 @@ export class DaemonHttpServer implements DaemonManagedService {
         assistantMessageId: result.assistantMessageId,
         requestedProvider: payload.provider,
         requestedModel: payload.model,
+        thinkingLevel: payload.thinkingLevel,
       });
 
       return Response.json(response, { status: 201, headers: corsHeaders });
@@ -1971,6 +1999,16 @@ export class DaemonHttpServer implements DaemonManagedService {
         context.assistantMessageId,
         runtimeSystemPrompt,
       );
+
+      if (context.thinkingLevel && context.thinkingLevel !== "none") {
+        log("info", "Thinking requested for provider generation", {
+          conversationId: context.conversationId,
+          assistantMessageId: context.assistantMessageId,
+          thinkingLevel: context.thinkingLevel,
+          provider: routeResult.value.provider.config.id,
+          model: routeResult.value.model.id,
+        });
+      }
 
       const generation = await this.generateAndStream({
         context,
@@ -2131,6 +2169,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       model: options.modelId,
       messages: options.messages,
       systemPrompt: options.systemPrompt,
+      thinkingLevel: options.context.thinkingLevel,
       tools: this.toolDefinitions,
       toolExecutor: this.toolExecutor,
       toolContext: {
@@ -2159,6 +2198,21 @@ export class DaemonHttpServer implements DaemonManagedService {
           type: "stream-event",
           event: {
             type: "content_chunk",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            chunk: event.content,
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        continue;
+      }
+
+      if (event.type === "thinking") {
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "thinking_chunk",
             conversationId: options.context.conversationId,
             messageId: options.context.assistantMessageId,
             chunk: event.content,
@@ -2264,6 +2318,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       model: options.modelId,
       messages: options.messages,
       systemPrompt: options.systemPrompt,
+      thinkingLevel: options.context.thinkingLevel,
       tools: this.toolDefinitions.length > 0 ? this.toolDefinitions : undefined,
       signal: options.abortSignal,
     })) {
@@ -2287,6 +2342,21 @@ export class DaemonHttpServer implements DaemonManagedService {
           type: "stream-event",
           event: {
             type: "content_chunk",
+            conversationId: options.context.conversationId,
+            messageId: options.context.assistantMessageId,
+            chunk: event.content ?? "",
+            sequence: options.nextSequence(),
+            timestamp: new Date().toISOString(),
+          },
+        });
+        continue;
+      }
+
+      if (event.type === "thinking") {
+        this.publishStreamLifecycleEvent({
+          type: "stream-event",
+          event: {
+            type: "thinking_chunk",
             conversationId: options.context.conversationId,
             messageId: options.context.assistantMessageId,
             chunk: event.content ?? "",
@@ -2514,7 +2584,7 @@ export class DaemonHttpServer implements DaemonManagedService {
             sequence: envelope.event.sequence,
             timestamp: envelope.event.timestamp,
           }
-        : envelope.event.type === "content_chunk"
+      : envelope.event.type === "content_chunk"
           ? {
               type: "content_chunk",
               conversationId: envelope.event.conversationId,
@@ -2523,6 +2593,15 @@ export class DaemonHttpServer implements DaemonManagedService {
               sequence: envelope.event.sequence,
               timestamp: envelope.event.timestamp,
             }
+          : envelope.event.type === "thinking_chunk"
+            ? {
+                type: "thinking_chunk",
+                conversationId: envelope.event.conversationId,
+                messageId: envelope.event.messageId,
+                delta: envelope.event.chunk,
+                sequence: envelope.event.sequence,
+                timestamp: envelope.event.timestamp,
+              }
           : envelope.event.type === "tool_call_start"
             ? {
                 type: "tool_call_start",

@@ -40,6 +40,14 @@ interface AnthropicThinking {
   budget_tokens: number;
 }
 
+function debugThinking(event: string, details: Record<string, unknown>): void {
+  if (process.env.REINS_DEBUG_THINKING !== "1") {
+    return;
+  }
+
+  console.log("[thinking-debug]", event, details);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -184,8 +192,21 @@ function resolveThinking(request: ChatRequest, maxTokens: number): AnthropicThin
     || budgetTokens < MIN_THINKING_BUDGET_TOKENS
     || budgetTokens >= maxTokens
   ) {
+    debugThinking("resolveThinking.invalid", {
+      model: request.model,
+      thinkingLevel,
+      maxTokens,
+      budgetTokens,
+    });
     return undefined;
   }
+
+  debugThinking("resolveThinking", {
+    model: request.model,
+    thinkingLevel,
+    maxTokens,
+    budgetTokens,
+  });
 
   return {
     type: "enabled",
@@ -238,18 +259,31 @@ export class BYOKAnthropicProvider implements Provider {
       "anthropic-version": "2023-06-01",
       ...(thinking ? { "anthropic-beta": ANTHROPIC_THINKING_BETA } : {}),
     };
+    const body = {
+      model: request.model,
+      system: request.systemPrompt,
+      messages: mapMessages(request),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      ...(thinking ? { thinking } : {}),
+    };
+
+    debugThinking("chat.request", {
+      model: request.model,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-version": headers["anthropic-version"],
+        "anthropic-beta": headers["anthropic-beta"],
+      },
+      body,
+    });
 
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: request.model,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: maxTokens,
-        temperature: request.temperature,
-        ...(thinking ? { thinking } : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -282,19 +316,32 @@ export class BYOKAnthropicProvider implements Provider {
       "anthropic-version": "2023-06-01",
       ...(thinking ? { "anthropic-beta": ANTHROPIC_THINKING_BETA } : {}),
     };
+    const body = {
+      model: request.model,
+      system: request.systemPrompt,
+      messages: mapMessages(request),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      stream: true,
+      ...(thinking ? { thinking } : {}),
+    };
+
+    debugThinking("stream.request", {
+      model: request.model,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-version": headers["anthropic-version"],
+        "anthropic-beta": headers["anthropic-beta"],
+      },
+      body,
+    });
 
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: request.model,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: maxTokens,
-        temperature: request.temperature,
-        stream: true,
-        ...(thinking ? { thinking } : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok || !response.body) {
