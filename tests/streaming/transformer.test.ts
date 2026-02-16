@@ -88,6 +88,88 @@ describe("StreamTransformer", () => {
     ]);
   });
 
+  it("parses a single Anthropic thinking block with multiple deltas", async () => {
+    const sse = createByteStream([
+      'data: {"type":"message_start","message":{"id":"msg_think_1"}}\n\n',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Analy"}}\n\n',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"zing options"}}\n\n',
+      'data: {"type":"content_block_stop","index":0}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
+    ]);
+
+    const events = await collectEvents(StreamTransformer.fromSSE(sse));
+
+    expect(events).toEqual([
+      { type: "thinking", content: "Analy" },
+      { type: "thinking", content: "zing options" },
+      {
+        type: "done",
+        usage: { inputTokens: 0, outputTokens: 7, totalTokens: 7 },
+        finishReason: "end_turn",
+      },
+    ]);
+  });
+
+  it("parses thinking blocks interleaved with text blocks", async () => {
+    const sse = createByteStream([
+      'data: {"type":"message_start","message":{"id":"msg_think_2"}}\n\n',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Answer: "}}\n\n',
+      'data: {"type":"content_block_stop","index":0}\n\n',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"thinking"}}\n\n',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"Need to verify."}}\n\n',
+      'data: {"type":"content_block_stop","index":1}\n\n',
+      'data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}\n\n',
+      'data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" Done."}}\n\n',
+      'data: {"type":"content_block_stop","index":2}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
+    ]);
+
+    const events = await collectEvents(StreamTransformer.fromSSE(sse));
+
+    expect(events).toEqual([
+      { type: "token", content: "Answer: " },
+      { type: "thinking", content: "Need to verify." },
+      { type: "token", content: " Done." },
+      {
+        type: "done",
+        usage: { inputTokens: 0, outputTokens: 9, totalTokens: 9 },
+        finishReason: "end_turn",
+      },
+    ]);
+  });
+
+  it("parses multiple Anthropic thinking blocks in one response", async () => {
+    const sse = createByteStream([
+      'data: {"type":"message_start","message":{"id":"msg_think_3"}}\n\n',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"First block."}}\n\n',
+      'data: {"type":"content_block_stop","index":0}\n\n',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"thinking"}}\n\n',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"Second "}}\n\n',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"block."}}\n\n',
+      'data: {"type":"content_block_stop","index":1}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":11}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
+    ]);
+
+    const events = await collectEvents(StreamTransformer.fromSSE(sse));
+
+    expect(events).toEqual([
+      { type: "thinking", content: "First block." },
+      { type: "thinking", content: "Second " },
+      { type: "thinking", content: "block." },
+      {
+        type: "done",
+        usage: { inputTokens: 0, outputTokens: 11, totalTokens: 11 },
+        finishReason: "end_turn",
+      },
+    ]);
+  });
+
   it("parses NDJSON events", async () => {
     const ndjson = createByteStream([
       '{"type":"token","content":"Hello"}\n',

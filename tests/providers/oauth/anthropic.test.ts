@@ -175,6 +175,9 @@ describe("AnthropicOAuthProvider", () => {
   });
 
   it("returns normalized ChatResponse from Anthropic payload", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    let capturedBody: Record<string, unknown> | undefined;
+
     const store = new InMemoryOAuthTokenStore();
     await store.save("anthropic", {
       accessToken: "valid-token",
@@ -183,8 +186,11 @@ describe("AnthropicOAuthProvider", () => {
       tokenType: "Bearer",
     });
 
-    globalThis.fetch = async () =>
-      new Response(
+    globalThis.fetch = async (_input, init) => {
+      capturedHeaders = init?.headers;
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      return new Response(
         JSON.stringify({
           id: "msg_123",
           model: "claude-3-5-sonnet-latest",
@@ -197,6 +203,7 @@ describe("AnthropicOAuthProvider", () => {
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
+    };
 
     const provider = new AnthropicOAuthProvider({
       oauthConfig,
@@ -211,9 +218,15 @@ describe("AnthropicOAuthProvider", () => {
     expect(response.content).toBe("Hello back");
     expect(response.usage.totalTokens).toBe(17);
     expect(response.finishReason).toBe("stop");
+    expect(capturedBody?.thinking).toBeUndefined();
+    expect(capturedHeaders).toMatchObject({
+      "anthropic-beta": expect.stringContaining("interleaved-thinking-2025-05-14"),
+    });
   });
 
-  it("streams StreamEvents from SSE response", async () => {
+  it("includes thinking payload for chat requests", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+
     const store = new InMemoryOAuthTokenStore();
     await store.save("anthropic", {
       accessToken: "valid-token",
@@ -222,7 +235,52 @@ describe("AnthropicOAuthProvider", () => {
       tokenType: "Bearer",
     });
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (_input, init) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      return new Response(
+        JSON.stringify({
+          id: "msg_123",
+          model: "claude-3-5-sonnet-latest",
+          content: [{ type: "text", text: "Hello back" }],
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 7,
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+
+    const provider = new AnthropicOAuthProvider({
+      oauthConfig,
+      tokenStore: store,
+      baseUrl: "https://api.anthropic.test",
+    });
+
+    await provider.chat({
+      ...makeRequest(),
+      thinkingLevel: "medium",
+      maxTokens: 2000,
+    });
+
+    expect(capturedBody?.thinking).toEqual({ type: "enabled", budget_tokens: 1999 });
+  });
+
+  it("streams StreamEvents from SSE response", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+
+    const store = new InMemoryOAuthTokenStore();
+    await store.save("anthropic", {
+      accessToken: "valid-token",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      scope: "messages:read",
+      tokenType: "Bearer",
+    });
+
+    globalThis.fetch = async (_input, init) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       const encoder = new TextEncoder();
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -249,6 +307,55 @@ describe("AnthropicOAuthProvider", () => {
     const events = await collectEvents(provider.stream(makeRequest()));
     expect(events.some((event) => event.type === "token")).toBe(true);
     expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(capturedBody?.thinking).toBeUndefined();
+  });
+
+  it("includes thinking payload for stream requests", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+
+    const store = new InMemoryOAuthTokenStore();
+    await store.save("anthropic", {
+      accessToken: "valid-token",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      scope: "messages:read",
+      tokenType: "Bearer",
+    });
+
+    globalThis.fetch = async (_input, init) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'),
+          );
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+
+    const provider = new AnthropicOAuthProvider({
+      oauthConfig,
+      tokenStore: store,
+      baseUrl: "https://api.anthropic.test",
+    });
+
+    const events = await collectEvents(provider.stream({
+      ...makeRequest(),
+      thinkingLevel: "high",
+      maxTokens: 5000,
+    }));
+
+    expect(events.some((event) => event.type === "token")).toBe(true);
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(capturedBody?.thinking).toEqual({ type: "enabled", budget_tokens: 4999 });
+    expect(capturedBody?.stream).toBe(true);
   });
 
   it("returns known Anthropic model list", async () => {

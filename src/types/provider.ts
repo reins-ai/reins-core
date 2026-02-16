@@ -33,6 +33,8 @@ export interface Model {
 
 export type ModelCapability = "chat" | "streaming" | "tool_use" | "vision" | "audio";
 
+export type ThinkingLevel = "none" | "low" | "medium" | "high";
+
 export interface Provider {
   readonly config: ProviderConfig;
   readonly capabilities?: ProviderCapabilities;
@@ -49,6 +51,7 @@ export interface ChatRequest {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
+  thinkingLevel?: ThinkingLevel;
   signal?: AbortSignal;
 }
 

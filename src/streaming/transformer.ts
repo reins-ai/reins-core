@@ -352,12 +352,71 @@ export class StreamTransformer {
     return null;
   }
 
+  /**
+   * Tracks pending Anthropic thinking content blocks during streaming.
+   * Anthropic streams thinking across three events:
+   *   1. content_block_start  — announces a thinking block
+   *   2. content_block_delta  — streams partial thinking text (thinking_delta)
+   *   3. content_block_stop   — signals the block is complete
+   *
+   * We emit incremental `thinking` StreamEvents as each thinking delta arrives.
+   */
+  private static handleAnthropicThinkingBlock(
+    payload: Record<string, unknown>,
+    pendingThinking: Map<number, string>,
+  ): StreamEvent[] | null {
+    const type = payload.type;
+    const index = typeof payload.index === "number" ? payload.index : -1;
+
+    // content_block_start with type thinking — register a pending thinking block
+    if (type === "content_block_start") {
+      const contentBlock = isRecord(payload.content_block) ? payload.content_block : null;
+      if (contentBlock && contentBlock.type === "thinking") {
+        if (index >= 0) {
+          pendingThinking.set(index, "");
+        }
+        return []; // consumed — no StreamEvent yet
+      }
+      // Non-thinking content_block_start (e.g. text/tool_use) — handled elsewhere
+      return null;
+    }
+
+    // content_block_delta with thinking_delta — accumulate and emit incrementally
+    if (type === "content_block_delta" && index >= 0 && pendingThinking.has(index)) {
+      const delta = isRecord(payload.delta) ? payload.delta : null;
+      if (delta && delta.type === "thinking_delta") {
+        const thinkingText = asString(delta.thinking) ?? asString(delta.text) ?? "";
+        if (thinkingText.length === 0) {
+          return [];
+        }
+
+        const accumulatedThinking = pendingThinking.get(index)!;
+        pendingThinking.set(index, accumulatedThinking + thinkingText);
+
+        return [{ type: "thinking", content: thinkingText }];
+      }
+
+      // Other delta types for a thinking block (shouldn't happen, but handle gracefully)
+      return null;
+    }
+
+    // content_block_stop — finalize thinking block
+    if (type === "content_block_stop" && index >= 0 && pendingThinking.has(index)) {
+      pendingThinking.delete(index);
+      return []; // consumed — thinking was already emitted incrementally
+    }
+
+    // Not a thinking-related event we handle
+    return null;
+  }
+
   public static async *fromSSE(
     stream: ReadableStream<Uint8Array>,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
     let buffer = "";
     const pendingTools = new Map<number, { id: string; name: string; inputJson: string }>();
+    const pendingThinking = new Map<number, string>();
 
     for await (const chunk of readTextChunks(stream, signal)) {
       if (signal?.aborted) {
@@ -416,6 +475,18 @@ export class StreamTransformer {
             );
             if (toolEvents !== null) {
               for (const event of toolEvents) {
+                yield event;
+              }
+              match = separator.exec(buffer);
+              continue;
+            }
+
+            const thinkingEvents = StreamTransformer.handleAnthropicThinkingBlock(
+              normalizedPayload,
+              pendingThinking,
+            );
+            if (thinkingEvents !== null) {
+              for (const event of thinkingEvents) {
                 yield event;
               }
               match = separator.exec(buffer);

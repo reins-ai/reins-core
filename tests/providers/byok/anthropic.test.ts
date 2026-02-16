@@ -24,9 +24,11 @@ afterEach(() => {
 describe("BYOKAnthropicProvider", () => {
   it("returns normalized ChatResponse from Anthropic payload", async () => {
     let capturedHeaders: HeadersInit | undefined;
+    let capturedBody: Record<string, unknown> | undefined;
 
     globalThis.fetch = async (_input, init) => {
       capturedHeaders = init?.headers;
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       return new Response(
         JSON.stringify({
           id: "msg_123",
@@ -51,10 +53,52 @@ describe("BYOKAnthropicProvider", () => {
     expect(response.usage.totalTokens).toBe(17);
     expect(response.finishReason).toBe("stop");
     expect(capturedHeaders).toMatchObject({ "x-api-key": "anthropic-key" });
+    expect(capturedBody?.thinking).toBeUndefined();
+  });
+
+  it("includes thinking payload and beta header for chat requests", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    let capturedBody: Record<string, unknown> | undefined;
+
+    globalThis.fetch = async (_input, init) => {
+      capturedHeaders = init?.headers;
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      return new Response(
+        JSON.stringify({
+          id: "msg_123",
+          model: "claude-3-5-sonnet-latest",
+          content: [{ type: "text", text: "Hello back" }],
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 7,
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+
+    const provider = new BYOKAnthropicProvider("anthropic-key", { baseUrl: "https://api.anthropic.test" });
+    await provider.chat({
+      ...makeRequest(),
+      thinkingLevel: "high",
+      maxTokens: 5000,
+    });
+
+    expect(capturedHeaders).toMatchObject({
+      "anthropic-beta": "interleaved-thinking-2025-05-14",
+    });
+    expect(capturedBody?.thinking).toEqual({ type: "enabled", budget_tokens: 4999 });
   });
 
   it("streams StreamEvents from SSE response", async () => {
-    globalThis.fetch = async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    let capturedBody: Record<string, unknown> | undefined;
+
+    globalThis.fetch = async (_input, init) => {
+      capturedHeaders = init?.headers;
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       const encoder = new TextEncoder();
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -71,10 +115,19 @@ describe("BYOKAnthropicProvider", () => {
     };
 
     const provider = new BYOKAnthropicProvider("anthropic-key", { baseUrl: "https://api.anthropic.test" });
-    const events = await collectEvents(provider.stream(makeRequest()));
+    const events = await collectEvents(provider.stream({
+      ...makeRequest(),
+      thinkingLevel: "medium",
+      maxTokens: 2000,
+    }));
 
     expect(events.some((event) => event.type === "token")).toBe(true);
     expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(capturedHeaders).toMatchObject({
+      "anthropic-beta": "interleaved-thinking-2025-05-14",
+    });
+    expect(capturedBody?.thinking).toEqual({ type: "enabled", budget_tokens: 1999 });
+    expect(capturedBody?.stream).toBe(true);
   });
 
   it("returns known Anthropic models", async () => {

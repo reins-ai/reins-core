@@ -12,10 +12,12 @@ import type {
   TokenUsage,
 } from "../../types/provider";
 import type { ToolCall } from "../../types/tool";
+import { thinkingLevelToBudget } from "./thinking-utils";
 
 interface AnthropicContentBlock {
-  type: "text" | "tool_use" | "tool_result";
+  type: "text" | "tool_use" | "tool_result" | "thinking";
   text?: string;
+  thinking?: string;
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -31,6 +33,19 @@ interface AnthropicMessage {
 
 interface BYOKAnthropicProviderOptions {
   baseUrl?: string;
+}
+
+interface AnthropicThinking {
+  type: "enabled";
+  budget_tokens: number;
+}
+
+function debugThinking(event: string, details: Record<string, unknown>): void {
+  if (process.env.REINS_DEBUG_THINKING !== "1") {
+    return;
+  }
+
+  console.log("[thinking-debug]", event, details);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -151,6 +166,53 @@ function mapMessages(request: ChatRequest): AnthropicMessage[] {
 }
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
+const DEFAULT_MAX_TOKENS = 1024;
+const MIN_THINKING_MAX_TOKENS = 1025;
+const MIN_THINKING_BUDGET_TOKENS = 1024;
+const ANTHROPIC_THINKING_BETA = "interleaved-thinking-2025-05-14";
+
+function resolveMaxTokens(request: ChatRequest): number {
+  const maxTokens = request.maxTokens ?? DEFAULT_MAX_TOKENS;
+  if (request.thinkingLevel && request.thinkingLevel !== "none" && maxTokens <= MIN_THINKING_BUDGET_TOKENS) {
+    return MIN_THINKING_MAX_TOKENS;
+  }
+
+  return maxTokens;
+}
+
+function resolveThinking(request: ChatRequest, maxTokens: number): AnthropicThinking | undefined {
+  const thinkingLevel = request.thinkingLevel;
+  if (!thinkingLevel || thinkingLevel === "none") {
+    return undefined;
+  }
+
+  const budgetTokens = thinkingLevelToBudget(thinkingLevel, maxTokens);
+  if (
+    budgetTokens === undefined
+    || budgetTokens < MIN_THINKING_BUDGET_TOKENS
+    || budgetTokens >= maxTokens
+  ) {
+    debugThinking("resolveThinking.invalid", {
+      model: request.model,
+      thinkingLevel,
+      maxTokens,
+      budgetTokens,
+    });
+    return undefined;
+  }
+
+  debugThinking("resolveThinking", {
+    model: request.model,
+    thinkingLevel,
+    maxTokens,
+    budgetTokens,
+  });
+
+  return {
+    type: "enabled",
+    budget_tokens: budgetTokens,
+  };
+}
 
 const DEFAULT_MODELS: Model[] = [
   {
@@ -189,20 +251,39 @@ export class BYOKAnthropicProvider implements Provider {
   }
 
   public async chat(request: ChatRequest): Promise<ChatResponse> {
+    const maxTokens = resolveMaxTokens(request);
+    const thinking = resolveThinking(request, maxTokens);
+    const headers: Record<string, string> = {
+      "x-api-key": this.apiKey,
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+      ...(thinking ? { "anthropic-beta": ANTHROPIC_THINKING_BETA } : {}),
+    };
+    const body = {
+      model: request.model,
+      system: request.systemPrompt,
+      messages: mapMessages(request),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      ...(thinking ? { thinking } : {}),
+    };
+
+    debugThinking("chat.request", {
+      model: request.model,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-version": headers["anthropic-version"],
+        "anthropic-beta": headers["anthropic-beta"],
+      },
+      body,
+    });
+
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: request.model,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: request.maxTokens ?? 1024,
-        temperature: request.temperature,
-      }),
+      headers,
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -227,21 +308,40 @@ export class BYOKAnthropicProvider implements Provider {
   }
 
   public async *stream(request: ChatRequest): AsyncIterable<StreamEvent> {
+    const maxTokens = resolveMaxTokens(request);
+    const thinking = resolveThinking(request, maxTokens);
+    const headers: Record<string, string> = {
+      "x-api-key": this.apiKey,
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+      ...(thinking ? { "anthropic-beta": ANTHROPIC_THINKING_BETA } : {}),
+    };
+    const body = {
+      model: request.model,
+      system: request.systemPrompt,
+      messages: mapMessages(request),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      stream: true,
+      ...(thinking ? { thinking } : {}),
+    };
+
+    debugThinking("stream.request", {
+      model: request.model,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-version": headers["anthropic-version"],
+        "anthropic-beta": headers["anthropic-beta"],
+      },
+      body,
+    });
+
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: request.model,
-        system: request.systemPrompt,
-        messages: mapMessages(request),
-        max_tokens: request.maxTokens ?? 1024,
-        temperature: request.temperature,
-        stream: true,
-      }),
+      headers,
+      body: JSON.stringify(body),
     });
 
     if (!response.ok || !response.body) {

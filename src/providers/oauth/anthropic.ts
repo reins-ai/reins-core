@@ -40,10 +40,12 @@ import {
   stripToolPrefixFromPayload,
   createStrippingStream,
 } from "./claude-code-transform";
+import { thinkingLevelToBudget } from "../byok/thinking-utils";
 
 interface AnthropicContentBlock {
-  type: "text" | "tool_use" | "tool_result";
+  type: "text" | "tool_use" | "tool_result" | "thinking";
   text?: string;
+  thinking?: string;
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -65,6 +67,19 @@ interface AnthropicOAuthProviderOptions {
   flow?: OAuthFlowHandler;
 }
 
+interface AnthropicThinking {
+  type: "enabled";
+  budget_tokens: number;
+}
+
+function debugThinking(event: string, details: Record<string, unknown>): void {
+  if (process.env.REINS_DEBUG_THINKING !== "1") {
+    return;
+  }
+
+  console.log("[thinking-debug]", event, details);
+}
+
 interface PendingOAuthSession {
   state: string;
   codeVerifier: string;
@@ -73,6 +88,9 @@ interface PendingOAuthSession {
 }
 
 const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_MAX_TOKENS = 16_384;
+const MIN_THINKING_MAX_TOKENS = 1025;
+const MIN_THINKING_BUDGET_TOKENS = 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -222,6 +240,49 @@ function mapMessages(request: ChatRequest): AnthropicMessage[] {
         ? message.content
         : mapContentBlocks(message.content),
     }));
+}
+
+function resolveMaxTokens(request: ChatRequest): number {
+  const maxTokens = request.maxTokens ?? DEFAULT_MAX_TOKENS;
+  if (request.thinkingLevel && request.thinkingLevel !== "none" && maxTokens <= MIN_THINKING_BUDGET_TOKENS) {
+    return MIN_THINKING_MAX_TOKENS;
+  }
+
+  return maxTokens;
+}
+
+function resolveThinking(request: ChatRequest, maxTokens: number): AnthropicThinking | undefined {
+  const thinkingLevel = request.thinkingLevel;
+  if (!thinkingLevel || thinkingLevel === "none") {
+    return undefined;
+  }
+
+  const budgetTokens = thinkingLevelToBudget(thinkingLevel, maxTokens);
+  if (
+    budgetTokens === undefined
+    || budgetTokens < MIN_THINKING_BUDGET_TOKENS
+    || budgetTokens >= maxTokens
+  ) {
+    debugThinking("resolveThinking.invalid", {
+      model: request.model,
+      thinkingLevel,
+      maxTokens,
+      budgetTokens,
+    });
+    return undefined;
+  }
+
+  debugThinking("resolveThinking", {
+    model: request.model,
+    thinkingLevel,
+    maxTokens,
+    budgetTokens,
+  });
+
+  return {
+    type: "enabled",
+    budget_tokens: budgetTokens,
+  };
 }
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
@@ -534,24 +595,39 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   public async chat(request: ChatRequest): Promise<ChatResponse> {
     const token = await this.getAccessToken();
     const apiModel = resolveAnthropicApiModelId(request.model);
+    const maxTokens = resolveMaxTokens(request);
+    const thinking = resolveThinking(request, maxTokens);
 
     // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
     const mappedTools = mapTools(request.tools);
     const url = transformUrl(`${this.baseUrl}/v1/messages`);
+    const body = {
+      model: apiModel,
+      system: transformSystemPrompt(request.systemPrompt),
+      messages: prefixMessageToolNames(mapMessages(request)),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      ...(thinking ? { thinking } : {}),
+      ...(prefixToolDefinitions(mappedTools)
+        ? { tools: prefixToolDefinitions(mappedTools) }
+        : {}),
+    };
+
+    debugThinking("oauth.chat.request", {
+      model: apiModel,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-beta": claudeCodeHeaders(token)["anthropic-beta"],
+      },
+      body,
+    });
 
     const response = await fetch(url, {
       method: "POST",
       headers: claudeCodeHeaders(token),
-      body: JSON.stringify({
-        model: apiModel,
-        system: transformSystemPrompt(request.systemPrompt),
-        messages: prefixMessageToolNames(mapMessages(request)),
-        max_tokens: request.maxTokens ?? 16_384,
-        temperature: request.temperature,
-        ...(prefixToolDefinitions(mappedTools)
-          ? { tools: prefixToolDefinitions(mappedTools) }
-          : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -586,25 +662,40 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   public async *stream(request: ChatRequest): AsyncIterable<StreamEvent> {
     const token = await this.getAccessToken();
     const apiModel = resolveAnthropicApiModelId(request.model);
+    const maxTokens = resolveMaxTokens(request);
+    const thinking = resolveThinking(request, maxTokens);
 
     // Apply Claude Code transforms: system prompt prefix, tool name prefix, beta URL
     const mappedTools = mapTools(request.tools);
     const url = transformUrl(`${this.baseUrl}/v1/messages`);
+    const body = {
+      model: apiModel,
+      system: transformSystemPrompt(request.systemPrompt),
+      messages: prefixMessageToolNames(mapMessages(request)),
+      max_tokens: maxTokens,
+      temperature: request.temperature,
+      stream: true,
+      ...(thinking ? { thinking } : {}),
+      ...(prefixToolDefinitions(mappedTools)
+        ? { tools: prefixToolDefinitions(mappedTools) }
+        : {}),
+    };
+
+    debugThinking("oauth.stream.request", {
+      model: apiModel,
+      thinkingLevel: request.thinkingLevel,
+      maxTokens,
+      thinking,
+      headers: {
+        "anthropic-beta": claudeCodeHeaders(token)["anthropic-beta"],
+      },
+      body,
+    });
 
     const response = await fetch(url, {
       method: "POST",
       headers: claudeCodeHeaders(token),
-      body: JSON.stringify({
-        model: apiModel,
-        system: transformSystemPrompt(request.systemPrompt),
-        messages: prefixMessageToolNames(mapMessages(request)),
-        max_tokens: request.maxTokens ?? 16_384,
-        temperature: request.temperature,
-        stream: true,
-        ...(prefixToolDefinitions(mappedTools)
-          ? { tools: prefixToolDefinitions(mappedTools) }
-          : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok || !response.body) {
