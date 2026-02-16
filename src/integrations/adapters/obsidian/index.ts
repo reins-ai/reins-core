@@ -19,6 +19,10 @@ import type {
   IntegrationStatus,
 } from "../../types";
 import { ObsidianAuth } from "./auth";
+import { searchNotes } from "./operations/search-notes";
+import { readNote } from "./operations/read-note";
+import { createNote } from "./operations/create-note";
+import { listNotes } from "./operations/list-notes";
 
 // ---------------------------------------------------------------------------
 // Manifest loading
@@ -128,15 +132,53 @@ export class ObsidianIntegration implements Integration {
   }
 
   public async execute(
-    _operationName: string,
-    _args: Record<string, unknown>,
+    operationName: string,
+    args: Record<string, unknown>,
   ): Promise<Result<unknown, IntegrationError>> {
-    // Operations will be implemented in Task 4.2
-    return err(
-      new IntegrationError(
-        "Obsidian operations are not yet implemented. See Task 4.2.",
-      ),
-    );
+    const vaultPathResult = await this.auth.getVaultPath();
+    if (!vaultPathResult.ok) {
+      return vaultPathResult;
+    }
+
+    const vaultPath = vaultPathResult.value;
+    if (!vaultPath) {
+      return err(
+        new IntegrationError(
+          "Obsidian vault is not connected. Call connect() first.",
+        ),
+      );
+    }
+
+    switch (operationName) {
+      case "search-notes":
+        return searchNotes(vaultPath, {
+          query: String(args["query"] ?? ""),
+          limit: typeof args["limit"] === "number" ? args["limit"] : undefined,
+        });
+
+      case "read-note":
+        return readNote(vaultPath, {
+          path: String(args["path"] ?? ""),
+        });
+
+      case "create-note":
+        return createNote(vaultPath, {
+          title: String(args["title"] ?? ""),
+          content: String(args["content"] ?? ""),
+          folder: typeof args["folder"] === "string" ? args["folder"] : undefined,
+        });
+
+      case "list-notes":
+        return listNotes(vaultPath, {
+          folder: typeof args["folder"] === "string" ? args["folder"] : undefined,
+          recursive: typeof args["recursive"] === "boolean" ? args["recursive"] : undefined,
+        });
+
+      default:
+        return err(
+          new IntegrationError(`Unknown Obsidian operation: ${operationName}`),
+        );
+    }
   }
 
   /**
