@@ -14,5 +14,10 @@ export {
   type ParsedSkill,
 } from "./parser";
 export { normalizeSkillName, SkillRegistry } from "./registry";
+export {
+  SkillScanner,
+  type DiscoveryReport,
+  type SkillDiscoveryError,
+} from "./scanner";
 export * from "./types";
 export { validateSkillDirectory, type SkillDirectoryInfo } from "./validator";
