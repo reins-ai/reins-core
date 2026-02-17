@@ -1,14 +1,12 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 
 import type {
-  ClawHubCategoriesResponse,
-  ClawHubSkillDetailResponse,
-  ClawHubSkillsResponse,
+  ClawHubDetailResponse,
+  ClawHubSearchResponse,
 } from "../../../src/marketplace/clawhub/api-types";
 import { ClawHubSource } from "../../../src/marketplace/clawhub/source";
 import { MARKETPLACE_ERROR_CODES } from "../../../src/marketplace/errors";
 import {
-  mockClawHubCategoriesResponse,
   mockClawHubDetailResponse,
   mockClawHubSearchResponse,
   mockClawHubSkillsResponse,
@@ -111,7 +109,7 @@ describe("ClawHub Integration", () => {
 
     it("different sort modes produce separate cache entries", async () => {
       mock.enqueue(jsonResponse(mockClawHubSkillsResponse));
-      mock.enqueue(jsonResponse({ ...mockClawHubSkillsResponse, page: 1 }));
+      mock.enqueue(jsonResponse({ ...mockClawHubSkillsResponse, nextCursor: null }));
 
       await source.browse({ sort: "trending" });
       await source.browse({ sort: "popular" });
@@ -124,11 +122,8 @@ describe("ClawHub Integration", () => {
     it("different queries both hit API (no shared cache)", async () => {
       mock.enqueue(jsonResponse(mockClawHubSearchResponse));
       mock.enqueue(jsonResponse({
-        skills: [],
-        total: 0,
-        page: 1,
-        pageSize: 20,
-      } satisfies ClawHubSkillsResponse));
+        results: [],
+      } satisfies ClawHubSearchResponse));
 
       const first = await source.search("calendar");
       const second = await source.search("nonexistent");
@@ -167,15 +162,15 @@ describe("ClawHub Integration", () => {
       if (result.ok) {
         expect(result.value.slug).toBe("smart-calendar-sync");
         expect(result.value.name).toBe("Smart Calendar Sync");
-        expect(result.value.author).toBe("openclaw");
+        expect(result.value.author).toBe("OpenClaw");
         expect(result.value.version).toBe("2.4.1");
-        expect(result.value.trustLevel).toBe("verified");
-        expect(result.value.fullDescription).toContain("seamless bidirectional synchronization");
-        expect(result.value.versions).toEqual(["2.4.1", "2.4.0", "2.3.0"]);
-        expect(result.value.requiredTools).toEqual(["curl", "jq"]);
-        expect(result.value.homepage).toBe("https://github.com/openclaw/smart-calendar-sync");
-        expect(result.value.license).toBe("MIT");
-        expect(result.value.readme).toContain("# Smart Calendar Sync");
+        expect(result.value.trustLevel).toBe("community");
+        expect(result.value.fullDescription).toContain("Bidirectional calendar synchronization");
+        expect(result.value.versions).toEqual(["2.4.1"]);
+        expect(result.value.requiredTools).toEqual([]);
+        expect(result.value.homepage).toBeUndefined();
+        expect(result.value.license).toBeUndefined();
+        expect(result.value.readme).toBeUndefined();
       }
     });
 
@@ -190,36 +185,14 @@ describe("ClawHub Integration", () => {
   });
 
   describe("categories", () => {
-    it("fetches and normalizes categories", async () => {
-      mock.enqueue(jsonResponse(mockClawHubCategoriesResponse));
-
+    it("returns an empty category list without calling API", async () => {
       const result = await source.getCategories();
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value).toHaveLength(5);
-        expect(result.value[0]).toEqual({
-          id: "cat-prod",
-          name: "Productivity",
-          slug: "productivity",
-          count: 42,
-        });
-        expect(result.value[4]).toEqual({
-          id: "cat-cal",
-          name: "Calendar",
-          slug: "calendar",
-          count: 11,
-        });
+        expect(result.value).toEqual([]);
       }
-    });
-
-    it("caches categories on second fetch", async () => {
-      mock.enqueue(jsonResponse(mockClawHubCategoriesResponse));
-
-      await source.getCategories();
-      await source.getCategories();
-
-      expect(mock.calls).toHaveLength(1);
+      expect(mock.calls).toHaveLength(0);
     });
   });
 
@@ -317,26 +290,19 @@ describe("ClawHub Integration", () => {
 
     it("returns cached categories when rate-limited after successful fetch", async () => {
       await withMockedNow(1_000, async (advanceTo) => {
-        mock.enqueue(jsonResponse(mockClawHubCategoriesResponse));
-        mock.enqueue(new Response("Too Many Requests", {
-          status: 429,
-          headers: { "retry-after": "60" },
-        }));
-
         const first = await source.getCategories();
         expect(first.ok).toBe(true);
 
-        // Advance past the 1hr categories TTL
         advanceTo(4_000_000);
 
         const second = await source.getCategories();
         expect(second.ok).toBe(true);
 
         if (second.ok) {
-          expect(second.value).toHaveLength(5);
+          expect(second.value).toEqual([]);
         }
 
-        expect(mock.calls).toHaveLength(2);
+        expect(mock.calls).toHaveLength(0);
       });
     });
   });
@@ -393,13 +359,11 @@ describe("ClawHub Integration", () => {
     });
 
     it("500 on categories propagates as MARKETPLACE_SOURCE_ERROR", async () => {
-      mock.enqueue(new Response("Service Unavailable", { status: 503 }));
-
       const result = await source.getCategories();
 
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe(MARKETPLACE_ERROR_CODES.SOURCE_ERROR);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toEqual([]);
       }
     });
   });
@@ -425,7 +389,7 @@ describe("ClawHub Integration", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        // total=147, page=1, pageSize=20 → 1*20=20 < 147 → hasMore=true
+        // nextCursor is present in fixture
         expect(result.value.hasMore).toBe(true);
       }
     });
@@ -437,64 +401,66 @@ describe("ClawHub Integration", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        // ClawHub returns { version, publishedAt, changelog } objects
-        // Source normalizes to plain version strings
-        expect(result.value.versions).toEqual(["2.4.1", "2.4.0", "2.3.0"]);
+        expect(result.value.versions).toEqual(["2.4.1"]);
       }
     });
 
-    it("uses fullDescription over readme for detail fullDescription field", async () => {
+    it("uses skill summary for detail fullDescription field", async () => {
       mock.enqueue(jsonResponse(mockClawHubDetailResponse));
 
       const result = await source.getDetail("smart-calendar-sync");
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        // fullDescription is present, so it should be used over readme
-        expect(result.value.fullDescription).toBe(mockClawHubDetailResponse.fullDescription);
+        expect(result.value.fullDescription).toBe(mockClawHubDetailResponse.skill?.summary);
       }
     });
 
-    it("falls back to readme when fullDescription is absent", async () => {
-      const detailWithoutFullDesc: ClawHubSkillDetailResponse = {
+    it("falls back to empty string when summary is absent", async () => {
+      const detailWithoutSummary: ClawHubDetailResponse = {
         ...mockClawHubDetailResponse,
-        fullDescription: undefined,
+        skill: {
+          ...mockClawHubDetailResponse.skill,
+          summary: undefined,
+        },
       };
-      mock.enqueue(jsonResponse(detailWithoutFullDesc));
+      mock.enqueue(jsonResponse(detailWithoutSummary));
 
       const result = await source.getDetail("smart-calendar-sync");
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value.fullDescription).toBe(mockClawHubDetailResponse.readme);
+        expect(result.value.fullDescription).toBe("");
       }
     });
 
-    it("falls back to description when both fullDescription and readme are absent", async () => {
-      const detailMinimal: ClawHubSkillDetailResponse = {
+    it("uses owner handle when owner display name is absent", async () => {
+      const detailWithoutDisplayName: ClawHubDetailResponse = {
         ...mockClawHubDetailResponse,
-        fullDescription: undefined,
-        readme: undefined,
+        owner: {
+          ...mockClawHubDetailResponse.owner,
+          displayName: undefined,
+        },
       };
-      mock.enqueue(jsonResponse(detailMinimal));
+      mock.enqueue(jsonResponse(detailWithoutDisplayName));
 
       const result = await source.getDetail("smart-calendar-sync");
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value.fullDescription).toBe(mockClawHubDetailResponse.description);
+        expect(result.value.author).toBe("openclaw");
       }
     });
 
-    it("preserves trust levels through the pipeline", async () => {
+    it("defaults browse trust levels to community", async () => {
       mock.enqueue(jsonResponse(mockClawHubSkillsResponse));
 
       const result = await source.browse();
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value.skills[0]?.trustLevel).toBe("verified");
-        expect(result.value.skills[1]?.trustLevel).toBe("trusted");
+        expect(result.value.skills[0]?.trustLevel).toBe("community");
+        expect(result.value.skills[1]?.trustLevel).toBe("community");
         expect(result.value.skills[2]?.trustLevel).toBe("community");
       }
     });

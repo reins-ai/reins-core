@@ -2,11 +2,10 @@ import { err, ok } from "../../result";
 import type { Result } from "../../result";
 import { MARKETPLACE_ERROR_CODES, MarketplaceError } from "../errors";
 import type {
-  ClawHubCategoriesResponse,
+  ClawHubBrowseResponse,
+  ClawHubDetailResponse,
   ClawHubDownloadResponse,
   ClawHubSearchResponse,
-  ClawHubSkillDetailResponse,
-  ClawHubSkillsResponse,
 } from "./api-types";
 
 export interface ClawHubClientOptions {
@@ -53,7 +52,7 @@ export class ClawHubClient {
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
-  async fetchSkills(options: FetchSkillsOptions = {}): Promise<Result<ClawHubSkillsResponse, MarketplaceError>> {
+  async fetchSkills(options: FetchSkillsOptions = {}): Promise<Result<ClawHubBrowseResponse, MarketplaceError>> {
     const params = new URLSearchParams();
 
     if (options.sort) {
@@ -69,16 +68,13 @@ export class ClawHubClient {
       params.set("category", options.category);
     }
 
-    return this.request<ClawHubSkillsResponse>("/api/v1/skills", params);
+    return this.request<ClawHubBrowseResponse>("/api/v1/skills", params);
   }
 
   async searchSkills(query: string, options: SearchSkillsOptions = {}): Promise<Result<ClawHubSearchResponse, MarketplaceError>> {
     const params = new URLSearchParams();
     params.set("q", query);
 
-    if (options.page !== undefined) {
-      params.set("page", String(options.page));
-    }
     if (options.limit !== undefined) {
       params.set("limit", String(options.limit));
     }
@@ -86,8 +82,8 @@ export class ClawHubClient {
     return this.request<ClawHubSearchResponse>("/api/v1/search", params);
   }
 
-  async fetchSkillDetail(slug: string): Promise<Result<ClawHubSkillDetailResponse, MarketplaceError>> {
-    return this.request<ClawHubSkillDetailResponse>(`/api/v1/skills/${encodeURIComponent(slug)}`);
+  async fetchSkillDetail(slug: string): Promise<Result<ClawHubDetailResponse, MarketplaceError>> {
+    return this.request<ClawHubDetailResponse>(`/api/v1/skills/${encodeURIComponent(slug)}`);
   }
 
   async downloadSkill(slug: string, version: string): Promise<Result<ClawHubDownloadResponse, MarketplaceError>> {
@@ -109,10 +105,6 @@ export class ClawHubClient {
       size: binaryResult.value.data.byteLength,
       contentType,
     });
-  }
-
-  async fetchCategories(): Promise<Result<ClawHubCategoriesResponse, MarketplaceError>> {
-    return this.request<ClawHubCategoriesResponse>("/api/v1/categories");
   }
 
   getRateLimitInfo(): { remaining: number | null; resetAt: Date | null } {

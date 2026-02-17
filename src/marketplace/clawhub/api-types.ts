@@ -1,51 +1,61 @@
-export interface ClawHubSkill {
-  slug: string;
-  name: string;
-  author: string;
-  description: string;
-  installCount: number;
-  trustLevel: string;
-  categories: string[];
-  latestVersion: string;
-  updatedAt: string;
-  homepage?: string;
-  license?: string;
-  requiredTools?: string[];
-}
-
-export interface ClawHubSkillsResponse {
-  skills: ClawHubSkill[];
-  total: number;
-  page: number;
-  pageSize: number;
-}
-
-export type ClawHubSearchResponse = ClawHubSkillsResponse;
-
 export interface ClawHubSkillVersion {
   version: string;
-  publishedAt?: string;
+  createdAt?: number;
   changelog?: string;
 }
 
-export interface ClawHubSkillDetailResponse extends ClawHubSkill {
-  readme?: string;
-  fullDescription?: string;
-  versions: ClawHubSkillVersion[];
-  requiredTools: string[];
-  homepage?: string;
-  license?: string;
+export interface ClawHubSkillStats {
+  comments?: number;
+  downloads?: number;
+  installsAllTime?: number;
+  installsCurrent?: number;
+  stars?: number;
+  versions?: number;
 }
 
-export interface ClawHubCategory {
-  id: string;
-  name: string;
+export interface ClawHubBrowseItem {
   slug: string;
-  count: number;
+  displayName?: string;
+  summary?: string;
+  tags?: {
+    latest?: string;
+  };
+  stats?: ClawHubSkillStats;
+  createdAt?: number;
+  updatedAt?: number;
+  latestVersion?: ClawHubSkillVersion;
 }
 
-export interface ClawHubCategoriesResponse {
-  categories: ClawHubCategory[];
+export interface ClawHubBrowseResponse {
+  items?: ClawHubBrowseItem[];
+  nextCursor?: string | null;
+}
+
+export interface ClawHubSearchResult {
+  score?: number;
+  slug: string;
+  displayName?: string;
+  summary?: string;
+  version?: string;
+  updatedAt?: number;
+}
+
+export interface ClawHubSearchResponse {
+  results?: ClawHubSearchResult[];
+}
+
+export interface ClawHubDetailOwner {
+  handle?: string;
+  userId?: string;
+  displayName?: string;
+  image?: string;
+}
+
+export interface ClawHubDetailResponse {
+  skill?: ClawHubBrowseItem;
+  latestVersion?: ClawHubSkillVersion;
+  owner?: ClawHubDetailOwner;
+  moderation?: unknown;
 }
 
 export interface ClawHubDownloadResponse {

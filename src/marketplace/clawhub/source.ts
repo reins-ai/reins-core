@@ -11,15 +11,15 @@ import type {
   MarketplaceSkillDetail,
   MarketplaceSortMode,
   MarketplaceSource,
-  MarketplaceTrustLevel,
   SearchOptions,
 } from "../types";
 import type {
-  ClawHubCategoriesResponse,
+  ClawHubBrowseItem,
+  ClawHubBrowseResponse,
+  ClawHubDetailResponse,
   ClawHubDownloadResponse,
-  ClawHubSkill,
-  ClawHubSkillDetailResponse,
-  ClawHubSkillsResponse,
+  ClawHubSearchResponse,
+  ClawHubSearchResult,
 } from "./api-types";
 import { ClawHubClient } from "./client";
 
@@ -35,15 +35,12 @@ const DEFAULT_PAGE_SIZE = 20;
 const BROWSE_TTL_MS = 300_000;
 const SEARCH_TTL_MS = 120_000;
 const DETAIL_TTL_MS = 900_000;
-const CATEGORIES_TTL_MS = 3_600_000;
 
 const SORT_MODE_MAP: Record<MarketplaceSortMode, "trending" | "popular" | "recent"> = {
   trending: "trending",
   popular: "popular",
   recent: "recent",
 };
-
-const TRUST_LEVELS: MarketplaceTrustLevel[] = ["verified", "trusted", "community", "untrusted"];
 
 export class ClawHubSource implements MarketplaceSource {
   readonly id = "clawhub";
@@ -54,11 +51,9 @@ export class ClawHubSource implements MarketplaceSource {
   private readonly browseCache = new TtlCache<MarketplaceSearchResult>();
   private readonly searchCache = new TtlCache<MarketplaceSearchResult>();
   private readonly detailCache = new TtlCache<MarketplaceSkillDetail>();
-  private readonly categoriesCache = new TtlCache<MarketplaceCategory[]>();
   private readonly staleBrowseCache = new Map<string, MarketplaceSearchResult>();
   private readonly staleSearchCache = new Map<string, MarketplaceSearchResult>();
   private readonly staleDetailCache = new Map<string, MarketplaceSkillDetail>();
-  private readonly staleCategoriesCache = new Map<string, MarketplaceCategory[]>();
 
   constructor(options: ClawHubSourceOptions = {}) {
     this.client = options.client
@@ -95,7 +90,7 @@ export class ClawHubSource implements MarketplaceSource {
       return err(result.error);
     }
 
-    const normalized = this.normalizeSearchResult(result.value);
+    const normalized = this.normalizeSearchResult(result.value, page, pageSize);
     this.browseCache.set(cacheKey, normalized, BROWSE_TTL_MS);
     this.staleBrowseCache.set(cacheKey, normalized);
 
@@ -125,7 +120,7 @@ export class ClawHubSource implements MarketplaceSource {
       return err(result.error);
     }
 
-    const normalized = this.normalizeSearchResult(result.value);
+    const normalized = this.normalizeFromSearch(result.value, page, pageSize);
     this.searchCache.set(cacheKey, normalized, SEARCH_TTL_MS);
     this.staleSearchCache.set(cacheKey, normalized);
 
@@ -165,26 +160,7 @@ export class ClawHubSource implements MarketplaceSource {
   }
 
   async getCategories(): Promise<Result<MarketplaceCategory[]>> {
-    const cacheKey = this.createCategoriesCacheKey();
-    const cached = this.categoriesCache.get(cacheKey);
-    if (cached) {
-      return ok(cached);
-    }
-
-    const result = await this.client.fetchCategories();
-    if (!result.ok) {
-      const fallback = this.staleCategoriesCache.get(cacheKey);
-      if (this.isRateLimitedError(result.error) && fallback) {
-        return ok(fallback);
-      }
-      return err(result.error);
-    }
-
-    const normalized = this.normalizeCategories(result.value);
-    this.categoriesCache.set(cacheKey, normalized, CATEGORIES_TTL_MS);
-    this.staleCategoriesCache.set(cacheKey, normalized);
-
-    return ok(normalized);
+    return ok([]);
   }
 
   private createBrowseCacheKey(sort: MarketplaceSortMode, page: number, pageSize: number, category: string): string {
@@ -199,60 +175,86 @@ export class ClawHubSource implements MarketplaceSource {
     return `detail:${slug}`;
   }
 
-  private createCategoriesCacheKey(): string {
-    return "categories";
-  }
-
-  private normalizeSearchResult(response: ClawHubSkillsResponse): MarketplaceSearchResult {
-    const rawSkills = Array.isArray(response.skills) ? response.skills : [];
+  private normalizeSearchResult(response: ClawHubBrowseResponse, page: number, pageSize: number): MarketplaceSearchResult {
+    const rawSkills = Array.isArray(response.items) ? response.items : [];
     const skills = rawSkills.map((skill) => this.normalizeSkill(skill));
     return {
       skills,
-      total: typeof response.total === "number" ? response.total : skills.length,
-      page: typeof response.page === "number" ? response.page : 1,
-      pageSize: typeof response.pageSize === "number" ? response.pageSize : skills.length,
-      hasMore: typeof response.page === "number" && typeof response.pageSize === "number"
-        ? response.page * response.pageSize < (response.total ?? 0)
-        : false,
+      total: skills.length,
+      page,
+      pageSize,
+      hasMore: response.nextCursor !== null && response.nextCursor !== undefined,
     };
   }
 
-  private normalizeSkill(skill: ClawHubSkill): MarketplaceSkill {
+  private normalizeFromSearch(response: ClawHubSearchResponse, page: number, pageSize: number): MarketplaceSearchResult {
+    const rawSkills = Array.isArray(response.results) ? response.results : [];
+    const skills = rawSkills.map((skill) => this.normalizeSearchSkill(skill));
+
+    return {
+      skills,
+      total: skills.length,
+      page,
+      pageSize,
+      hasMore: false,
+    };
+  }
+
+  private normalizeSkill(skill: ClawHubBrowseItem): MarketplaceSkill {
+    const version = this.pickVersion(skill.latestVersion?.version, skill.tags?.latest);
+
     return {
       slug: skill.slug,
-      name: skill.name,
-      author: this.normalizeAuthor(skill.author as unknown),
-      description: skill.description,
-      installCount: skill.installCount,
-      trustLevel: this.normalizeTrustLevel(skill.trustLevel),
-      categories: skill.categories,
-      version: skill.latestVersion,
-      updatedAt: skill.updatedAt,
+      name: this.normalizeName(skill.displayName, skill.slug),
+      author: "unknown",
+      description: this.normalizeText(skill.summary),
+      installCount: this.normalizeNumber(skill.stats?.installsAllTime),
+      trustLevel: "community",
+      categories: [],
+      version,
+      updatedAt: this.normalizeTimestamp(skill.updatedAt),
     };
   }
 
-  private normalizeSkillDetail(response: ClawHubSkillDetailResponse): MarketplaceSkillDetail {
-    const summary = this.normalizeSkill(response);
-    const fullDescription = response.fullDescription ?? response.readme ?? response.description;
+  private normalizeSearchSkill(skill: ClawHubSearchResult): MarketplaceSkill {
+    return {
+      slug: skill.slug,
+      name: this.normalizeName(skill.displayName, skill.slug),
+      author: "unknown",
+      description: this.normalizeText(skill.summary),
+      installCount: 0,
+      trustLevel: "community",
+      categories: [],
+      version: this.pickVersion(skill.version),
+      updatedAt: this.normalizeTimestamp(skill.updatedAt),
+    };
+  }
+
+  private normalizeSkillDetail(response: ClawHubDetailResponse): MarketplaceSkillDetail {
+    const skill = response.skill;
+    const summary = this.normalizeSkill({
+      slug: skill?.slug ?? "",
+      displayName: skill?.displayName,
+      summary: skill?.summary,
+      stats: skill?.stats,
+      updatedAt: skill?.updatedAt,
+      tags: skill?.tags,
+      latestVersion: response.latestVersion,
+    });
+
+    const version = this.pickVersion(response.latestVersion?.version, skill?.tags?.latest);
 
     return {
       ...summary,
-      fullDescription,
-      requiredTools: response.requiredTools,
-      homepage: response.homepage,
-      license: response.license,
-      versions: response.versions.map((version) => version.version),
-      readme: response.readme,
+      author: this.normalizeDetailAuthor(response),
+      version,
+      fullDescription: this.normalizeText(skill?.summary),
+      requiredTools: [],
+      homepage: undefined,
+      license: undefined,
+      versions: version.length > 0 ? [version] : [],
+      readme: undefined,
     };
-  }
-
-  private normalizeCategories(response: ClawHubCategoriesResponse): MarketplaceCategory[] {
-    return response.categories.map((category) => ({
-      id: category.id,
-      name: category.name,
-      slug: category.slug,
-      count: category.count,
-    }));
   }
 
   private normalizeDownload(response: ClawHubDownloadResponse): DownloadResult {
@@ -264,21 +266,46 @@ export class ClawHubSource implements MarketplaceSource {
     };
   }
 
-  private normalizeTrustLevel(value: string): MarketplaceTrustLevel {
-    return TRUST_LEVELS.includes(value as MarketplaceTrustLevel)
-      ? (value as MarketplaceTrustLevel)
-      : "untrusted";
-  }
-
-  private normalizeAuthor(author: unknown): string {
-    if (typeof author === "string") {
-      return author;
+  private normalizeDetailAuthor(response: ClawHubDetailResponse): string {
+    if (typeof response.owner?.displayName === "string" && response.owner.displayName.length > 0) {
+      return response.owner.displayName;
     }
 
-    if (typeof author === "object" && author !== null && "name" in author) {
-      const named = (author as { name?: unknown }).name;
-      if (typeof named === "string") {
-        return named;
+    if (typeof response.owner?.handle === "string" && response.owner.handle.length > 0) {
+      return response.owner.handle;
+    }
+
+    return "unknown";
+  }
+
+  private normalizeName(displayName: unknown, fallback: string): string {
+    if (typeof displayName === "string" && displayName.length > 0) {
+      return displayName;
+    }
+
+    return fallback;
+  }
+
+  private normalizeText(value: unknown): string {
+    return typeof value === "string" ? value : "";
+  }
+
+  private normalizeNumber(value: unknown): number {
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  }
+
+  private normalizeTimestamp(value: unknown): string {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return new Date(value).toISOString();
+    }
+
+    return new Date(0).toISOString();
+  }
+
+  private pickVersion(...candidates: Array<string | undefined>): string {
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.length > 0) {
+        return candidate;
       }
     }
 

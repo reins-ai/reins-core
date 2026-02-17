@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
 import type {
-  ClawHubCategoriesResponse,
+  ClawHubBrowseResponse,
+  ClawHubDetailResponse,
   ClawHubDownloadResponse,
-  ClawHubSkillDetailResponse,
-  ClawHubSkillsResponse,
+  ClawHubSearchResponse,
 } from "../../../src/marketplace/clawhub/api-types";
 import type { ClawHubClient, FetchSkillsOptions, SearchSkillsOptions } from "../../../src/marketplace/clawhub/client";
 import { ClawHubSource } from "../../../src/marketplace/clawhub/source";
@@ -18,12 +18,10 @@ interface MockClientControls {
   searchSkillsCalls: Array<{ query: string; options: SearchSkillsOptions }>;
   fetchSkillDetailCalls: string[];
   downloadSkillCalls: Array<{ slug: string; version: string }>;
-  fetchCategoriesCalls: number;
-  enqueueFetchSkills(result: Result<ClawHubSkillsResponse, MarketplaceError>): void;
-  enqueueSearchSkills(result: Result<ClawHubSkillsResponse, MarketplaceError>): void;
-  enqueueFetchSkillDetail(result: Result<ClawHubSkillDetailResponse, MarketplaceError>): void;
+  enqueueFetchSkills(result: Result<ClawHubBrowseResponse, MarketplaceError>): void;
+  enqueueSearchSkills(result: Result<ClawHubSearchResponse, MarketplaceError>): void;
+  enqueueFetchSkillDetail(result: Result<ClawHubDetailResponse, MarketplaceError>): void;
   enqueueDownloadSkill(result: Result<ClawHubDownloadResponse, MarketplaceError>): void;
-  enqueueFetchCategories(result: Result<ClawHubCategoriesResponse, MarketplaceError>): void;
 }
 
 function createRateLimitedError(): MarketplaceError {
@@ -31,27 +29,24 @@ function createRateLimitedError(): MarketplaceError {
 }
 
 function createMockClient(): MockClientControls {
-  const fetchSkillsQueue: Array<Result<ClawHubSkillsResponse, MarketplaceError>> = [];
-  const searchSkillsQueue: Array<Result<ClawHubSkillsResponse, MarketplaceError>> = [];
-  const fetchSkillDetailQueue: Array<Result<ClawHubSkillDetailResponse, MarketplaceError>> = [];
+  const fetchSkillsQueue: Array<Result<ClawHubBrowseResponse, MarketplaceError>> = [];
+  const searchSkillsQueue: Array<Result<ClawHubSearchResponse, MarketplaceError>> = [];
+  const fetchSkillDetailQueue: Array<Result<ClawHubDetailResponse, MarketplaceError>> = [];
   const downloadSkillQueue: Array<Result<ClawHubDownloadResponse, MarketplaceError>> = [];
-  const fetchCategoriesQueue: Array<Result<ClawHubCategoriesResponse, MarketplaceError>> = [];
 
   const fetchSkillsCalls: FetchSkillsOptions[] = [];
   const searchSkillsCalls: Array<{ query: string; options: SearchSkillsOptions }> = [];
   const fetchSkillDetailCalls: string[] = [];
   const downloadSkillCalls: Array<{ slug: string; version: string }> = [];
 
-  let fetchCategoriesCalls = 0;
-
   const client: ClawHubClient = {
     async fetchSkills(options: FetchSkillsOptions = {}) {
       fetchSkillsCalls.push(options);
-      return fetchSkillsQueue.shift() ?? ok({ skills: [], total: 0, page: 1, pageSize: 20 });
+      return fetchSkillsQueue.shift() ?? ok({ items: [], nextCursor: null });
     },
     async searchSkills(query: string, options: SearchSkillsOptions = {}) {
       searchSkillsCalls.push({ query, options });
-      return searchSkillsQueue.shift() ?? ok({ skills: [], total: 0, page: 1, pageSize: 20 });
+      return searchSkillsQueue.shift() ?? ok({ results: [] });
     },
     async fetchSkillDetail(slug: string) {
       fetchSkillDetailCalls.push(slug);
@@ -60,10 +55,6 @@ function createMockClient(): MockClientControls {
     async downloadSkill(slug: string, version: string) {
       downloadSkillCalls.push({ slug, version });
       return downloadSkillQueue.shift() ?? err(new MarketplaceError("download failed", MARKETPLACE_ERROR_CODES.DOWNLOAD_ERROR));
-    },
-    async fetchCategories() {
-      fetchCategoriesCalls += 1;
-      return fetchCategoriesQueue.shift() ?? ok({ categories: [] });
     },
     getRateLimitInfo() {
       return { remaining: null, resetAt: null };
@@ -76,9 +67,6 @@ function createMockClient(): MockClientControls {
     searchSkillsCalls,
     fetchSkillDetailCalls,
     downloadSkillCalls,
-    get fetchCategoriesCalls() {
-      return fetchCategoriesCalls;
-    },
     enqueueFetchSkills(result) {
       fetchSkillsQueue.push(result);
     },
@@ -90,9 +78,6 @@ function createMockClient(): MockClientControls {
     },
     enqueueDownloadSkill(result) {
       downloadSkillQueue.push(result);
-    },
-    enqueueFetchCategories(result) {
-      fetchCategoriesQueue.push(result);
     },
   };
 }
@@ -115,22 +100,17 @@ describe("ClawHubSource", () => {
   it("browse returns normalized MarketplaceSearchResult", async () => {
     const mock = createMockClient();
     mock.enqueueFetchSkills(ok({
-      skills: [
+      items: [
         {
           slug: "calendar-tool",
-          name: "Calendar Tool",
-          author: "openclaw",
-          description: "Calendar skill",
-          installCount: 42,
-          trustLevel: "trusted",
-          categories: ["productivity"],
-          latestVersion: "2.0.0",
-          updatedAt: "2026-02-16T00:00:00.000Z",
+          displayName: "Calendar Tool",
+          summary: "Calendar skill",
+          tags: { latest: "2.0.0" },
+          stats: { installsAllTime: 42 },
+          updatedAt: 1_771_292_800_000,
         },
       ],
-      total: 1,
-      page: 2,
-      pageSize: 10,
+      nextCursor: null,
     }));
 
     const source = new ClawHubSource({ client: mock.client });
@@ -143,13 +123,13 @@ describe("ClawHubSource", () => {
           {
             slug: "calendar-tool",
             name: "Calendar Tool",
-            author: "openclaw",
+            author: "unknown",
             description: "Calendar skill",
             installCount: 42,
-            trustLevel: "trusted",
-            categories: ["productivity"],
+            trustLevel: "community",
+            categories: [],
             version: "2.0.0",
-            updatedAt: "2026-02-16T00:00:00.000Z",
+            updatedAt: "2026-02-17T01:46:40.000Z",
           },
         ],
         total: 1,
@@ -163,22 +143,15 @@ describe("ClawHubSource", () => {
   it("search returns normalized results", async () => {
     const mock = createMockClient();
     mock.enqueueSearchSkills(ok({
-      skills: [
+      results: [
         {
           slug: "agent-memory",
-          name: "Agent Memory",
-          author: "community",
-          description: "Memory helpers",
-          installCount: 100,
-          trustLevel: "community",
-          categories: ["memory"],
-          latestVersion: "1.1.0",
-          updatedAt: "2026-02-15T00:00:00.000Z",
+          displayName: "Agent Memory",
+          summary: "Memory helpers",
+          version: "1.1.0",
+          updatedAt: 1_771_206_400_000,
         },
       ],
-      total: 22,
-      page: 1,
-      pageSize: 20,
     }));
 
     const source = new ClawHubSource({ client: mock.client });
@@ -187,29 +160,20 @@ describe("ClawHubSource", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.skills[0]?.version).toBe("1.1.0");
-      expect(result.value.hasMore).toBe(true);
+      expect(result.value.hasMore).toBe(false);
     }
   });
 
-  it("normalizes nested author names and unknown trust levels", async () => {
+  it("normalizes missing browse fields with defensive defaults", async () => {
     const mock = createMockClient();
     mock.enqueueFetchSkills(ok({
-      skills: [
+      items: [
         {
           slug: "custom",
-          name: "Custom",
-          author: { name: "nested-author" } as unknown as string,
-          description: "desc",
-          installCount: 7,
-          trustLevel: "experimental",
-          categories: [],
-          latestVersion: "0.1.0",
-          updatedAt: "2026-02-16T00:00:00.000Z",
+          displayName: "",
         },
       ],
-      total: 1,
-      page: 1,
-      pageSize: 20,
+      nextCursor: null,
     }));
 
     const source = new ClawHubSource({ client: mock.client });
@@ -217,28 +181,27 @@ describe("ClawHubSource", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.skills[0]?.author).toBe("nested-author");
-      expect(result.value.skills[0]?.trustLevel).toBe("untrusted");
+      expect(result.value.skills[0]?.name).toBe("custom");
+      expect(result.value.skills[0]?.author).toBe("unknown");
+      expect(result.value.skills[0]?.trustLevel).toBe("community");
+      expect(result.value.skills[0]?.version).toBe("unknown");
     }
   });
 
   it("getDetail returns normalized MarketplaceSkillDetail", async () => {
     const mock = createMockClient();
     mock.enqueueFetchSkillDetail(ok({
-      slug: "planner",
-      name: "Planner",
-      author: "verified-author",
-      description: "Short description",
-      installCount: 500,
-      trustLevel: "verified",
-      categories: ["planning"],
-      latestVersion: "3.0.0",
-      updatedAt: "2026-02-14T00:00:00.000Z",
-      versions: [{ version: "3.0.0" }, { version: "2.0.0" }],
-      requiredTools: ["git", "bun"],
-      readme: "# Planner",
-      homepage: "https://example.com/planner",
-      license: "MIT",
+      skill: {
+        slug: "planner",
+        displayName: "Planner",
+        summary: "Short description",
+        tags: { latest: "3.0.0" },
+        stats: { installsAllTime: 500 },
+        updatedAt: 1_771_120_000_000,
+      },
+      latestVersion: { version: "3.0.0", createdAt: 1_771_120_000_000, changelog: "" },
+      owner: { handle: "verified-author", displayName: "Verified Author" },
+      moderation: null,
     }));
 
     const source = new ClawHubSource({ client: mock.client });
@@ -246,9 +209,10 @@ describe("ClawHubSource", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.fullDescription).toBe("# Planner");
-      expect(result.value.versions).toEqual(["3.0.0", "2.0.0"]);
-      expect(result.value.requiredTools).toEqual(["git", "bun"]);
+      expect(result.value.author).toBe("Verified Author");
+      expect(result.value.fullDescription).toBe("Short description");
+      expect(result.value.versions).toEqual(["3.0.0"]);
+      expect(result.value.requiredTools).toEqual([]);
     }
   });
 
@@ -277,26 +241,24 @@ describe("ClawHubSource", () => {
     }
   });
 
-  it("getCategories returns MarketplaceCategory[]", async () => {
+  it("getCategories returns empty list without API call", async () => {
     const mock = createMockClient();
-    mock.enqueueFetchCategories(ok({
-      categories: [{ id: "1", name: "Productivity", slug: "productivity", count: 12 }],
-    }));
-
     const source = new ClawHubSource({ client: mock.client });
     const result = await source.getCategories();
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value).toEqual([{ id: "1", name: "Productivity", slug: "productivity", count: 12 }]);
+      expect(result.value).toEqual([]);
     }
+    expect(mock.fetchSkillsCalls).toHaveLength(0);
+    expect(mock.searchSkillsCalls).toHaveLength(0);
   });
 
   it("maps sort modes for browse", async () => {
     const mock = createMockClient();
-    mock.enqueueFetchSkills(ok({ skills: [], total: 0, page: 1, pageSize: 20 }));
-    mock.enqueueFetchSkills(ok({ skills: [], total: 0, page: 1, pageSize: 20 }));
-    mock.enqueueFetchSkills(ok({ skills: [], total: 0, page: 1, pageSize: 20 }));
+    mock.enqueueFetchSkills(ok({ items: [], nextCursor: null }));
+    mock.enqueueFetchSkills(ok({ items: [], nextCursor: null }));
+    mock.enqueueFetchSkills(ok({ items: [], nextCursor: null }));
 
     const source = new ClawHubSource({ client: mock.client });
     await source.browse({ sort: "trending" });
@@ -312,7 +274,7 @@ describe("ClawHubSource", () => {
 
   it("cache hit returns cached data and skips client call", async () => {
     const mock = createMockClient();
-    mock.enqueueFetchSkills(ok({ skills: [], total: 0, page: 1, pageSize: 20 }));
+    mock.enqueueFetchSkills(ok({ items: [], nextCursor: null }));
 
     const source = new ClawHubSource({ client: mock.client });
 
@@ -325,22 +287,15 @@ describe("ClawHubSource", () => {
   it("rate-limited request falls back to cached data", async () => {
     const mock = createMockClient();
     mock.enqueueSearchSkills(ok({
-      skills: [
+      results: [
         {
           slug: "cached-skill",
-          name: "Cached Skill",
-          author: "author",
-          description: "cached",
-          installCount: 1,
-          trustLevel: "trusted",
-          categories: [],
-          latestVersion: "1.0.0",
-          updatedAt: "2026-02-16T00:00:00.000Z",
+          displayName: "Cached Skill",
+          summary: "cached",
+          version: "1.0.0",
+          updatedAt: 1_771_292_800_000,
         },
       ],
-      total: 1,
-      page: 1,
-      pageSize: 20,
     }));
     mock.enqueueSearchSkills(err(createRateLimitedError()));
 

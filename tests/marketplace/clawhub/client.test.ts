@@ -1,10 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
 import type {
-  ClawHubCategoriesResponse,
+  ClawHubBrowseResponse,
+  ClawHubDetailResponse,
   ClawHubSearchResponse,
-  ClawHubSkillDetailResponse,
-  ClawHubSkillsResponse,
 } from "../../../src/marketplace/clawhub/api-types";
 import { ClawHubClient } from "../../../src/marketplace/clawhub/client";
 import { MarketplaceError } from "../../../src/marketplace/errors";
@@ -30,23 +29,23 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 
 describe("ClawHubClient", () => {
   it("fetchSkills returns parsed response and sends user agent", async () => {
-    const payload: ClawHubSkillsResponse = {
-      skills: [
+    const payload: ClawHubBrowseResponse = {
+      items: [
         {
           slug: "skill-one",
-          name: "Skill One",
-          author: "author",
-          description: "desc",
-          installCount: 10,
-          trustLevel: "trusted",
-          categories: ["utility"],
-          latestVersion: "1.0.0",
-          updatedAt: "2026-02-16T00:00:00.000Z",
+          displayName: "Skill One",
+          summary: "desc",
+          tags: { latest: "1.0.0" },
+          stats: { installsAllTime: 10 },
+          updatedAt: 1_771_288_540_843,
+          latestVersion: {
+            version: "1.0.0",
+            createdAt: 1_767_545_381_030,
+            changelog: "",
+          },
         },
       ],
-      total: 1,
-      page: 2,
-      pageSize: 25,
+      nextCursor: null,
     };
 
     let requestedUrl = "";
@@ -71,10 +70,16 @@ describe("ClawHubClient", () => {
 
   it("searchSkills sends query and returns parsed response", async () => {
     const payload: ClawHubSearchResponse = {
-      skills: [],
-      total: 0,
-      page: 1,
-      pageSize: 10,
+      results: [
+        {
+          score: 1.2,
+          slug: "calendar-tool",
+          displayName: "Calendar Tool",
+          summary: "calendar skill",
+          version: "1.0.0",
+          updatedAt: 1_771_287_935_888,
+        },
+      ],
     };
 
     let requestedUrl = "";
@@ -89,25 +94,39 @@ describe("ClawHubClient", () => {
     if (result.ok) {
       expect(result.value).toEqual(payload);
     }
-    expect(requestedUrl).toBe("https://clawhub.ai/api/v1/search?q=calendar&page=1&limit=10");
+    expect(requestedUrl).toBe("https://clawhub.ai/api/v1/search?q=calendar&limit=10");
   });
 
   it("fetchSkillDetail returns detail payload", async () => {
-    const payload: ClawHubSkillDetailResponse = {
-      slug: "skill-one",
-      name: "Skill One",
-      author: "author",
-      description: "desc",
-      installCount: 10,
-      trustLevel: "verified",
-      categories: ["utility"],
-      latestVersion: "2.0.0",
-      updatedAt: "2026-02-16T00:00:00.000Z",
-      versions: [{ version: "2.0.0" }, { version: "1.0.0" }],
-      requiredTools: ["curl"],
-      readme: "# Skill",
-      homepage: "https://example.com",
-      license: "MIT",
+    const payload: ClawHubDetailResponse = {
+      skill: {
+        slug: "skill-one",
+        displayName: "Skill One",
+        summary: "desc",
+        tags: { latest: "2.0.0" },
+        stats: {
+          installsAllTime: 10,
+          installsCurrent: 9,
+          comments: 0,
+          downloads: 30,
+          stars: 2,
+          versions: 2,
+        },
+        createdAt: 1_767_545_381_030,
+        updatedAt: 1_771_288_540_843,
+      },
+      latestVersion: {
+        version: "2.0.0",
+        createdAt: 1_771_288_540_843,
+        changelog: "",
+      },
+      owner: {
+        handle: "author",
+        userId: "abc",
+        displayName: "Author Name",
+        image: "https://example.com/avatar.png",
+      },
+      moderation: null,
     };
 
     const client = createClient(async () => jsonResponse(payload));
@@ -139,20 +158,6 @@ describe("ClawHubClient", () => {
       expect(result.value.size).toBe(4);
       expect(result.value.contentType).toBe("application/zip");
       expect(new Uint8Array(result.value.data)).toEqual(bytes);
-    }
-  });
-
-  it("fetchCategories returns parsed category payload", async () => {
-    const payload: ClawHubCategoriesResponse = {
-      categories: [{ id: "1", name: "Utility", slug: "utility", count: 42 }],
-    };
-
-    const client = createClient(async () => jsonResponse(payload));
-    const result = await client.fetchCategories();
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value).toEqual(payload);
     }
   });
 
