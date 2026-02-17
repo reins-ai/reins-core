@@ -3,6 +3,8 @@ import { describe, expect, it } from "bun:test";
 import { BrowserError } from "../../src/browser/errors";
 import { BrowserWatcher } from "../../src/browser/watcher";
 import { WatcherRegistry } from "../../src/browser/watcher-registry";
+import { WatcherCronManager } from "../../src/browser/watcher-cron-manager";
+import type { WatcherPersistenceIO } from "../../src/browser/watcher-cron-manager";
 import {
   ConversationNotificationDelivery,
   formatWatcherNotification,
@@ -12,6 +14,10 @@ import type { BrowserDaemonService } from "../../src/browser/browser-daemon-serv
 import type { CdpMethod, Snapshot, SnapshotDiff, WatcherConfig, WatcherDiff, WatcherState } from "../../src/browser/types";
 import type { SnapshotEngine, TakeSnapshotParams } from "../../src/browser/snapshot";
 import type { ConversationManager } from "../../src/conversation/manager";
+import type { CronScheduler } from "../../src/cron/scheduler";
+import type { CronJobCreateInput, CronJobDefinition, CronResult } from "../../src/cron/types";
+import { ok, err } from "../../src/result";
+import { CronError } from "../../src/cron/types";
 
 interface SendCall {
   method: CdpMethod;
@@ -521,5 +527,310 @@ describe("ConversationNotificationDelivery", () => {
     expect(content).toContain("Added: 2 elements");
     expect(content).toContain("Changed: 1 elements");
     expect(content).toContain("Removed: 3 elements");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persistence tests (WatcherCronManager)
+// ---------------------------------------------------------------------------
+
+class MockCronSchedulerForPersist {
+  public readonly createCalls: Array<{ input: CronJobCreateInput }> = [];
+  public readonly removeCalls: Array<{ id: string }> = [];
+  public createShouldFail = false;
+
+  async create(input: CronJobCreateInput): Promise<CronResult<CronJobDefinition>> {
+    this.createCalls.push({ input });
+    if (this.createShouldFail) {
+      return err(new CronError("Create failed", "CRON_JOB_CREATE_FAILED"));
+    }
+    const job: CronJobDefinition = {
+      id: input.id ?? "generated-id",
+      name: input.name,
+      description: input.description ?? "",
+      schedule: input.schedule,
+      timezone: "UTC",
+      status: "active",
+      createdBy: "agent",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastRunAt: null,
+      nextRunAt: null,
+      runCount: 0,
+      maxRuns: null,
+      payload: input.payload,
+      tags: [],
+    };
+    return ok(job);
+  }
+
+  async remove(id: string): Promise<CronResult<void>> {
+    this.removeCalls.push({ id });
+    return ok(undefined);
+  }
+}
+
+interface FsWriteCall {
+  path: string;
+  data: string;
+  encoding?: string;
+}
+
+interface FsRenameCall {
+  oldPath: string;
+  newPath: string;
+}
+
+interface FsMkdirCall {
+  path: string;
+  options?: { recursive?: boolean };
+}
+
+class MockPersistenceIO implements WatcherPersistenceIO {
+  public fileContents = new Map<string, string>();
+  public readonly writeCalls: FsWriteCall[] = [];
+  public readonly renameCalls: FsRenameCall[] = [];
+  public readonly mkdirCalls: FsMkdirCall[] = [];
+  public readShouldThrow?: Error;
+
+  async readFile(path: string | Buffer | URL, _encoding?: string): Promise<string> {
+    const pathStr = String(path);
+    if (this.readShouldThrow) {
+      throw this.readShouldThrow;
+    }
+    const content = this.fileContents.get(pathStr);
+    if (content === undefined) {
+      const error = new Error(`ENOENT: no such file or directory, open '${pathStr}'`) as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    }
+    return content;
+  }
+
+  async writeFile(path: string | Buffer | URL, data: string | Buffer | Uint8Array, encoding?: string): Promise<void> {
+    const pathStr = String(path);
+    this.writeCalls.push({ path: pathStr, data: String(data), encoding: encoding as string | undefined });
+    this.fileContents.set(pathStr, String(data));
+  }
+
+  async rename(oldPath: string | Buffer | URL, newPath: string | Buffer | URL): Promise<void> {
+    const oldStr = String(oldPath);
+    const newStr = String(newPath);
+    this.renameCalls.push({ oldPath: oldStr, newPath: newStr });
+    const content = this.fileContents.get(oldStr);
+    if (content !== undefined) {
+      this.fileContents.set(newStr, content);
+      this.fileContents.delete(oldStr);
+    }
+  }
+
+  async mkdir(path: string | Buffer | URL, _options?: { recursive?: boolean }): Promise<string | undefined> {
+    this.mkdirCalls.push({ path: String(path), options: _options as { recursive?: boolean } | undefined });
+    return undefined;
+  }
+}
+
+function makePersistManager(overrides?: {
+  io?: MockPersistenceIO;
+  cronScheduler?: MockCronSchedulerForPersist;
+  watchersFilePath?: string;
+}): {
+  manager: WatcherCronManager;
+  snapshotEngine: MockSnapshotEngine;
+  cronScheduler: MockCronSchedulerForPersist;
+  io: MockPersistenceIO;
+} {
+  const client = new MockCdpClient();
+  const snapshotEngine = new MockSnapshotEngine();
+  const cronScheduler = overrides?.cronScheduler ?? new MockCronSchedulerForPersist();
+  const io = overrides?.io ?? new MockPersistenceIO();
+
+  const manager = new WatcherCronManager({
+    snapshotEngine: snapshotEngine as unknown as SnapshotEngine,
+    browserService: makeMockService(client),
+    cronScheduler: cronScheduler as unknown as CronScheduler,
+    watchersFilePath: overrides?.watchersFilePath ?? "/tmp/test-watchers.json",
+    persistenceIO: io as unknown as WatcherPersistenceIO,
+  });
+
+  return { manager, snapshotEngine, cronScheduler, io };
+}
+
+describe("WatcherCronManager persist", () => {
+  it("resumeWatchers loads watchers from file", async () => {
+    const io = new MockPersistenceIO();
+    const states: WatcherState[] = [
+      {
+        config: makeConfig({ id: "watcher-010", intervalSeconds: 300 }),
+        status: "active",
+        baselineSnapshot: "snapshot:Example:1",
+        lastCheckedAt: Date.now(),
+      },
+      {
+        config: makeConfig({ id: "watcher-011", intervalSeconds: 600 }),
+        status: "active",
+        baselineSnapshot: "snapshot:Other:2",
+      },
+    ];
+    io.fileContents.set("/tmp/test-watchers.json", JSON.stringify(states));
+
+    const { manager, cronScheduler } = makePersistManager({ io });
+
+    await manager.resumeWatchers();
+
+    const watchers = manager.listWatchers();
+    expect(watchers).toHaveLength(2);
+    expect(watchers.map((w) => w.id).sort()).toEqual(["watcher-010", "watcher-011"]);
+
+    // Cron jobs should be scheduled for each resumed watcher
+    expect(cronScheduler.createCalls).toHaveLength(2);
+    expect(cronScheduler.createCalls[0]!.input.id).toBe("watcher-cron-watcher-010");
+    expect(cronScheduler.createCalls[1]!.input.id).toBe("watcher-cron-watcher-011");
+  });
+
+  it("watcher file is saved after createWatcher", async () => {
+    const io = new MockPersistenceIO();
+    const { manager, snapshotEngine } = makePersistManager({ io });
+    snapshotEngine.snapshots.push(makeSnapshot());
+
+    await manager.createWatcher(makeConfig());
+
+    // Should have written to tmp file and renamed
+    expect(io.writeCalls).toHaveLength(1);
+    expect(io.writeCalls[0]!.path).toBe("/tmp/test-watchers.json.tmp");
+    expect(io.renameCalls).toHaveLength(1);
+    expect(io.renameCalls[0]!.oldPath).toBe("/tmp/test-watchers.json.tmp");
+    expect(io.renameCalls[0]!.newPath).toBe("/tmp/test-watchers.json");
+
+    // Verify the content is valid JSON with the watcher state
+    const savedContent = io.fileContents.get("/tmp/test-watchers.json");
+    expect(savedContent).toBeDefined();
+    const parsed = JSON.parse(savedContent!) as WatcherState[];
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.config.id).toBe("watcher-001");
+  });
+
+  it("watcher file is saved after removeWatcher", async () => {
+    const io = new MockPersistenceIO();
+    const { manager, snapshotEngine } = makePersistManager({ io });
+    snapshotEngine.snapshots.push(makeSnapshot());
+
+    const watcher = await manager.createWatcher(makeConfig());
+    io.writeCalls.length = 0;
+    io.renameCalls.length = 0;
+
+    await manager.removeWatcher(watcher.id);
+
+    expect(io.writeCalls).toHaveLength(1);
+    const savedContent = io.fileContents.get("/tmp/test-watchers.json");
+    const parsed = JSON.parse(savedContent!) as WatcherState[];
+    expect(parsed).toHaveLength(0);
+  });
+
+  it("corrupt JSON in watchers file is handled gracefully", async () => {
+    const io = new MockPersistenceIO();
+    io.fileContents.set("/tmp/test-watchers.json", "not valid json {{{");
+
+    const { manager } = makePersistManager({ io });
+
+    // Should not throw
+    await manager.resumeWatchers();
+
+    expect(manager.listWatchers()).toHaveLength(0);
+  });
+
+  it("non-array JSON in watchers file is handled gracefully", async () => {
+    const io = new MockPersistenceIO();
+    io.fileContents.set("/tmp/test-watchers.json", JSON.stringify({ not: "an array" }));
+
+    const { manager } = makePersistManager({ io });
+
+    // Should not throw
+    await manager.resumeWatchers();
+
+    expect(manager.listWatchers()).toHaveLength(0);
+  });
+
+  it("missing watchers file is handled gracefully", async () => {
+    const io = new MockPersistenceIO();
+    // No file set — readFile will throw ENOENT
+
+    const { manager } = makePersistManager({ io });
+
+    // Should not throw
+    await manager.resumeWatchers();
+
+    expect(manager.listWatchers()).toHaveLength(0);
+  });
+
+  it("REINS_BROWSER_WATCHERS_FILE env var overrides path", async () => {
+    const original = process.env.REINS_BROWSER_WATCHERS_FILE;
+    try {
+      process.env.REINS_BROWSER_WATCHERS_FILE = "/custom/watchers.json";
+
+      const client = new MockCdpClient();
+      const snapshotEngine = new MockSnapshotEngine();
+      const cronScheduler = new MockCronSchedulerForPersist();
+      const io = new MockPersistenceIO();
+
+      const states: WatcherState[] = [
+        {
+          config: makeConfig({ id: "watcher-env-test", intervalSeconds: 300 }),
+          status: "active",
+          baselineSnapshot: "snapshot:Test:1",
+        },
+      ];
+      io.fileContents.set("/custom/watchers.json", JSON.stringify(states));
+
+      // Create manager WITHOUT explicit watchersFilePath — should use env var
+      const manager = new WatcherCronManager({
+        snapshotEngine: snapshotEngine as unknown as SnapshotEngine,
+        browserService: makeMockService(client),
+        cronScheduler: cronScheduler as unknown as CronScheduler,
+        persistenceIO: io as unknown as WatcherPersistenceIO,
+      });
+
+      await manager.resumeWatchers();
+
+      expect(manager.listWatchers()).toHaveLength(1);
+      expect(manager.listWatchers()[0]!.id).toBe("watcher-env-test");
+    } finally {
+      if (original === undefined) {
+        delete process.env.REINS_BROWSER_WATCHERS_FILE;
+      } else {
+        process.env.REINS_BROWSER_WATCHERS_FILE = original;
+      }
+    }
+  });
+
+  it("stopAllCronJobs removes cron jobs for all watchers", async () => {
+    const io = new MockPersistenceIO();
+    const { manager, snapshotEngine, cronScheduler } = makePersistManager({ io });
+    snapshotEngine.snapshots.push(makeSnapshot(), makeSnapshot());
+
+    await manager.createWatcher(makeConfig());
+    await manager.createWatcher(makeConfig());
+    cronScheduler.removeCalls.length = 0;
+
+    await manager.stopAllCronJobs();
+
+    expect(cronScheduler.removeCalls).toHaveLength(2);
+    const removedIds = cronScheduler.removeCalls.map((c) => c.id).sort();
+    expect(removedIds).toEqual(["watcher-cron-watcher-001", "watcher-cron-watcher-002"]);
+  });
+
+  it("persistence uses atomic write (tmp + rename)", async () => {
+    const io = new MockPersistenceIO();
+    const { manager, snapshotEngine } = makePersistManager({ io });
+    snapshotEngine.snapshots.push(makeSnapshot());
+
+    await manager.createWatcher(makeConfig());
+
+    // Verify atomic write pattern
+    expect(io.mkdirCalls).toHaveLength(1);
+    expect(io.mkdirCalls[0]!.options).toEqual({ recursive: true });
+    expect(io.writeCalls[0]!.path).toEndWith(".tmp");
+    expect(io.renameCalls[0]!.oldPath).toEndWith(".tmp");
+    expect(io.renameCalls[0]!.newPath).toBe("/tmp/test-watchers.json");
   });
 });

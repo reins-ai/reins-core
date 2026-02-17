@@ -46,6 +46,16 @@ export interface BrowserDaemonServiceOptions {
   spawnFn?: SpawnFn;
   findBinaryFn?: () => Promise<string>;
   cdpClientFactory?: (port: number) => CdpClient;
+  watcherManager?: WatcherManagerLike;
+}
+
+/**
+ * Minimal interface for the watcher manager lifecycle hooks.
+ * Avoids circular dependency with WatcherCronManager.
+ */
+export interface WatcherManagerLike {
+  resumeWatchers(): Promise<void>;
+  stopAllCronJobs(): Promise<void>;
 }
 
 export class BrowserDaemonService implements DaemonManagedService {
@@ -57,6 +67,7 @@ export class BrowserDaemonService implements DaemonManagedService {
   private readonly spawnFn: SpawnFn;
   private readonly findBinaryFn: () => Promise<string>;
   private readonly cdpClientFactory: (port: number) => CdpClient;
+  private readonly watcherManager?: WatcherManagerLike;
 
   private chromeProcess: ReturnType<SpawnFn> | null = null;
   private cdpClient: CdpClient | null = null;
@@ -74,6 +85,7 @@ export class BrowserDaemonService implements DaemonManagedService {
     this.spawnFn = options.spawnFn ?? BrowserDaemonService.bunSpawnFn;
     this.findBinaryFn = options.findBinaryFn ?? findChromeBinary;
     this.cdpClientFactory = options.cdpClientFactory ?? ((port) => new CdpClient({ port }));
+    this.watcherManager = options.watcherManager;
   }
 
   static _setBunSpawnForTests(fn: typeof Bun.spawn): void {
@@ -85,11 +97,25 @@ export class BrowserDaemonService implements DaemonManagedService {
   }
 
   async start(): Promise<Result<void, DaemonError>> {
+    if (this.watcherManager) {
+      try {
+        await this.watcherManager.resumeWatchers();
+      } catch {
+        // Watcher resume errors must not prevent daemon startup.
+      }
+    }
     return ok(undefined);
   }
 
   async stop(signal: NodeJS.Signals = "SIGTERM"): Promise<Result<void, DaemonError>> {
     try {
+      if (this.watcherManager) {
+        try {
+          await this.watcherManager.stopAllCronJobs();
+        } catch {
+          // Watcher cleanup errors must not prevent daemon shutdown.
+        }
+      }
       await this.stopChrome(signal);
       return ok(undefined);
     } catch (error) {

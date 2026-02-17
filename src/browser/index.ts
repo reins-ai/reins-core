@@ -6,10 +6,11 @@ export {
   _resetFileExistsForTests,
 } from "./chrome-finder";
 export { BrowserDaemonService } from "./browser-daemon-service";
+export type { BrowserDaemonServiceOptions, WatcherManagerLike } from "./browser-daemon-service";
 export { BrowserWatcher } from "./watcher";
 export { WatcherRegistry } from "./watcher-registry";
 export { WatcherCronManager, intervalToCron } from "./watcher-cron-manager";
-export type { WatcherCronManagerOptions } from "./watcher-cron-manager";
+export type { WatcherCronManagerOptions, WatcherPersistenceIO } from "./watcher-cron-manager";
 export {
   ConversationNotificationDelivery,
   formatWatcherNotification,

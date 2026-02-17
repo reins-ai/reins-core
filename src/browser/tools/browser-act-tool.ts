@@ -10,6 +10,7 @@ import {
 import type { BrowserDaemonService } from "../browser-daemon-service";
 import type { CdpClient } from "../cdp-client";
 import type { ElementRefRegistry } from "../element-ref-registry";
+import type { WatcherCronManager } from "../watcher-cron-manager";
 import type {
   AttachToTargetResult,
   CaptureScreenshotResult,
@@ -18,6 +19,8 @@ import type {
   GetBoxModelResult,
   GetTargetsResult,
   ResolveNodeResult,
+  SnapshotFilter,
+  SnapshotFormat,
 } from "../types";
 import type {
   Tool,
@@ -36,25 +39,29 @@ type SupportedBrowserActAction =
   | "hover"
   | "press_key"
   | "evaluate"
-  | "screenshot";
+  | "screenshot"
+  | "watch"
+  | "unwatch"
+  | "list_watchers";
 
 export interface BrowserActToolOptions {
   screenshotDir?: string;
   mkdirFn?: typeof mkdir;
   writeFileFn?: typeof writeFile;
+  watcherManager?: WatcherCronManager;
 }
 
 export class BrowserActTool implements Tool {
   readonly definition: ToolDefinition = {
     name: "browser_act",
     description:
-      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, and screenshot actions.",
+      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, screenshot, watch, unwatch, and list_watchers actions.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot"],
+          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot", "watch", "unwatch", "list_watchers"],
           description: "Interaction action to perform.",
         },
         ref: {
@@ -114,6 +121,32 @@ export class BrowserActTool implements Tool {
           description:
             "Screenshot output mode. 'inline' (default) returns base64 JPEG. 'file' saves to disk and returns path.",
         },
+        url: {
+          type: "string",
+          description: "URL to watch for changes (for watch action).",
+        },
+        intervalSeconds: {
+          type: "number",
+          description: "Check interval in seconds (for watch action, default 300, minimum 60).",
+        },
+        format: {
+          type: "string",
+          enum: ["text", "compact", "json"],
+          description: "Snapshot format for watcher (for watch action, default 'compact').",
+        },
+        filter: {
+          type: "string",
+          enum: ["interactive", "forms", "none"],
+          description: "Snapshot filter for watcher (for watch action, default 'interactive').",
+        },
+        maxTokens: {
+          type: "number",
+          description: "Max tokens for watcher snapshots (for watch action).",
+        },
+        watcherId: {
+          type: "string",
+          description: "Watcher ID to remove (for unwatch action).",
+        },
       },
       required: ["action"],
     },
@@ -122,6 +155,7 @@ export class BrowserActTool implements Tool {
   private readonly screenshotDir: string;
   private readonly mkdirFn: typeof mkdir;
   private readonly writeFileFn: typeof writeFile;
+  private readonly watcherManager?: WatcherCronManager;
 
   constructor(
     private readonly service: BrowserDaemonService,
@@ -133,6 +167,7 @@ export class BrowserActTool implements Tool {
       ?? join(homedir(), ".reins", "browser", "screenshots");
     this.mkdirFn = options.mkdirFn ?? mkdir;
     this.writeFileFn = options.writeFileFn ?? writeFile;
+    this.watcherManager = options.watcherManager;
   }
 
   async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
@@ -206,6 +241,15 @@ export class BrowserActTool implements Tool {
               this.readOutput(args.output),
             ),
           );
+        case "watch":
+          return this.success(callId, await this.watch(args));
+        case "unwatch":
+          return this.success(
+            callId,
+            await this.unwatch(this.requireString(args.watcherId, "'watcherId' is required for unwatch action.")),
+          );
+        case "list_watchers":
+          return this.success(callId, this.listWatchers());
       }
     } catch (error) {
       return this.toErrorResult(callId, error);
@@ -394,6 +438,88 @@ export class BrowserActTool implements Tool {
     return { action: "screenshot", output: "inline", data: result.data, mimeType: "image/jpeg" };
   }
 
+  private async watch(args: Record<string, unknown>): Promise<unknown> {
+    if (!this.watcherManager) {
+      throw new BrowserError("Watcher mode not available");
+    }
+
+    const url = this.requireString(args.url, "'url' is required for watch action.");
+    const intervalSeconds = typeof args.intervalSeconds === "number" && Number.isFinite(args.intervalSeconds)
+      ? args.intervalSeconds
+      : 300;
+    const format = this.readSnapshotFormat(args.format);
+    const filter = this.readSnapshotFilter(args.filter);
+    const maxTokens = typeof args.maxTokens === "number" && Number.isFinite(args.maxTokens)
+      ? args.maxTokens
+      : undefined;
+
+    const watcher = await this.watcherManager.createWatcher({
+      id: "",
+      url,
+      intervalSeconds,
+      format,
+      filter,
+      maxTokens,
+      createdAt: Date.now(),
+    });
+
+    return {
+      watcherId: watcher.id,
+      url,
+      intervalSeconds: watcher.state.config.intervalSeconds,
+      message: `Watcher created for ${url} checking every ${watcher.state.config.intervalSeconds}s`,
+    };
+  }
+
+  private async unwatch(watcherId: string): Promise<unknown> {
+    if (!this.watcherManager) {
+      throw new BrowserError("Watcher mode not available");
+    }
+
+    const existing = this.watcherManager.getWatcher(watcherId);
+    if (!existing) {
+      throw new BrowserError(`Watcher not found: ${watcherId}`);
+    }
+
+    await this.watcherManager.removeWatcher(watcherId);
+    return {
+      watcherId,
+      message: `Watcher removed: ${watcherId}`,
+    };
+  }
+
+  private listWatchers(): unknown {
+    if (!this.watcherManager) {
+      throw new BrowserError("Watcher mode not available");
+    }
+
+    return this.watcherManager.listWatchers().map((watcher) => {
+      const state = watcher.state;
+      return {
+        watcherId: state.config.id,
+        url: state.config.url,
+        status: state.status,
+        intervalSeconds: state.config.intervalSeconds,
+        lastCheckedAt: state.lastCheckedAt ?? null,
+        hasChanges: state.lastDiff?.hasChanges ?? false,
+      };
+    });
+  }
+
+  private readSnapshotFormat(value: unknown): SnapshotFormat {
+    if (value === "text" || value === "compact" || value === "json") {
+      return value;
+    }
+    return "compact";
+  }
+
+  private readSnapshotFilter(value: unknown): SnapshotFilter {
+    if (value === "interactive" || value === "forms" || value === "none") {
+      return value;
+    }
+    return "interactive";
+  }
+
   private async pressKey(
     client: CdpClient,
     sessionId: string,
@@ -447,6 +573,9 @@ export class BrowserActTool implements Tool {
       || value === "press_key"
       || value === "evaluate"
       || value === "screenshot"
+      || value === "watch"
+      || value === "unwatch"
+      || value === "list_watchers"
     ) {
       return value;
     }

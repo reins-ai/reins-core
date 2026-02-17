@@ -7,7 +7,9 @@ import type { CdpClient } from "../../../src/browser/cdp-client";
 import type { ElementRefRegistry } from "../../../src/browser/element-ref-registry";
 import { BrowserActTool } from "../../../src/browser/tools/browser-act-tool";
 import type { BrowserActToolOptions } from "../../../src/browser/tools/browser-act-tool";
-import type { CdpMethod } from "../../../src/browser/types";
+import type { WatcherCronManager } from "../../../src/browser/watcher-cron-manager";
+import type { BrowserWatcher } from "../../../src/browser/watcher";
+import type { CdpMethod, WatcherConfig, WatcherState } from "../../../src/browser/types";
 import type { ToolContext } from "../../../src/types";
 
 interface SendCall {
@@ -107,7 +109,7 @@ describe("BrowserActTool", () => {
       expect(tool.definition.name).toBe("browser_act");
     });
 
-    it("has all 9 actions in enum", () => {
+    it("has all 12 actions in enum", () => {
       const { tool } = setup();
       const actions = tool.definition.parameters.properties.action?.enum;
       expect(actions).toEqual([
@@ -120,6 +122,9 @@ describe("BrowserActTool", () => {
         "press_key",
         "evaluate",
         "screenshot",
+        "watch",
+        "unwatch",
+        "list_watchers",
       ]);
     });
   });
@@ -563,4 +568,189 @@ describe("BrowserActTool", () => {
       expect(result.result).toBeNull();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // watch / unwatch / list_watchers tests
+  // -------------------------------------------------------------------------
+
+  describe("watch", () => {
+    it("watch action creates watcher and returns watcherId", async () => {
+      const mockWatcherManager = new MockWatcherManager();
+      const { tool } = setup({ watcherManager: mockWatcherManager as unknown as WatcherCronManager });
+
+      const result = await tool.execute(
+        { action: "watch", url: "https://example.com", intervalSeconds: 300, callId: "call-watch" },
+        context,
+      );
+
+      expect(result.callId).toBe("call-watch");
+      expect(result.error).toBeUndefined();
+      const data = result.result as { watcherId: string; url: string; intervalSeconds: number; message: string };
+      expect(data.watcherId).toBe("watcher-001");
+      expect(data.url).toBe("https://example.com");
+      expect(data.intervalSeconds).toBe(300);
+      expect(data.message).toContain("Watcher created");
+      expect(mockWatcherManager.createCalls).toHaveLength(1);
+    });
+
+    it("unwatch action removes watcher", async () => {
+      const mockWatcherManager = new MockWatcherManager();
+      mockWatcherManager.watchers.set("watcher-001", makeMockWatcher("watcher-001"));
+      const { tool } = setup({ watcherManager: mockWatcherManager as unknown as WatcherCronManager });
+
+      const result = await tool.execute(
+        { action: "unwatch", watcherId: "watcher-001", callId: "call-unwatch" },
+        context,
+      );
+
+      expect(result.callId).toBe("call-unwatch");
+      expect(result.error).toBeUndefined();
+      const data = result.result as { watcherId: string; message: string };
+      expect(data.watcherId).toBe("watcher-001");
+      expect(data.message).toContain("Watcher removed");
+      expect(mockWatcherManager.removeCalls).toHaveLength(1);
+    });
+
+    it("unwatch returns error for non-existent watcher", async () => {
+      const mockWatcherManager = new MockWatcherManager();
+      const { tool } = setup({ watcherManager: mockWatcherManager as unknown as WatcherCronManager });
+
+      const result = await tool.execute(
+        { action: "unwatch", watcherId: "nonexistent", callId: "call-unwatch-missing" },
+        context,
+      );
+
+      expect(result.callId).toBe("call-unwatch-missing");
+      expect(result.errorDetail?.code).toBe("BROWSER_ERROR");
+      expect(result.error).toContain("Watcher not found");
+    });
+
+    it("list_watchers returns list of active watchers", async () => {
+      const mockWatcherManager = new MockWatcherManager();
+      mockWatcherManager.watchers.set("watcher-001", makeMockWatcher("watcher-001"));
+      mockWatcherManager.watchers.set("watcher-002", makeMockWatcher("watcher-002", "https://other.com"));
+      const { tool } = setup({ watcherManager: mockWatcherManager as unknown as WatcherCronManager });
+
+      const result = await tool.execute(
+        { action: "list_watchers", callId: "call-list" },
+        context,
+      );
+
+      expect(result.callId).toBe("call-list");
+      expect(result.error).toBeUndefined();
+      const data = result.result as Array<{ watcherId: string; url: string; status: string }>;
+      expect(data).toHaveLength(2);
+      expect(data[0]!.watcherId).toBe("watcher-001");
+      expect(data[1]!.watcherId).toBe("watcher-002");
+      expect(data[1]!.url).toBe("https://other.com");
+    });
+
+    it("watch graceful error when watcherManager not provided", async () => {
+      const { tool } = setup();
+
+      const result = await tool.execute(
+        { action: "watch", url: "https://example.com", callId: "call-no-manager" },
+        context,
+      );
+
+      expect(result.callId).toBe("call-no-manager");
+      expect(result.errorDetail?.code).toBe("BROWSER_ERROR");
+      expect(result.error).toContain("Watcher mode not available");
+    });
+
+    it("unwatch graceful error when watcherManager not provided", async () => {
+      const { tool } = setup();
+
+      const result = await tool.execute(
+        { action: "unwatch", watcherId: "watcher-001", callId: "call-no-manager-unwatch" },
+        context,
+      );
+
+      expect(result.callId).toBe("call-no-manager-unwatch");
+      expect(result.error).toContain("Watcher mode not available");
+    });
+
+    it("list_watchers graceful error when watcherManager not provided", async () => {
+      const { tool } = setup();
+
+      const result = await tool.execute(
+        { action: "list_watchers", callId: "call-no-manager-list" },
+        context,
+      );
+
+      expect(result.callId).toBe("call-no-manager-list");
+      expect(result.error).toContain("Watcher mode not available");
+    });
+
+    it("watch uses default intervalSeconds when not provided", async () => {
+      const mockWatcherManager = new MockWatcherManager();
+      const { tool } = setup({ watcherManager: mockWatcherManager as unknown as WatcherCronManager });
+
+      await tool.execute(
+        { action: "watch", url: "https://example.com", callId: "call-default-interval" },
+        context,
+      );
+
+      const config = mockWatcherManager.createCalls[0]!;
+      expect(config.intervalSeconds).toBe(300);
+    });
+  });
 });
+
+// ---------------------------------------------------------------------------
+// Mock WatcherCronManager for watch/unwatch/list_watchers tests
+// ---------------------------------------------------------------------------
+
+interface MockWatcherLike {
+  id: string;
+  state: WatcherState;
+}
+
+function makeMockWatcher(id: string, url = "https://example.com"): MockWatcherLike {
+  return {
+    id,
+    state: {
+      config: {
+        id,
+        url,
+        intervalSeconds: 300,
+        format: "compact" as const,
+        filter: "interactive" as const,
+        maxTokens: 2000,
+        createdAt: Date.now(),
+      },
+      status: "active",
+      baselineSnapshot: "snapshot:Example:1",
+      lastCheckedAt: Date.now(),
+    },
+  };
+}
+
+class MockWatcherManager {
+  public readonly watchers = new Map<string, MockWatcherLike>();
+  public readonly createCalls: WatcherConfig[] = [];
+  public readonly removeCalls: string[] = [];
+  private nextId = 1;
+
+  async createWatcher(config: WatcherConfig): Promise<MockWatcherLike> {
+    const id = config.id.trim().length > 0 ? config.id : `watcher-${String(this.nextId++).padStart(3, "0")}`;
+    const watcher = makeMockWatcher(id, config.url);
+    watcher.state.config.intervalSeconds = config.intervalSeconds;
+    this.createCalls.push(config);
+    this.watchers.set(id, watcher);
+    return watcher;
+  }
+
+  async removeWatcher(id: string): Promise<void> {
+    this.removeCalls.push(id);
+    this.watchers.delete(id);
+  }
+
+  getWatcher(id: string): MockWatcherLike | undefined {
+    return this.watchers.get(id);
+  }
+
+  listWatchers(): MockWatcherLike[] {
+    return Array.from(this.watchers.values());
+  }
+}
