@@ -1,4 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import {
   SKILL_TOOL_DEFINITION,
@@ -10,6 +14,20 @@ import {
   type SkillMetadata,
 } from "../../src/skills";
 import type { ToolContext } from "../../src/types";
+
+const tempDirs: string[] = [];
+
+async function createTempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "reins-skill-tool-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterAll(async () => {
+  for (const dir of tempDirs) {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 type LoadedSkillContent = {
   body: string;
@@ -211,5 +229,144 @@ describe("SkillTool", () => {
 
     expect(result.callId).toBe("unknown-call");
     expect(result.error).toBeUndefined();
+  });
+
+  describe("post-start install (disk fallback)", () => {
+    it("loads skill from disk when scanner cache misses", async () => {
+      const dir = await createTempDir();
+      const skillDir = join(dir, "summarize");
+      await mkdir(skillDir);
+      await writeFile(
+        join(skillDir, "SKILL.md"),
+        `---
+name: summarize
+description: Summarize text content
+triggers: [summarize, tldr]
+categories: [writing]
+version: 1.0.0
+---
+
+# Summarize
+
+Condense long text into key points.
+`,
+      );
+
+      const registry = new SkillRegistry();
+      registry.register(createSkill({
+        name: "summarize",
+        path: skillDir,
+      }));
+
+      // Empty scanner cache — simulates skill added after initial scan
+      const scanner = new MockSkillScanner(new Map());
+      const tool = new SkillTool(registry, scanner);
+
+      const result = await tool.execute(
+        { callId: "post-start-1", name: "summarize" },
+        createContext(),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).not.toBeNull();
+
+      const data = result.result as {
+        name: string;
+        body: string;
+        metadata: SkillMetadata;
+      };
+      expect(data.name).toBe("summarize");
+      expect(data.body).toBe("# Summarize\n\nCondense long text into key points.");
+      expect(data.metadata.name).toBe("summarize");
+      expect(data.metadata.description).toBe("Summarize text content");
+    });
+
+    it("returns error when both scanner cache and disk fail", async () => {
+      const registry = new SkillRegistry();
+      registry.register(createSkill({
+        name: "ghost-skill",
+        path: "/tmp/does-not-exist-reins-ghost-xyz",
+      }));
+
+      const scanner = new MockSkillScanner(new Map());
+      const tool = new SkillTool(registry, scanner);
+
+      const result = await tool.execute(
+        { callId: "post-start-2", name: "ghost-skill" },
+        createContext(),
+      );
+
+      expect(result.result).toBeNull();
+      expect(result.error).toBe("Failed to load content for skill: ghost-skill");
+    });
+
+    it("prefers scanner cache over disk when both available", async () => {
+      const dir = await createTempDir();
+      const skillDir = join(dir, "cached-skill");
+      await mkdir(skillDir);
+      await writeFile(
+        join(skillDir, "SKILL.md"),
+        `---
+name: cached-skill
+description: Disk version
+---
+
+# Disk Body
+`,
+      );
+
+      const registry = new SkillRegistry();
+      registry.register(createSkill({
+        name: "cached-skill",
+        path: skillDir,
+      }));
+
+      const scanner = new MockSkillScanner(
+        new Map([
+          [
+            "cached-skill",
+            {
+              body: "# Cache Body",
+              metadata: createMetadata("cached-skill"),
+              raw: "---\nname: cached-skill\n---\n\n# Cache Body",
+            },
+          ],
+        ]),
+      );
+
+      const tool = new SkillTool(registry, scanner);
+      const result = await tool.execute(
+        { callId: "post-start-3", name: "cached-skill" },
+        createContext(),
+      );
+
+      expect(result.error).toBeUndefined();
+      const data = result.result as { body: string };
+      expect(data.body).toBe("# Cache Body");
+    });
+
+    it("handles invalid SKILL.md on disk gracefully", async () => {
+      const dir = await createTempDir();
+      const skillDir = join(dir, "bad-skill");
+      await mkdir(skillDir);
+      await writeFile(join(skillDir, "SKILL.md"), "not valid frontmatter");
+
+      const registry = new SkillRegistry();
+      registry.register(createSkill({
+        name: "bad-skill",
+        path: skillDir,
+      }));
+
+      const scanner = new MockSkillScanner(new Map());
+      const tool = new SkillTool(registry, scanner);
+
+      const result = await tool.execute(
+        { callId: "post-start-4", name: "bad-skill" },
+        createContext(),
+      );
+
+      expect(result.result).toBeNull();
+      expect(result.error).toBe("Failed to load content for skill: bad-skill");
+    });
   });
 });
