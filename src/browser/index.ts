@@ -8,6 +8,8 @@ export {
 export { BrowserDaemonService } from "./browser-daemon-service";
 export { BrowserWatcher } from "./watcher";
 export { WatcherRegistry } from "./watcher-registry";
+export { WatcherCronManager, intervalToCron } from "./watcher-cron-manager";
+export type { WatcherCronManagerOptions } from "./watcher-cron-manager";
 export { ElementRefRegistry } from "./element-ref-registry";
 export { SnapshotEngine } from "./snapshot";
 export type { SnapshotOptions, TakeSnapshotParams } from "./snapshot";
