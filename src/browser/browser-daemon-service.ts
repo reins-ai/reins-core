@@ -289,11 +289,25 @@ export class BrowserDaemonService implements DaemonManagedService {
   }
 
   private getMemoryUsage(): number | undefined {
-    if (!this.chromeProcess?.pid || process.platform !== "linux") {
+    if (!this.chromeProcess?.pid) {
       return undefined;
     }
 
-    const statusPath = `/proc/${this.chromeProcess.pid}/status`;
+    const platform = process.platform;
+
+    if (platform === "linux") {
+      return this.getMemoryUsageLinux(this.chromeProcess.pid);
+    }
+
+    if (platform === "darwin") {
+      return this.getMemoryUsageDarwin(this.chromeProcess.pid);
+    }
+
+    return undefined;
+  }
+
+  private getMemoryUsageLinux(pid: number): number | undefined {
+    const statusPath = `/proc/${pid}/status`;
     try {
       const content = readFileSync(statusPath, "utf8");
       const vmRssLine = content
@@ -309,6 +323,25 @@ export class BrowserDaemonService implements DaemonManagedService {
       }
 
       const kb = Number.parseInt(match[1] ?? "", 10);
+      if (!Number.isFinite(kb)) {
+        return undefined;
+      }
+
+      return Math.round(kb / 1024);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private getMemoryUsageDarwin(pid: number): number | undefined {
+    try {
+      const result = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]);
+      const output = result.stdout.toString().trim();
+      if (output.length === 0) {
+        return undefined;
+      }
+
+      const kb = Number.parseInt(output, 10);
       if (!Number.isFinite(kb)) {
         return undefined;
       }
