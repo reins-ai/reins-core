@@ -14,10 +14,14 @@ import {
   createMockSourceWithZip,
   createTempDir,
   createZipFromFiles,
+  INTEGRATION_MD_NO_SETUP,
+  INTEGRATION_MD_WITH_SETUP,
   INVALID_NATIVE_SKILL_MD,
   NATIVE_SKILL_MD,
+  NATIVE_SKILL_MD_NO_VERSION,
   NO_FRONTMATTER_SKILL_MD,
   OPENCLAW_SKILL_MD,
+  OPENCLAW_SKILL_MD_NO_VERSION,
   tempPaths,
 } from "./fixtures";
 
@@ -94,6 +98,81 @@ describe("SkillInstaller", () => {
       expect(result.value.installedPath).toBe(
         resolve(skillsDir, "smart-calendar-sync"),
       );
+    });
+  });
+
+  describe("ClawHub compatibility: version-less SKILL.md", () => {
+    it("installs a native skill without version and injects API-provided version", async () => {
+      const source = await createMockSourceWithZip(NATIVE_SKILL_MD_NO_VERSION);
+      const { pipeline } = createMockMigrationPipeline();
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("smart-calendar-sync", "3.1.0");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.slug).toBe("smart-calendar-sync");
+      expect(result.value.version).toBe("3.1.0");
+      expect(result.value.migrated).toBe(false);
+
+      // Verify the installed SKILL.md contains the injected version
+      const installedSkillMd = await readFile(
+        resolve(result.value.installedPath, "SKILL.md"),
+        "utf8",
+      );
+      expect(installedSkillMd).toContain("version: 3.1.0");
+      expect(installedSkillMd).toContain("name: smart-calendar-sync");
+    });
+
+    it("preserves explicit version when source SKILL.md already has one", async () => {
+      const source = await createMockSourceWithZip(NATIVE_SKILL_MD);
+      const { pipeline } = createMockMigrationPipeline();
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("smart-calendar-sync", "9.9.9");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // The installed SKILL.md should keep the original version (2.4.1), not the API version
+      const installedSkillMd = await readFile(
+        resolve(result.value.installedPath, "SKILL.md"),
+        "utf8",
+      );
+      expect(installedSkillMd).toContain("version: 2.4.1");
+      expect(installedSkillMd).not.toContain("version: 9.9.9");
+    });
+
+    it("installs an OpenClaw skill without version via migration with fallback", async () => {
+      const source = await createMockSourceWithZip(OPENCLAW_SKILL_MD_NO_VERSION);
+      const { pipeline, state } = createMockMigrationPipeline();
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("git-commit-assistant", "2.0.0");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.migrated).toBe(true);
+      expect(result.value.slug).toBe("git-commit-assistant");
+      expect(result.value.version).toBe("2.0.0");
+      expect(state.migrateCalls.length).toBe(1);
     });
   });
 
@@ -313,7 +392,6 @@ describe("SkillInstaller", () => {
 
       expect(result.error.message).toContain("Validation failed");
       expect(result.error.message).toContain("Missing required frontmatter field: name");
-      expect(result.error.message).toContain("Missing required frontmatter field: version");
       expect(result.error.code).toBe("MARKETPLACE_INVALID_RESPONSE");
     });
 
@@ -536,6 +614,140 @@ describe("SkillInstaller", () => {
       if (!result2.ok) return;
 
       expect(result2.value.version).toBe("2.5.0");
+    });
+  });
+
+  describe("integration guide surfacing", () => {
+    it("returns integration info when native skill includes INTEGRATION.md", async () => {
+      const source = await createMockSourceWithZip(NATIVE_SKILL_MD, {
+        "INTEGRATION.md": INTEGRATION_MD_WITH_SETUP,
+      });
+      const { pipeline } = createMockMigrationPipeline();
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("smart-calendar-sync", "2.4.1");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.integration).toBeDefined();
+      expect(result.value.integration!.setupRequired).toBe(true);
+      expect(result.value.integration!.guidePath).toContain("INTEGRATION.md");
+      expect(result.value.integration!.sections.length).toBeGreaterThan(0);
+
+      const sectionTitles = result.value.integration!.sections.map((s) => s.title);
+      expect(sectionTitles).toContain("Setup");
+      expect(sectionTitles).toContain("Configuration");
+    });
+
+    it("returns integration info when migrated skill produces INTEGRATION.md", async () => {
+      const source = await createMockSourceWithZip(OPENCLAW_SKILL_MD);
+      const { pipeline } = createMockMigrationPipeline({
+        integrationMd: INTEGRATION_MD_WITH_SETUP,
+      });
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("git-commit-assistant", "1.8.0");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.migrated).toBe(true);
+      expect(result.value.integration).toBeDefined();
+      expect(result.value.integration!.setupRequired).toBe(true);
+      expect(result.value.integration!.guidePath).toContain("INTEGRATION.md");
+      expect(result.value.integration!.sections.length).toBeGreaterThan(0);
+    });
+
+    it("omits integration when no INTEGRATION.md exists", async () => {
+      const source = await createMockSourceWithZip(NATIVE_SKILL_MD);
+      const { pipeline } = createMockMigrationPipeline();
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("smart-calendar-sync", "2.4.1");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.integration).toBeUndefined();
+    });
+
+    it("omits integration when migrated skill has no INTEGRATION.md", async () => {
+      const source = await createMockSourceWithZip(OPENCLAW_SKILL_MD);
+      const { pipeline } = createMockMigrationPipeline({ integrationMd: null });
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("git-commit-assistant", "1.8.0");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.migrated).toBe(true);
+      expect(result.value.integration).toBeUndefined();
+    });
+
+    it("marks setupRequired false when INTEGRATION.md has no setup steps", async () => {
+      const source = await createMockSourceWithZip(NATIVE_SKILL_MD, {
+        "INTEGRATION.md": INTEGRATION_MD_NO_SETUP,
+      });
+      const { pipeline } = createMockMigrationPipeline();
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("smart-calendar-sync", "2.4.1");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.integration).toBeDefined();
+      expect(result.value.integration!.setupRequired).toBe(false);
+      expect(result.value.integration!.sections.length).toBeGreaterThan(0);
+    });
+
+    it("provides absolute guidePath pointing to installed directory", async () => {
+      const source = await createMockSourceWithZip(NATIVE_SKILL_MD, {
+        "INTEGRATION.md": INTEGRATION_MD_WITH_SETUP,
+      });
+      const { pipeline } = createMockMigrationPipeline();
+
+      const installer = new SkillInstaller({
+        source,
+        migrationPipeline: pipeline,
+        skillsDir,
+      });
+
+      const result = await installer.install("smart-calendar-sync", "2.4.1");
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.integration!.guidePath).toBe(
+        resolve(result.value.installedPath, "INTEGRATION.md"),
+      );
     });
   });
 });

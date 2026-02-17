@@ -224,6 +224,63 @@ describe("SkillRegistry", () => {
     expect(registry.getSummaries()).toEqual([]);
   });
 
+  describe("hasEnabledScriptCapableSkills", () => {
+    it("returns false when registry is empty", () => {
+      const registry = new SkillRegistry();
+
+      expect(registry.hasEnabledScriptCapableSkills()).toBe(false);
+    });
+
+    it("returns false when all skills lack scripts", () => {
+      const registry = new SkillRegistry();
+      registry.register(createTestSkill({
+        config: { name: "summarize", enabled: true },
+        hasScripts: false,
+        scriptFiles: [],
+      }));
+
+      expect(registry.hasEnabledScriptCapableSkills()).toBe(false);
+    });
+
+    it("returns false when script-capable skill is disabled", () => {
+      const registry = new SkillRegistry();
+      registry.register(createTestSkill({
+        config: { name: "deploy-helper", enabled: false },
+        hasScripts: true,
+        scriptFiles: ["deploy.sh"],
+      }));
+
+      expect(registry.hasEnabledScriptCapableSkills()).toBe(false);
+    });
+
+    it("returns true when at least one enabled skill has scripts", () => {
+      const registry = new SkillRegistry();
+      registry.register(createTestSkill({
+        config: { name: "summarize", enabled: true },
+        hasScripts: false,
+        scriptFiles: [],
+      }));
+      registry.register(createTestSkill({
+        config: { name: "deploy-helper", enabled: true },
+        hasScripts: true,
+        scriptFiles: ["deploy.sh"],
+      }));
+
+      expect(registry.hasEnabledScriptCapableSkills()).toBe(true);
+    });
+
+    it("returns false when hasScripts is true but scriptFiles is empty", () => {
+      const registry = new SkillRegistry();
+      registry.register(createTestSkill({
+        config: { name: "broken-skill", enabled: true },
+        hasScripts: true,
+        scriptFiles: [],
+      }));
+
+      expect(registry.hasEnabledScriptCapableSkills()).toBe(false);
+    });
+  });
+
   describe("with SkillStateStore", () => {
     function createMockStateStore(state: Record<string, boolean> = {}): SkillStateStore & { calls: { name: string; enabled: boolean }[] } {
       const calls: { name: string; enabled: boolean }[] = [];

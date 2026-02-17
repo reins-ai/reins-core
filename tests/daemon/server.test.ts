@@ -1047,6 +1047,102 @@ describe("DaemonHttpServer skill runtime wiring", () => {
     const output = scriptResult.result as { stdout: string };
     expect(output.stdout).toContain("hello from skill");
   });
+
+  it("omits run_skill_script tool when no enabled skill has scripts", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "reins-skill-noscript-"));
+    tempHomes.push(tempHome);
+
+    const skillsDir = join(tempHome, "skills");
+    await writeSkillFixture({
+      skillsDir,
+      skillName: "summarize",
+      description: "Summarize text content.",
+      trustLevel: "trusted",
+    });
+
+    const skillService = new SkillDaemonService({ skillsDir });
+    skillServices.push(skillService);
+    const skillStart = await skillService.start();
+    expect(skillStart.ok).toBe(true);
+
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      skillService,
+      conversation: {
+        conversationManager: new ConversationManager(new InMemoryConversationStore()),
+      },
+    });
+    servers.push(server);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    const internals = server as unknown as { toolExecutor: ToolExecutor; toolDefinitions: ToolDefinition[] };
+    const toolRegistry = internals.toolExecutor.getRegistry();
+
+    expect(toolRegistry.has("load_skill")).toBe(true);
+    expect(toolRegistry.has("run_skill_script")).toBe(false);
+    expect(internals.toolDefinitions.some((d) => d.name === "load_skill")).toBe(true);
+    expect(internals.toolDefinitions.some((d) => d.name === "run_skill_script")).toBe(false);
+  });
+
+  it("exposes run_skill_script when at least one enabled skill has scripts", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "reins-skill-mixed-"));
+    tempHomes.push(tempHome);
+
+    const skillsDir = join(tempHome, "skills");
+
+    // Scriptless skill
+    await writeSkillFixture({
+      skillsDir,
+      skillName: "summarize",
+      description: "Summarize text content.",
+      trustLevel: "trusted",
+    });
+
+    // Script-capable skill
+    await writeSkillFixture({
+      skillsDir,
+      skillName: "deploy-helper",
+      description: "Run deployment scripts.",
+      trustLevel: "trusted",
+      scriptName: "deploy.sh",
+      scriptContent: "#!/usr/bin/env bash\necho \"deploying\"\n",
+    });
+
+    const skillService = new SkillDaemonService({ skillsDir });
+    skillServices.push(skillService);
+    const skillStart = await skillService.start();
+    expect(skillStart.ok).toBe(true);
+
+    const server = new DaemonHttpServer({
+      port: testPort++,
+      authService: createStubAuthService(),
+      modelRouter: new ModelRouter(new ProviderRegistry()),
+      skillService,
+      conversation: {
+        conversationManager: new ConversationManager(new InMemoryConversationStore()),
+      },
+    });
+    servers.push(server);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    const internals = server as unknown as { toolExecutor: ToolExecutor; toolDefinitions: ToolDefinition[] };
+    const toolRegistry = internals.toolExecutor.getRegistry();
+
+    expect(toolRegistry.has("load_skill")).toBe(true);
+    expect(toolRegistry.has("run_skill_script")).toBe(true);
+    expect(internals.toolDefinitions.some((d) => d.name === "load_skill")).toBe(true);
+    expect(internals.toolDefinitions.some((d) => d.name === "run_skill_script")).toBe(true);
+
+    const scriptDef = internals.toolDefinitions.find((d) => d.name === "run_skill_script");
+    expect(scriptDef?.description).toContain("load_skill");
+    expect(scriptDef?.description).toContain("scripts[]");
+  });
 });
 
 describe("DaemonRuntime with conversation-wired server", () => {

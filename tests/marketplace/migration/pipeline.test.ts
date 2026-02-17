@@ -156,8 +156,7 @@ version: 2.0.0
     const pipeline = new MigrationPipeline({
       migrationService: createMockMigrationService({
         skillMd: `---
-name: invalid-skill
-description: Missing version value
+description: Missing name field
 ---
 
 # Invalid
@@ -178,13 +177,14 @@ description: Missing version value
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("Validation failed for staged migration");
+      expect(result.error.message).toContain("Missing required frontmatter field: name");
       expect(result.error.message).toContain("Warnings: deterministic conversion warning");
 
       const stagingPath = extractStagingPath(result.error.message);
       expect(stagingPath).not.toBeNull();
       if (stagingPath) {
         const stagedSkill = await readFile(join(stagingPath, "SKILL.md"), "utf8");
-        expect(stagedSkill).toContain("name: invalid-skill");
+        expect(stagedSkill).toContain("description: Missing name field");
       }
     }
 
@@ -257,5 +257,89 @@ version: 1.0.0
 
     const integration = await readFile(join(targetDir, "INTEGRATION.md"), "utf8");
     expect(integration).toContain("export API_KEY");
+  });
+
+  it("accepts migrated skill without version when no fallback is provided", async () => {
+    const sourceDir = await createSourceSkillDir(buildOpenClawSkill());
+    const targetDir = await createTempDir("reins-migration-target-");
+
+    const pipeline = new MigrationPipeline({
+      migrationService: createMockMigrationService({
+        skillMd: `---
+name: versionless-skill
+description: A skill without version
+---
+
+# Versionless
+`,
+        integrationMd: null,
+        report: { warnings: [], mappedFields: [], unmappedFields: [], usedLlm: true },
+      }),
+    });
+
+    const result = await pipeline.migrate(sourceDir, targetDir);
+    expect(result.ok).toBe(true);
+
+    const targetSkill = await readFile(join(targetDir, "SKILL.md"), "utf8");
+    expect(targetSkill).toContain("name: versionless-skill");
+    expect(targetSkill).not.toContain("version:");
+  });
+
+  it("injects fallback version when converted output lacks version", async () => {
+    const sourceDir = await createSourceSkillDir(buildOpenClawSkill());
+    const targetDir = await createTempDir("reins-migration-target-");
+
+    const pipeline = new MigrationPipeline({
+      migrationService: createMockMigrationService({
+        skillMd: `---
+name: versionless-skill
+description: A skill without version
+---
+
+# Versionless
+`,
+        integrationMd: null,
+        report: { warnings: [], mappedFields: [], unmappedFields: [], usedLlm: true },
+      }),
+    });
+
+    const result = await pipeline.migrate(sourceDir, targetDir, { fallbackVersion: "4.2.0" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const targetSkill = await readFile(join(targetDir, "SKILL.md"), "utf8");
+    expect(targetSkill).toContain("version: 4.2.0");
+    expect(targetSkill).toContain("name: versionless-skill");
+
+    // The returned skillMd should also contain the injected version
+    expect(result.value.skillMd).toContain("version: 4.2.0");
+  });
+
+  it("does not inject fallback version when converted output already has version", async () => {
+    const sourceDir = await createSourceSkillDir(buildOpenClawSkill());
+    const targetDir = await createTempDir("reins-migration-target-");
+
+    const pipeline = new MigrationPipeline({
+      migrationService: createMockMigrationService({
+        skillMd: `---
+name: versioned-skill
+description: A skill with version
+version: 1.5.0
+---
+
+# Versioned
+`,
+        integrationMd: null,
+        report: { warnings: [], mappedFields: [], unmappedFields: [], usedLlm: true },
+      }),
+    });
+
+    const result = await pipeline.migrate(sourceDir, targetDir, { fallbackVersion: "9.9.9" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const targetSkill = await readFile(join(targetDir, "SKILL.md"), "utf8");
+    expect(targetSkill).toContain("version: 1.5.0");
+    expect(targetSkill).not.toContain("version: 9.9.9");
   });
 });

@@ -236,12 +236,28 @@ export class ClawHubClient {
       return null;
     }
 
-    const seconds = Number.parseInt(value, 10);
-    if (!Number.isNaN(seconds) && seconds >= 0) {
-      return seconds;
+    const trimmed = value.trim();
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && numeric >= 0) {
+      const nowMs = Date.now();
+
+      // Some sources return absolute epoch timestamps in Retry-After instead
+      // of relative seconds. Handle both seconds and milliseconds epochs.
+      if (numeric >= 1_000_000_000_000) {
+        const deltaSeconds = Math.ceil((numeric - nowMs) / 1000);
+        return deltaSeconds > 0 ? deltaSeconds : 0;
+      }
+
+      if (numeric >= 1_000_000_000) {
+        const nowSeconds = Math.floor(nowMs / 1000);
+        const deltaSeconds = Math.ceil(numeric - nowSeconds);
+        return deltaSeconds > 0 ? deltaSeconds : 0;
+      }
+
+      return Math.ceil(numeric);
     }
 
-    const dateMs = Date.parse(value);
+    const dateMs = Date.parse(trimmed);
     if (Number.isNaN(dateMs)) {
       return null;
     }

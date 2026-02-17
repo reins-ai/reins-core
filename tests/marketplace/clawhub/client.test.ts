@@ -27,6 +27,16 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
+async function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
+  const originalNow = Date.now;
+  Date.now = () => nowMs;
+  try {
+    return await run();
+  } finally {
+    Date.now = originalNow;
+  }
+}
+
 describe("ClawHubClient", () => {
   it("fetchSkills returns parsed response and sends user agent", async () => {
     const payload: ClawHubBrowseResponse = {
@@ -195,6 +205,48 @@ describe("ClawHubClient", () => {
     const rateLimitInfo = client.getRateLimitInfo();
     expect(rateLimitInfo.remaining).toBe(0);
     expect(rateLimitInfo.resetAt).toEqual(new Date(1760000000 * 1000));
+  });
+
+  it("treats numeric Retry-After epoch seconds as absolute timestamp", async () => {
+    const result = await withMockedNow(1_771_314_000_000, async () => {
+      const client = createClient(async () => {
+        return new Response("too many", {
+          status: 429,
+          headers: {
+            "retry-after": "1771314600",
+          },
+        });
+      });
+
+      return client.fetchSkills();
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("MARKETPLACE_RATE_LIMITED");
+      expect(result.error.message).toContain("Retry after 600 seconds");
+    }
+  });
+
+  it("treats numeric Retry-After epoch milliseconds as absolute timestamp", async () => {
+    const result = await withMockedNow(1_771_314_000_000, async () => {
+      const client = createClient(async () => {
+        return new Response("too many", {
+          status: 429,
+          headers: {
+            "retry-after": "1771314600000",
+          },
+        });
+      });
+
+      return client.fetchSkills();
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("MARKETPLACE_RATE_LIMITED");
+      expect(result.error.message).toContain("Retry after 600 seconds");
+    }
   });
 
   it("maps 500 responses to MARKETPLACE_SOURCE_ERROR", async () => {

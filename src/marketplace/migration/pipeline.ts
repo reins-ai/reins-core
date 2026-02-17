@@ -98,7 +98,7 @@ function validateBasicYaml(yaml: string): ValidationResult {
     }
   }
 
-  for (const requiredField of ["name", "description", "version"]) {
+  for (const requiredField of ["name", "description"]) {
     const value = values[requiredField];
     if (typeof value !== "string" || value.trim() === "") {
       errors.push(`Missing required frontmatter field: ${requiredField}`);
@@ -125,7 +125,11 @@ export class MigrationPipeline {
     this.onProgress = options.onProgress;
   }
 
-  async migrate(sourcePath: string, targetDir: string): Promise<Result<MigrationResult, MarketplaceError>> {
+  async migrate(
+    sourcePath: string,
+    targetDir: string,
+    options?: { fallbackVersion?: string },
+  ): Promise<Result<MigrationResult, MarketplaceError>> {
     let stagingDir: string | null = null;
     let migrationWarnings: string[] = [];
 
@@ -152,12 +156,18 @@ export class MigrationPipeline {
         );
       }
 
+      // Inject fallback version when the converted output lacks one
+      let skillMdContent = converted.value.skillMd;
+      if (options?.fallbackVersion && !this.contentHasVersion(skillMdContent)) {
+        skillMdContent = this.injectVersion(skillMdContent, options.fallbackVersion);
+      }
+
       migrationWarnings = converted.value.report.warnings;
 
       this.emit("generating", "Staging converted files in temporary directory");
       stagingDir = await mkdtemp(join(tmpdir(), "reins-migration-"));
       const stagedSkillPath = join(stagingDir, "SKILL.md");
-      await writeFile(stagedSkillPath, converted.value.skillMd, "utf8");
+      await writeFile(stagedSkillPath, skillMdContent, "utf8");
 
       if (converted.value.integrationMd !== null) {
         const stagedIntegrationPath = join(stagingDir, "INTEGRATION.md");
@@ -190,7 +200,10 @@ export class MigrationPipeline {
       this.emit("complete", `Migration completed successfully into ${targetDir}`);
 
       await rm(stagingDir, { recursive: true, force: true });
-      return ok(converted.value);
+      return ok({
+        ...converted.value,
+        skillMd: skillMdContent,
+      });
     } catch (error) {
       const message = `Migration pipeline failed${
         stagingDir ? ` (staging: ${stagingDir})` : ""
@@ -204,6 +217,38 @@ export class MigrationPipeline {
         ),
       );
     }
+  }
+
+  private contentHasVersion(content: string): boolean {
+    const fm = parseFrontmatter(content);
+    if (!fm) {
+      return false;
+    }
+
+    const lines = fm.yaml.replace(/\r/g, "").split("\n");
+    for (const line of lines) {
+      const match = line.match(/^version:\s+(.+)$/);
+      if (match) {
+        const value = match[1]?.trim() ?? "";
+        return value !== "";
+      }
+    }
+
+    return false;
+  }
+
+  private injectVersion(content: string, version: string): string {
+    const match = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
+    if (!match) {
+      return content;
+    }
+
+    const opening = match[1];
+    const yaml = match[2] ?? "";
+    const closing = match[3];
+    const rest = content.slice((match.index ?? 0) + match[0].length);
+
+    return `${opening}${yaml}\nversion: ${version}${closing}${rest}`;
   }
 
   private emit(step: MigrationStep, message: string): void {

@@ -1,8 +1,9 @@
-import { cp, mkdir, readFile, rm } from "node:fs/promises";
+import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { err, ok, type Result } from "../../result";
+import { readIntegrationMd } from "../../skills/integration-reader";
 import {
   MARKETPLACE_ERROR_CODES,
   MarketplaceError,
@@ -12,7 +13,7 @@ import type { MigrationPipeline, MigrationReport, MigrationStep } from "../migra
 import { resolveAliases } from "../migration";
 import type { MarketplaceSource } from "../types";
 import { downloadAndExtract } from "./downloader";
-import type { InstallProgressCallback, InstallResult, InstallStep } from "./types";
+import type { InstallProgressCallback, InstallResult, InstallStep, IntegrationInfo } from "./types";
 
 interface SkillInstallerOptions {
   source: MarketplaceSource;
@@ -44,7 +45,7 @@ interface MigrationPipelineInternals {
   onProgress?: (step: MigrationStep, message: string) => void;
 }
 
-const REQUIRED_FRONTMATTER_FIELDS = ["name", "description", "version"];
+const REQUIRED_FRONTMATTER_FIELDS = ["name", "description"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -311,6 +312,30 @@ function validateNativeSkillContent(skillContent: string): ValidationResult {
   };
 }
 
+function frontmatterHasVersion(skillContent: string): boolean {
+  const parsed = parseFrontmatter(skillContent);
+  if (!parsed) {
+    return false;
+  }
+
+  const value = parsed.frontmatter.version;
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function injectVersionIntoFrontmatter(skillContent: string, version: string): string {
+  const match = skillContent.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
+  if (!match) {
+    return skillContent;
+  }
+
+  const opening = match[1];
+  const yaml = match[2] ?? "";
+  const closing = match[3];
+  const rest = skillContent.slice((match.index ?? 0) + match[0].length);
+
+  return `${opening}${yaml}\nversion: ${version}${closing}${rest}`;
+}
+
 function wrapMarketplaceError(
   message: string,
   code: MarketplaceErrorCode,
@@ -389,6 +414,7 @@ export class SkillInstaller {
         const migrationResult = await this.migrateWithProgressForwarding(
           extraction.value.extractedPath,
           installedPath,
+          version,
         );
 
         if (!migrationResult.ok) {
@@ -408,6 +434,12 @@ export class SkillInstaller {
             `Validation failed for ${slug}@${version}: ${validation.errors.join("; ")}`,
             MARKETPLACE_ERROR_CODES.INVALID_RESPONSE,
           );
+        }
+
+        // Inject marketplace-provided version when source frontmatter omits it
+        if (!frontmatterHasVersion(skillContent)) {
+          const normalizedContent = injectVersionIntoFrontmatter(skillContent, version);
+          await writeFile(skillPath, normalizedContent, "utf8");
         }
 
         this.emit("installing", `Installing ${slug}@${version} to ${installedPath}`);
@@ -435,6 +467,8 @@ export class SkillInstaller {
         );
       }
 
+      const integration = await this.readIntegrationGuide(installedPath);
+
       this.emit("complete", `Installed ${slug}@${version} successfully`);
       return ok({
         slug,
@@ -442,6 +476,7 @@ export class SkillInstaller {
         installedPath,
         migrated: needsMigration,
         migrationReport,
+        integration,
       });
     } catch (error) {
       return this.fail(
@@ -455,6 +490,7 @@ export class SkillInstaller {
   private async migrateWithProgressForwarding(
     sourcePath: string,
     targetPath: string,
+    fallbackVersion?: string,
   ): Promise<Result<{ report: MigrationReport }, MarketplaceError>> {
     const internals = this.migrationPipeline as unknown as MigrationPipelineInternals;
     const originalOnProgress = internals.onProgress;
@@ -465,7 +501,7 @@ export class SkillInstaller {
     };
 
     try {
-      const result = await this.migrationPipeline.migrate(sourcePath, targetPath);
+      const result = await this.migrationPipeline.migrate(sourcePath, targetPath, { fallbackVersion });
       if (!result.ok) {
         return err(result.error);
       }
@@ -474,6 +510,27 @@ export class SkillInstaller {
     } finally {
       internals.onProgress = originalOnProgress;
     }
+  }
+
+  private async readIntegrationGuide(installedPath: string): Promise<IntegrationInfo | undefined> {
+    const guidePath = join(installedPath, "INTEGRATION.md");
+
+    try {
+      await access(guidePath);
+    } catch {
+      return undefined;
+    }
+
+    const result = await readIntegrationMd(guidePath);
+    if (!result.ok) {
+      return undefined;
+    }
+
+    return {
+      setupRequired: result.value.hasSetupSteps,
+      guidePath,
+      sections: result.value.sections,
+    };
   }
 
   private async registerInstalledSkill(installedPath: string): Promise<Result<void, MarketplaceError>> {

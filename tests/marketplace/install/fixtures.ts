@@ -78,7 +78,51 @@ export const OPENCLAW_SKILL_MD = [
 ].join("\n");
 
 /**
- * Invalid SKILL.md missing required frontmatter fields (no name, no version).
+ * Valid Reins-native SKILL.md without a version field.
+ * ClawHub skills may omit version in SKILL.md, providing it via API metadata.
+ */
+export const NATIVE_SKILL_MD_NO_VERSION = [
+  "---",
+  "name: smart-calendar-sync",
+  "description: Bidirectional calendar synchronization",
+  "author: openclaw",
+  "categories:",
+  "  - productivity",
+  "  - calendar",
+  "---",
+  "",
+  "# Smart Calendar Sync",
+  "",
+  "Syncs your calendars across providers.",
+  "",
+].join("\n");
+
+/**
+ * OpenClaw-format SKILL.md without a version field.
+ * ClawHub skills may omit version in SKILL.md, providing it via API metadata.
+ */
+export const OPENCLAW_SKILL_MD_NO_VERSION = [
+  "---",
+  "name: git-commit-assistant",
+  "description: AI-powered commit message generation",
+  "author: devtools-collective",
+  "metadata:",
+  "  openclaw:",
+  "    source: clawhub",
+  "    original-format: openclaw-v2",
+  "    requires:",
+  "      bins:",
+  "        - git",
+  "---",
+  "",
+  "# Git Commit Assistant",
+  "",
+  "Generates commit messages from staged diffs.",
+  "",
+].join("\n");
+
+/**
+ * Invalid SKILL.md missing required frontmatter fields (no name).
  */
 export const INVALID_NATIVE_SKILL_MD = [
   "---",
@@ -96,6 +140,36 @@ export const NO_FRONTMATTER_SKILL_MD = [
   "# Just Markdown",
   "",
   "No frontmatter here.",
+  "",
+].join("\n");
+
+/**
+ * Sample INTEGRATION.md content with setup steps.
+ * Used to test that the installer surfaces integration info.
+ */
+export const INTEGRATION_MD_WITH_SETUP = [
+  "# Integration Guide",
+  "",
+  "This skill requires the `summarize` CLI tool.",
+  "",
+  "## Setup",
+  "",
+  "1. Install summarize: `brew install summarize`",
+  "2. Verify installation: `summarize --version`",
+  "",
+  "## Configuration",
+  "",
+  "Set the `SUMMARIZE_API_KEY` environment variable.",
+  "",
+].join("\n");
+
+/**
+ * Minimal INTEGRATION.md without setup steps.
+ */
+export const INTEGRATION_MD_NO_SETUP = [
+  "# Notes",
+  "",
+  "This skill works out of the box with no additional setup.",
   "",
 ].join("\n");
 
@@ -219,6 +293,7 @@ export function createFailingMockSource(message: string): MarketplaceSource {
 
 interface MockMigrationPipelineOptions {
   migrateResult?: Result<MigrationResult, MarketplaceError>;
+  integrationMd?: string | null;
 }
 
 interface MockMigrationPipelineState {
@@ -263,9 +338,13 @@ export function createMockMigrationPipeline(
     migrateCalls: [],
   };
 
+  const integrationMd = options.integrationMd !== undefined
+    ? options.integrationMd
+    : null;
+
   const defaultResult: Result<MigrationResult, MarketplaceError> = ok({
     skillMd: DEFAULT_MIGRATED_SKILL_MD,
-    integrationMd: null,
+    integrationMd,
     report: DEFAULT_MIGRATION_REPORT,
   });
 
