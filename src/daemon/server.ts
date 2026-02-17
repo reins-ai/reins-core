@@ -48,6 +48,12 @@ import {
   type SkillDaemonService,
 } from "../skills";
 import type { BrowserDaemonService } from "../browser/browser-daemon-service";
+import { BrowserTool } from "../browser/tools/browser-tool";
+import { BrowserSnapshotTool } from "../browser/tools/browser-snapshot-tool";
+import { BrowserActTool } from "../browser/tools/browser-act-tool";
+import { ElementRefRegistry } from "../browser/element-ref-registry";
+import { SnapshotEngine } from "../browser/snapshot";
+import { BROWSER_SYSTEM_PROMPT } from "../browser/system-prompt";
 
 import {
   parseListMemoryQueryParams,
@@ -974,6 +980,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private personaRegistry: PersonaRegistry | null = null;
   private integrationService: IntegrationService | null = null;
   private readonly skillService: SkillDaemonService | null;
+  private readonly browserService: BrowserDaemonService | null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
     registeredCount: 0,
@@ -991,6 +998,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
     this.providedChannelService = options.channelService ?? null;
     this.skillService = options.skillService ?? null;
+    this.browserService = options.browserService ?? null;
 
     // Create auth services first so credential store is available for tool registration
     const legacyService = options.authService;
@@ -1100,6 +1108,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     this.initializeSkillTools();
+    this.initializeBrowserTools();
 
     try {
       const requestHandler = this.machineAuthService
@@ -1266,6 +1275,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Models endpoint
       if (url.pathname === "/api/models" && method === "GET") {
         return this.handleModelsRequest(corsHeaders);
+      }
+
+      // Browser status endpoint
+      if (url.pathname === "/api/browser/status" && method === "GET") {
+        return this.handleBrowserStatus(corsHeaders);
       }
 
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
@@ -1545,6 +1559,45 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
   }
 
+  private handleBrowserStatus(corsHeaders: Record<string, string>): Response {
+    if (!this.browserService) {
+      return Response.json(
+        { status: "stopped", headless: true },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const status = this.browserService.getStatus();
+
+    if (!status.running) {
+      return Response.json(
+        { status: "stopped", headless: status.headless },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const response: Record<string, unknown> = {
+      status: "running",
+      headless: status.headless,
+    };
+
+    if (status.chrome) {
+      response.pid = status.chrome.pid;
+      response.profilePath = status.profilePath;
+      response.uptimeMs = Date.now() - status.chrome.startedAt;
+    }
+
+    response.tabCount = status.tabs.length;
+
+    if (status.memoryUsageMb !== undefined) {
+      response.memoryUsageMb = status.memoryUsageMb;
+    }
+
+    return Response.json(response, {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   private async initializeIntegrationServices(): Promise<void> {
     const toolRegistry = this.toolExecutor.getRegistry();
     const integrationService = new IntegrationService({
@@ -1603,6 +1656,46 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
       this.ensureToolDefinition(RUN_SKILL_SCRIPT_TOOL_DEFINITION);
     }
+  }
+
+  private initializeBrowserTools(): void {
+    if (!this.browserService) {
+      return;
+    }
+
+    const toolRegistry = this.toolExecutor.getRegistry();
+    const elementRefRegistry = new ElementRefRegistry();
+    const snapshotEngine = new SnapshotEngine(elementRefRegistry);
+
+    if (!toolRegistry.has("browser")) {
+      const browserTool = new BrowserTool(this.browserService);
+      toolRegistry.register(browserTool);
+      this.ensureToolDefinition(browserTool.definition);
+    }
+
+    if (!toolRegistry.has("browser_snapshot")) {
+      const snapshotTool = new BrowserSnapshotTool(this.browserService, snapshotEngine);
+      toolRegistry.register(snapshotTool);
+      this.ensureToolDefinition(snapshotTool.definition);
+    }
+
+    if (!toolRegistry.has("browser_act")) {
+      const actTool = new BrowserActTool(this.browserService, elementRefRegistry);
+      toolRegistry.register(actTool);
+      this.ensureToolDefinition(actTool.definition);
+    }
+
+    log("info", "Browser tools registered", {
+      tools: ["browser", "browser_snapshot", "browser_act"],
+    });
+  }
+
+  private appendBrowserSystemPrompt(base: string | undefined): string {
+    if (!base || base.trim().length === 0) {
+      return BROWSER_SYSTEM_PROMPT;
+    }
+
+    return `${base}\n\n${BROWSER_SYSTEM_PROMPT}`;
   }
 
   private async registerBuiltinIntegrations(integrationService: IntegrationService): Promise<void> {
@@ -2228,9 +2321,12 @@ export class DaemonHttpServer implements DaemonManagedService {
       const conversation = await this.conversationManager.load(context.conversationId);
       const requestedProvider = context.requestedProvider ?? conversation.provider;
       const requestedModel = context.requestedModel ?? conversation.model;
-      const runtimeSystemPrompt = await this.conversationManager.getEnvironmentSystemPrompt(
+      const baseSystemPrompt = await this.conversationManager.getEnvironmentSystemPrompt(
         conversation.personaId,
       );
+      const runtimeSystemPrompt = this.browserService
+        ? this.appendBrowserSystemPrompt(baseSystemPrompt)
+        : baseSystemPrompt;
 
       const authResult = await this.authService.checkConversationReady(requestedProvider);
       if (!authResult.ok) {
