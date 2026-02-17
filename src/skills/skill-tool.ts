@@ -1,8 +1,11 @@
+import { join } from "node:path";
+
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
 
 import { getIntegrationStatus, type IntegrationStatus } from "./integration-reader";
 import { SkillMatcher } from "./matcher";
 import type { SkillMetadata } from "./metadata";
+import { readSkillMd } from "./parser";
 import type { SkillRegistry } from "./registry";
 import type { SkillScanner } from "./scanner";
 
@@ -56,7 +59,9 @@ export class SkillTool implements Tool {
     }
 
     try {
-      const content = this.scanner.loadSkill(skill.config.name);
+      const content = this.scanner.loadSkill(skill.config.name)
+        ?? await this.loadFromDisk(skill.config.path);
+
       if (!content) {
         return this.errorResult(
           callId,
@@ -114,6 +119,20 @@ export class SkillTool implements Tool {
     }
 
     return "Skill tool execution failed.";
+  }
+
+  /**
+   * Fallback for skills not in the scanner cache (e.g. installed after daemon
+   * startup). Reads SKILL.md directly from the skill directory on disk.
+   */
+  private async loadFromDisk(
+    skillPath: string,
+  ): Promise<{ body: string; metadata: SkillMetadata } | undefined> {
+    const result = await readSkillMd(join(skillPath, "SKILL.md"));
+    if (!result.ok) {
+      return undefined;
+    }
+    return { body: result.value.body, metadata: result.value.metadata };
   }
 
   private resolveSkill(name: string) {

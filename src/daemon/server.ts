@@ -555,7 +555,10 @@ const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
 const RUN_SKILL_SCRIPT_TOOL_DEFINITION: ToolDefinition = {
   name: "run_skill_script",
   description:
-    "Execute a script from a trusted or verified skill and return stdout/stderr output.",
+    "Execute a script from a trusted or verified skill and return stdout/stderr output. " +
+    "IMPORTANT: You must call load_skill first to retrieve the skill's scripts[] array. " +
+    "Only use script names that appear in the scripts[] array returned by load_skill. " +
+    "Do not guess or infer script names from the skill name or description.",
   parameters: {
     type: "object",
     properties: {
@@ -565,7 +568,9 @@ const RUN_SKILL_SCRIPT_TOOL_DEFINITION: ToolDefinition = {
       },
       script: {
         type: "string",
-        description: "Script file name from the skill's scripts directory.",
+        description:
+          "Exact script file name from the scripts[] array returned by load_skill. " +
+          "Never infer or guess script names.",
       },
       timeout: {
         type: "number",
@@ -1589,11 +1594,13 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
     this.ensureToolDefinition(SKILL_TOOL_DEFINITION);
 
-    if (!toolRegistry.has(RUN_SKILL_SCRIPT_TOOL_DEFINITION.name)) {
-      const scriptRunner = new ScriptRunner(registry);
-      toolRegistry.register(createSkillScriptTool(scriptRunner));
+    if (registry.hasEnabledScriptCapableSkills()) {
+      if (!toolRegistry.has(RUN_SKILL_SCRIPT_TOOL_DEFINITION.name)) {
+        const scriptRunner = new ScriptRunner(registry);
+        toolRegistry.register(createSkillScriptTool(scriptRunner));
+      }
+      this.ensureToolDefinition(RUN_SKILL_SCRIPT_TOOL_DEFINITION);
     }
-    this.ensureToolDefinition(RUN_SKILL_SCRIPT_TOOL_DEFINITION);
   }
 
   private async registerBuiltinIntegrations(integrationService: IntegrationService): Promise<void> {

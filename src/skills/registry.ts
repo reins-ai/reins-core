@@ -99,4 +99,10 @@ export class SkillRegistry {
   getSummaries(): SkillSummary[] {
     return this.listEnabled().map((skill) => ({ ...skill.summary }));
   }
+
+  hasEnabledScriptCapableSkills(): boolean {
+    return this.listEnabled().some(
+      (skill) => skill.hasScripts && skill.scriptFiles.length > 0,
+    );
+  }
 }
