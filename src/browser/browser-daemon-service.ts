@@ -7,6 +7,7 @@ import { DaemonError, type DaemonManagedService } from "../daemon/types";
 import { CdpClient } from "./cdp-client";
 import { findChromeBinary } from "./chrome-finder";
 import { BrowserError } from "./errors";
+import { injectStealthScripts } from "./stealth";
 import type { BrowserConfig, BrowserStatus, TabInfo } from "./types";
 
 const DEFAULT_CONFIG: BrowserConfig = {
@@ -215,6 +216,11 @@ export class BrowserDaemonService implements DaemonManagedService {
     try {
       await client.connect();
       this.cdpClient = client;
+      try {
+        await injectStealthScripts(client);
+      } catch {
+        // Non-fatal: browser control remains available even if stealth injection fails.
+      }
     } catch (error) {
       await this.stopChrome("SIGTERM");
       throw error;

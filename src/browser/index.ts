@@ -11,5 +11,7 @@ export { SnapshotEngine } from "./snapshot";
 export type { SnapshotOptions, TakeSnapshotParams } from "./snapshot";
 export { BrowserTool } from "./tools/browser-tool";
 export { BrowserSnapshotTool } from "./tools/browser-snapshot-tool";
+export { BrowserActTool } from "./tools/browser-act-tool";
+export { getStealthScripts, injectStealthScripts } from "./stealth";
 export * from "./types";
 export * from "./errors";

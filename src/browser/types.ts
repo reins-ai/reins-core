@@ -37,6 +37,7 @@ export type CdpMethod =
   | "DOM.focus"
   | "DOM.getBoxModel"
   | "Runtime.evaluate"
+  | "Runtime.callFunctionOn"
   | "Input.dispatchMouseEvent"
   | "Input.dispatchKeyEvent";
 
