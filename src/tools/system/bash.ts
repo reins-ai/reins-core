@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 
 import { BASH_DEFINITION } from "../builtins";
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../../types";
@@ -11,9 +13,10 @@ import {
   type SystemToolResult,
 } from "./types";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 const ABORT_KILL_GRACE_MS = 150;
+const FALLBACK_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 type BashToolDefinition = SystemToolDefinition & ToolDefinition;
 
@@ -170,6 +173,50 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function prependPathEntry(pathValue: string, entry: string): string {
+  if (entry.length === 0) {
+    return pathValue;
+  }
+
+  const segments = pathValue.split(delimiter).filter((segment) => segment.length > 0);
+  if (segments.includes(entry)) {
+    return pathValue;
+  }
+
+  return [entry, ...segments].join(delimiter);
+}
+
+export function buildExecutionEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+
+  const home = (env.HOME && env.HOME.trim().length > 0)
+    ? env.HOME
+    : (env.USERPROFILE && env.USERPROFILE.trim().length > 0)
+      ? env.USERPROFILE
+      : homedir();
+
+  env.HOME = home;
+  if (!env.USERPROFILE || env.USERPROFILE.trim().length === 0) {
+    env.USERPROFILE = home;
+  }
+  if (!env.XDG_CONFIG_HOME || env.XDG_CONFIG_HOME.trim().length === 0) {
+    env.XDG_CONFIG_HOME = join(home, ".config");
+  }
+  if (!env.XDG_CACHE_HOME || env.XDG_CACHE_HOME.trim().length === 0) {
+    env.XDG_CACHE_HOME = join(home, ".cache");
+  }
+  if (!env.XDG_DATA_HOME || env.XDG_DATA_HOME.trim().length === 0) {
+    env.XDG_DATA_HOME = join(home, ".local", "share");
+  }
+
+  const basePath = env.PATH && env.PATH.trim().length > 0
+    ? env.PATH
+    : FALLBACK_PATH;
+  env.PATH = prependPathEntry(basePath, join(home, ".local", "bin"));
+
+  return env;
+}
+
 function toOutputString(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -207,6 +254,8 @@ async function runCommand(options: {
   const child = spawn(options.command, {
     cwd: options.cwd,
     shell: true,
+    detached: true,
+    env: buildExecutionEnv(),
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -253,6 +302,22 @@ async function runCommand(options: {
     stderr = drainStream(child.stderr, stderr);
   });
 
+  const killProcessGroup = (signal: NodeJS.Signals): void => {
+    if (child.pid) {
+      try {
+        process.kill(-child.pid, signal);
+        return;
+      } catch {
+        // Process group kill failed (e.g. already exited); fall through
+      }
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      // Child already exited
+    }
+  };
+
   const terminateProcess = (mode: "abort" | "timeout"): void => {
     if (mode === "abort") {
       aborted = true;
@@ -261,13 +326,13 @@ async function runCommand(options: {
     }
 
     if (!child.killed) {
-      child.kill("SIGTERM");
+      killProcessGroup("SIGTERM");
     }
 
     if (!killTimer) {
       killTimer = setTimeout(() => {
         if (!settled) {
-          child.kill("SIGKILL");
+          killProcessGroup("SIGKILL");
         }
       }, ABORT_KILL_GRACE_MS);
     }

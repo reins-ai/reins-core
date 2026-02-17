@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
 
 import { ToolExecutor, ToolRegistry } from "../../src/tools";
-import { BashTool } from "../../src/tools/system";
+import { BashTool, buildExecutionEnv } from "../../src/tools/system/bash";
 import { SYSTEM_TOOL_ERROR_CODES, type SystemToolResult } from "../../src/tools/system/types";
 import type { ToolContext, ToolResult } from "../../src/types";
 
@@ -46,6 +46,40 @@ function expectSuccess(result: ToolResult): SystemToolResult {
 }
 
 describe("BashTool", () => {
+  it("buildExecutionEnv preserves HOME and prepends local bin once", () => {
+    const env = buildExecutionEnv({
+      HOME: "/home/tester",
+      PATH: "/usr/bin:/bin",
+    });
+
+    expect(env.HOME).toBe("/home/tester");
+    expect(env.USERPROFILE).toBe("/home/tester");
+    expect(env.PATH?.startsWith("/home/tester/.local/bin")).toBe(true);
+
+    const envAgain = buildExecutionEnv(env);
+    const pathSegments = (envAgain.PATH ?? "").split(":");
+    const localBinCount = pathSegments.filter((segment) => segment === "/home/tester/.local/bin").length;
+    expect(localBinCount).toBe(1);
+  });
+
+  it("buildExecutionEnv fills missing HOME and XDG variables", () => {
+    const env = buildExecutionEnv({
+      PATH: "/usr/bin:/bin",
+      HOME: "",
+      USERPROFILE: "",
+      XDG_CONFIG_HOME: "",
+      XDG_CACHE_HOME: "",
+      XDG_DATA_HOME: "",
+    });
+
+    expect(typeof env.HOME).toBe("string");
+    expect(env.HOME && env.HOME.length > 0).toBe(true);
+    expect(env.USERPROFILE).toBe(env.HOME);
+    expect(env.XDG_CONFIG_HOME).toBe(`${env.HOME}/.config`);
+    expect(env.XDG_CACHE_HOME).toBe(`${env.HOME}/.cache`);
+    expect(env.XDG_DATA_HOME).toBe(`${env.HOME}/.local/share`);
+  });
+
   it("executes safe commands and captures stdout", async () => {
     const sandboxRoot = createSandboxRoot();
 
@@ -259,6 +293,43 @@ describe("BashTool", () => {
       expect(payload.metadata["aborted"]).toBe(true);
       expect(payload.output.length).toBeGreaterThan(0);
       expect(payload.output).toContain("line-");
+    } finally {
+      rmSync(sandboxRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("terminates background child processes on timeout (process-group kill)", async () => {
+    const sandboxRoot = createSandboxRoot();
+
+    try {
+      // This command spawns a background sleep that would keep stdio open
+      // if only the shell PID were killed. The process-group kill ensures
+      // all descendants are terminated and the promise settles.
+      const testTimeout = 200;
+      const guardTimeout = 5_000;
+
+      const resultPromise = executeBash(sandboxRoot, {
+        command: "sleep 1000 & wait",
+        timeout: testTimeout,
+      });
+
+      const guard = new Promise<"guard_timeout">((resolve) =>
+        setTimeout(() => resolve("guard_timeout"), guardTimeout),
+      );
+
+      const raced = await Promise.race([
+        resultPromise.then((r) => ({ kind: "settled" as const, result: r })),
+        guard.then((g) => ({ kind: g })),
+      ]);
+
+      expect(raced.kind).toBe("settled");
+
+      if (raced.kind === "settled") {
+        const result = raced.result;
+        expect(result.result).toBeNull();
+        expect(result.errorDetail?.code).toBe(SYSTEM_TOOL_ERROR_CODES.TOOL_TIMEOUT);
+        expect(result.errorDetail?.retryable).toBe(true);
+      }
     } finally {
       rmSync(sandboxRoot, { recursive: true, force: true });
     }

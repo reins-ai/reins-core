@@ -78,6 +78,9 @@ class LaunchdUserAdapter implements PlatformServiceAdapter {
     const argsXml = [definition.command, ...definition.args]
       .map((value) => `    <string>${escapeXml(value)}</string>`)
       .join("\n");
+    const envXml = Object.entries(definition.env)
+      .map(([key, value]) => `    <key>${escapeXml(key)}</key><string>${escapeXml(value)}</string>`)
+      .join("\n");
 
     const content = [
       "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
@@ -89,6 +92,10 @@ class LaunchdUserAdapter implements PlatformServiceAdapter {
       "  <array>",
       argsXml,
       "  </array>",
+      "  <key>EnvironmentVariables</key>",
+      "  <dict>",
+      envXml,
+      "  </dict>",
       "  <key>RunAtLoad</key><true/>",
       `  <key>KeepAlive</key><${definition.autoRestart ? "true" : "false"}/>`,
       `  <key>WorkingDirectory</key><string>${escapeXml(definition.workingDirectory)}</string>`,

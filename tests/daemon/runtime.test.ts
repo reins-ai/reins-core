@@ -141,6 +141,8 @@ describe("ServiceInstaller", () => {
     if (result.ok) {
       expect(result.value.filePath).toContain("Library/LaunchAgents/com.reins.daemon.plist");
       expect(result.value.content).toContain("<key>Label</key><string>com.reins.daemon</string>");
+      expect(result.value.content).toContain("<key>EnvironmentVariables</key>");
+      expect(result.value.content).toContain("<key>NODE_ENV</key><string>production</string>");
       expect(result.value.content).toContain("<key>KeepAlive</key><true/>");
     }
   });
