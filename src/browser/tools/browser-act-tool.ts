@@ -1,3 +1,7 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import {
   BrowserError,
   CdpError,
@@ -8,6 +12,7 @@ import type { CdpClient } from "../cdp-client";
 import type { ElementRefRegistry } from "../element-ref-registry";
 import type {
   AttachToTargetResult,
+  CaptureScreenshotResult,
   CdpTargetInfo,
   EvaluateResult,
   GetBoxModelResult,
@@ -30,19 +35,26 @@ type SupportedBrowserActAction =
   | "scroll"
   | "hover"
   | "press_key"
-  | "evaluate";
+  | "evaluate"
+  | "screenshot";
+
+export interface BrowserActToolOptions {
+  screenshotDir?: string;
+  mkdirFn?: typeof mkdir;
+  writeFileFn?: typeof writeFile;
+}
 
 export class BrowserActTool implements Tool {
   readonly definition: ToolDefinition = {
     name: "browser_act",
     description:
-      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, and evaluate actions.",
+      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, and screenshot actions.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate"],
+          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot"],
           description: "Interaction action to perform.",
         },
         ref: {
@@ -91,15 +103,37 @@ export class BrowserActTool implements Tool {
           description:
             "Whether to await a Promise returned by the script (for evaluate action).",
         },
+        quality: {
+          type: "number",
+          description:
+            "JPEG quality for screenshot (0–100, default 80).",
+        },
+        output: {
+          type: "string",
+          enum: ["inline", "file"],
+          description:
+            "Screenshot output mode. 'inline' (default) returns base64 JPEG. 'file' saves to disk and returns path.",
+        },
       },
       required: ["action"],
     },
   };
 
+  private readonly screenshotDir: string;
+  private readonly mkdirFn: typeof mkdir;
+  private readonly writeFileFn: typeof writeFile;
+
   constructor(
     private readonly service: BrowserDaemonService,
     private readonly elementRefRegistry: ElementRefRegistry,
-  ) {}
+    options: BrowserActToolOptions = {},
+  ) {
+    this.screenshotDir = options.screenshotDir
+      ?? process.env.REINS_BROWSER_SCREENSHOTS?.trim()
+      ?? join(homedir(), ".reins", "browser", "screenshots");
+    this.mkdirFn = options.mkdirFn ?? mkdir;
+    this.writeFileFn = options.writeFileFn ?? writeFile;
+  }
 
   async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
     const callId = typeof args.callId === "string" ? args.callId : "unknown-call";
@@ -162,6 +196,14 @@ export class BrowserActTool implements Tool {
             await this.evaluate(
               this.requireString(args.script, "'script' is required for evaluate action."),
               typeof args.awaitPromise === "boolean" ? args.awaitPromise : false,
+            ),
+          );
+        case "screenshot":
+          return this.success(
+            callId,
+            await this.screenshot(
+              this.readQuality(args.quality),
+              this.readOutput(args.output),
             ),
           );
       }
@@ -332,6 +374,26 @@ export class BrowserActTool implements Tool {
     return { action: "evaluate", result: evalResult.result.value };
   }
 
+  private async screenshot(quality: number, output: "inline" | "file"): Promise<unknown> {
+    const { client, sessionId } = await this.attachToActiveTab();
+    const result = await client.send<CaptureScreenshotResult>("Page.captureScreenshot", {
+      format: "jpeg",
+      quality,
+    }, sessionId);
+
+    if (output === "file") {
+      await this.mkdirFn(this.screenshotDir, { recursive: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `screenshot-${timestamp}.jpg`;
+      const filePath = join(this.screenshotDir, filename);
+      const buffer = Buffer.from(result.data, "base64");
+      await this.writeFileFn(filePath, buffer);
+      return { action: "screenshot", output: "file", path: filePath };
+    }
+
+    return { action: "screenshot", output: "inline", data: result.data, mimeType: "image/jpeg" };
+  }
+
   private async pressKey(
     client: CdpClient,
     sessionId: string,
@@ -384,11 +446,26 @@ export class BrowserActTool implements Tool {
       || value === "hover"
       || value === "press_key"
       || value === "evaluate"
+      || value === "screenshot"
     ) {
       return value;
     }
 
     return null;
+  }
+
+  private readQuality(value: unknown): number {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.min(100, Math.round(value)));
+    }
+    return 80;
+  }
+
+  private readOutput(value: unknown): "inline" | "file" {
+    if (value === "file") {
+      return "file";
+    }
+    return "inline";
   }
 
   private readDirection(value: unknown): "up" | "down" | "left" | "right" | undefined {

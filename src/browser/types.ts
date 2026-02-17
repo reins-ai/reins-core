@@ -393,6 +393,7 @@ export interface ChromeInfo {
 
 export interface BrowserConfig {
   profilePath: string;
+  screenshotDir?: string;
   port: number;
   headless: boolean;
   maxWatchers: number;
