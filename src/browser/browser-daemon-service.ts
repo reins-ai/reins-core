@@ -161,6 +161,22 @@ export class BrowserDaemonService implements DaemonManagedService {
     };
   }
 
+  updateTabState(tabs: TabInfo[], activeTabId?: string): void {
+    const normalizedActiveTabId = activeTabId !== undefined && tabs.some((tab) => tab.tabId === activeTabId)
+      ? activeTabId
+      : tabs[0]?.tabId;
+
+    this.activeTabId = normalizedActiveTabId;
+    this.tabs = tabs.map((tab) => ({
+      ...tab,
+      active: tab.tabId === normalizedActiveTabId,
+    }));
+  }
+
+  getCurrentTabId(): string | undefined {
+    return this.activeTabId;
+  }
+
   private isBrowserHealthy(): boolean {
     if (!this.chromeProcess || this.processExited) {
       return false;

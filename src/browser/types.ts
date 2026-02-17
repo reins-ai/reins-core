@@ -2,6 +2,7 @@ export interface CdpCommand {
   id: number;
   method: string;
   params?: Record<string, unknown>;
+  sessionId?: string;
 }
 
 export interface CdpResponse {

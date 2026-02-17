@@ -145,8 +145,16 @@ function createVersionResponse(webSocketDebuggerUrl: string): {
   };
 }
 
-function parseSentCommand(payload: string): { id: number; method: string } {
-  return JSON.parse(payload) as { id: number; method: string };
+function parseSentCommand(payload: string): {
+  id: number;
+  method: string;
+  sessionId?: string;
+} {
+  return JSON.parse(payload) as {
+    id: number;
+    method: string;
+    sessionId?: string;
+  };
 }
 
 async function waitForSocketCount(sockets: MockWebSocket[], expectedCount: number): Promise<void> {
@@ -294,6 +302,34 @@ describe("CdpClient", () => {
     timer.advanceBy(30);
 
     await expect(commandPromise).rejects.toBeInstanceOf(CdpError);
+  });
+
+  it("includes sessionId in command payload when provided", async () => {
+    const sockets: MockWebSocket[] = [];
+
+    const client = new CdpClient({
+      port: 9222,
+      fetchFn: async () => createVersionResponse("ws://127.0.0.1:9222/devtools/browser/session"),
+      webSocketFactory: (url: string) => {
+        const socket = new MockWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const connectPromise = client.connect();
+    await waitForSocketCount(sockets, 1);
+    const socket = sockets[0]!;
+    socket.emitOpen();
+    await connectPromise;
+
+    const sendPromise = client.send("Page.navigate", { url: "https://example.com" }, "session-42");
+    const sent = parseSentCommand(socket.sent[0]!);
+
+    expect(sent.sessionId).toBe("session-42");
+
+    socket.emitMessage({ id: sent.id, result: { frameId: "frame-1" } });
+    await expect(sendPromise).resolves.toEqual({ frameId: "frame-1" });
   });
 
   it("rejects all pending commands on unexpected close", async () => {

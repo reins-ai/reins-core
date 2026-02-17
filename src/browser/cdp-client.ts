@@ -174,6 +174,7 @@ export class CdpClient {
   public async send<T = unknown>(
     method: CdpMethod,
     params?: Record<string, unknown>,
+    sessionId?: string,
   ): Promise<T> {
     if (method.endsWith(".enable")) {
       this.enabledDomains.set(method, params);
@@ -193,6 +194,7 @@ export class CdpClient {
       id,
       method,
       params,
+      sessionId,
     };
 
     return new Promise<T>((resolve, reject) => {
