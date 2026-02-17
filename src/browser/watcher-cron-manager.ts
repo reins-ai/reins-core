@@ -1,6 +1,7 @@
 import type { CronScheduler } from "../cron/scheduler";
 import type { CronJobCreateInput } from "../cron/types";
 import type { BrowserDaemonService } from "./browser-daemon-service";
+import type { NotificationDelivery } from "./conversation-notification-delivery";
 import type { SnapshotEngine } from "./snapshot";
 import type { WatcherConfig } from "./types";
 import { BrowserWatcher } from "./watcher";
@@ -10,6 +11,7 @@ export interface WatcherCronManagerOptions {
   snapshotEngine: SnapshotEngine;
   browserService: BrowserDaemonService;
   cronScheduler: CronScheduler;
+  notificationDelivery?: NotificationDelivery;
   maxWatchers?: number;
 }
 
@@ -64,6 +66,7 @@ function watcherIdFromCronJobId(jobId: string): string | undefined {
 export class WatcherCronManager {
   private readonly registry: WatcherRegistry;
   private readonly cronScheduler: CronScheduler;
+  private readonly notificationDelivery?: NotificationDelivery;
 
   constructor(options: WatcherCronManagerOptions) {
     this.registry = new WatcherRegistry({
@@ -72,6 +75,7 @@ export class WatcherCronManager {
       maxWatchers: options.maxWatchers,
     });
     this.cronScheduler = options.cronScheduler;
+    this.notificationDelivery = options.notificationDelivery;
   }
 
   async createWatcher(config: WatcherConfig): Promise<BrowserWatcher> {
@@ -126,7 +130,20 @@ export class WatcherCronManager {
     }
 
     try {
-      await watcher.checkForChanges();
+      const diff = await watcher.checkForChanges();
+
+      if (diff.hasChanges && this.notificationDelivery) {
+        const config = watcher.state.config;
+        try {
+          await this.notificationDelivery.sendWatcherNotification(
+            watcherId,
+            config.url,
+            diff,
+          );
+        } catch {
+          // Notification delivery errors must never disrupt cron execution.
+        }
+      }
     } catch {
       // Error is already recorded on the watcher via markError() in
       // BrowserWatcher.checkForChanges(). We swallow the re-thrown error

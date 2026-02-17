@@ -10,6 +10,14 @@ export { BrowserWatcher } from "./watcher";
 export { WatcherRegistry } from "./watcher-registry";
 export { WatcherCronManager, intervalToCron } from "./watcher-cron-manager";
 export type { WatcherCronManagerOptions } from "./watcher-cron-manager";
+export {
+  ConversationNotificationDelivery,
+  formatWatcherNotification,
+} from "./conversation-notification-delivery";
+export type {
+  NotificationDelivery,
+  NotificationLogger,
+} from "./conversation-notification-delivery";
 export { ElementRefRegistry } from "./element-ref-registry";
 export { SnapshotEngine } from "./snapshot";
 export type { SnapshotOptions, TakeSnapshotParams } from "./snapshot";

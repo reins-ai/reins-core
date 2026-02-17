@@ -5,12 +5,14 @@ import {
   WatcherCronManager,
   intervalToCron,
 } from "../../src/browser/watcher-cron-manager";
+import type { NotificationDelivery } from "../../src/browser/conversation-notification-delivery";
 import type { BrowserDaemonService } from "../../src/browser/browser-daemon-service";
 import type {
   CdpMethod,
   Snapshot,
   SnapshotDiff,
   WatcherConfig,
+  WatcherDiff,
 } from "../../src/browser/types";
 import type { SnapshotEngine, TakeSnapshotParams } from "../../src/browser/snapshot";
 import type { CronScheduler } from "../../src/cron/scheduler";
@@ -173,9 +175,32 @@ function makeMockService(client: MockCdpClient): BrowserDaemonService {
   } as unknown as BrowserDaemonService;
 }
 
+interface NotificationCall {
+  watcherId: string;
+  url: string;
+  diff: WatcherDiff;
+}
+
+class MockNotificationDelivery implements NotificationDelivery {
+  public readonly calls: NotificationCall[] = [];
+  public shouldThrow = false;
+
+  async sendWatcherNotification(
+    watcherId: string,
+    url: string,
+    diff: WatcherDiff,
+  ): Promise<void> {
+    if (this.shouldThrow) {
+      throw new Error("Notification delivery failed");
+    }
+    this.calls.push({ watcherId, url, diff });
+  }
+}
+
 function makeManager(overrides?: {
   snapshotEngine?: MockSnapshotEngine;
   cronScheduler?: MockCronScheduler;
+  notificationDelivery?: NotificationDelivery;
   maxWatchers?: number;
 }): {
   manager: WatcherCronManager;
@@ -191,6 +216,7 @@ function makeManager(overrides?: {
     snapshotEngine: snapshotEngine as unknown as SnapshotEngine,
     browserService: makeMockService(client),
     cronScheduler: cronScheduler as unknown as CronScheduler,
+    notificationDelivery: overrides?.notificationDelivery,
     maxWatchers: overrides?.maxWatchers,
   });
 
@@ -368,5 +394,101 @@ describe("WatcherCronManager", () => {
 
     const cronCall = cronScheduler.createCalls[0]!;
     expect(cronCall.input.schedule).toBe("0 * * * *");
+  });
+
+  it("calls notificationDelivery when diff has changes", async () => {
+    const notificationDelivery = new MockNotificationDelivery();
+    const snapshotEngine = new MockSnapshotEngine();
+    // One snapshot for baseline, one for checkForChanges
+    snapshotEngine.snapshots.push(
+      makeSnapshot(),
+      makeSnapshot({ timestamp: Date.now() + 1000 }),
+    );
+    snapshotEngine.diffToReturn = {
+      added: [{ ref: "e1", backendNodeId: 12, role: "link", name: "New", depth: 0 }],
+      changed: [],
+      removed: [],
+    };
+
+    const { manager } = makeManager({ snapshotEngine, notificationDelivery });
+    await manager.createWatcher(makeConfig());
+
+    await manager.handleCronExecution("watcher-cron-watcher-001");
+
+    expect(notificationDelivery.calls).toHaveLength(1);
+    const call = notificationDelivery.calls[0]!;
+    expect(call.watcherId).toBe("watcher-001");
+    expect(call.url).toBe("https://example.com");
+    expect(call.diff.hasChanges).toBe(true);
+    expect(call.diff.added).toHaveLength(1);
+  });
+
+  it("does NOT call notificationDelivery when diff is empty", async () => {
+    const notificationDelivery = new MockNotificationDelivery();
+    const snapshotEngine = new MockSnapshotEngine();
+    snapshotEngine.snapshots.push(
+      makeSnapshot(),
+      makeSnapshot({ timestamp: Date.now() + 1000 }),
+    );
+    snapshotEngine.diffToReturn = { added: [], changed: [], removed: [] };
+
+    const { manager } = makeManager({ snapshotEngine, notificationDelivery });
+    await manager.createWatcher(makeConfig());
+
+    await manager.handleCronExecution("watcher-cron-watcher-001");
+
+    expect(notificationDelivery.calls).toHaveLength(0);
+  });
+
+  it("notification delivery error does NOT crash cron execution", async () => {
+    const notificationDelivery = new MockNotificationDelivery();
+    notificationDelivery.shouldThrow = true;
+    const snapshotEngine = new MockSnapshotEngine();
+    snapshotEngine.snapshots.push(
+      makeSnapshot(),
+      makeSnapshot({ timestamp: Date.now() + 1000 }),
+    );
+    snapshotEngine.diffToReturn = {
+      added: [{ ref: "e1", backendNodeId: 12, role: "link", name: "New", depth: 0 }],
+      changed: [],
+      removed: [],
+    };
+
+    const { manager } = makeManager({ snapshotEngine, notificationDelivery });
+    await manager.createWatcher(makeConfig());
+
+    // Should NOT throw even though notification delivery throws
+    await manager.handleCronExecution("watcher-cron-watcher-001");
+
+    // Watcher state should still be updated (checkForChanges succeeded)
+    const watcher = manager.getWatcher("watcher-001");
+    expect(watcher).toBeDefined();
+    const state = watcher!.serialize();
+    expect(state.lastDiff).toBeDefined();
+    expect(state.lastDiff!.hasChanges).toBe(true);
+  });
+
+  it("works without notificationDelivery (backward compatible)", async () => {
+    const snapshotEngine = new MockSnapshotEngine();
+    snapshotEngine.snapshots.push(
+      makeSnapshot(),
+      makeSnapshot({ timestamp: Date.now() + 1000 }),
+    );
+    snapshotEngine.diffToReturn = {
+      added: [{ ref: "e1", backendNodeId: 12, role: "link", name: "New", depth: 0 }],
+      changed: [],
+      removed: [],
+    };
+
+    // No notificationDelivery provided
+    const { manager } = makeManager({ snapshotEngine });
+    await manager.createWatcher(makeConfig());
+
+    // Should NOT throw
+    await manager.handleCronExecution("watcher-cron-watcher-001");
+
+    const watcher = manager.getWatcher("watcher-001");
+    expect(watcher).toBeDefined();
+    expect(watcher!.serialize().lastDiff!.hasChanges).toBe(true);
   });
 });

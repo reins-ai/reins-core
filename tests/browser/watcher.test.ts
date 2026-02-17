@@ -3,9 +3,15 @@ import { describe, expect, it } from "bun:test";
 import { BrowserError } from "../../src/browser/errors";
 import { BrowserWatcher } from "../../src/browser/watcher";
 import { WatcherRegistry } from "../../src/browser/watcher-registry";
+import {
+  ConversationNotificationDelivery,
+  formatWatcherNotification,
+} from "../../src/browser/conversation-notification-delivery";
+import type { NotificationDelivery, NotificationLogger } from "../../src/browser/conversation-notification-delivery";
 import type { BrowserDaemonService } from "../../src/browser/browser-daemon-service";
-import type { CdpMethod, Snapshot, SnapshotDiff, WatcherConfig, WatcherState } from "../../src/browser/types";
+import type { CdpMethod, Snapshot, SnapshotDiff, WatcherConfig, WatcherDiff, WatcherState } from "../../src/browser/types";
 import type { SnapshotEngine, TakeSnapshotParams } from "../../src/browser/snapshot";
+import type { ConversationManager } from "../../src/conversation/manager";
 
 interface SendCall {
   method: CdpMethod;
@@ -279,5 +285,241 @@ describe("BrowserWatcher", () => {
     );
 
     expect(watcher.serialize()).toEqual(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Notification formatting and delivery tests
+// ---------------------------------------------------------------------------
+
+function makeDiff(overrides: Partial<WatcherDiff> = {}): WatcherDiff {
+  return {
+    added: [],
+    changed: [],
+    removed: [],
+    timestamp: Date.now(),
+    hasChanges: false,
+    ...overrides,
+  };
+}
+
+class MockNotificationLogger implements NotificationLogger {
+  public readonly warnings: string[] = [];
+  public readonly errors: string[] = [];
+
+  warn(message: string): void {
+    this.warnings.push(message);
+  }
+
+  error(message: string): void {
+    this.errors.push(message);
+  }
+}
+
+interface AddMessageCall {
+  conversationId: string;
+  message: { role: string; content: string };
+}
+
+class MockConversationManager {
+  public readonly addMessageCalls: AddMessageCall[] = [];
+  public conversations: Array<{ id: string; title: string }> = [];
+  public listShouldThrow = false;
+  public addMessageShouldThrow = false;
+
+  async list() {
+    if (this.listShouldThrow) {
+      throw new Error("list failed");
+    }
+    return this.conversations;
+  }
+
+  async addMessage(
+    conversationId: string,
+    message: { role: string; content: string },
+  ) {
+    if (this.addMessageShouldThrow) {
+      throw new Error("addMessage failed");
+    }
+    this.addMessageCalls.push({ conversationId, message });
+    return { id: "msg-1", ...message, createdAt: new Date() };
+  }
+}
+
+describe("formatWatcherNotification", () => {
+  it("includes watcher ID, URL, and change counts", () => {
+    const diff = makeDiff({
+      added: ["e1:button \"New\"", "e2:link \"Home\""],
+      changed: ["e3:input \"Search\""],
+      removed: [],
+      hasChanges: true,
+    });
+
+    const message = formatWatcherNotification("watcher-001", "https://example.com", diff);
+
+    expect(message).toContain("watcher-001");
+    expect(message).toContain("https://example.com");
+    expect(message).toContain("Added: 2 elements");
+    expect(message).toContain("Changed: 1 elements");
+    expect(message).toContain("Removed: 0 elements");
+  });
+
+  it("includes diff content for added, changed, and removed elements", () => {
+    const diff = makeDiff({
+      added: ["e1:button \"Save\""],
+      changed: ["e2:input \"Name\""],
+      removed: ["e3:link \"Old\""],
+      hasChanges: true,
+    });
+
+    const message = formatWatcherNotification("watcher-002", "https://example.com", diff);
+
+    expect(message).toContain("e1:button \"Save\"");
+    expect(message).toContain("e2:input \"Name\"");
+    expect(message).toContain("e3:link \"Old\"");
+  });
+
+  it("truncates diff content at 500 chars", () => {
+    const longElements = Array.from({ length: 50 }, (_, i) =>
+      `e${i}:button "A very long element name that takes up space number ${i}"`,
+    );
+
+    const diff = makeDiff({
+      added: longElements,
+      changed: [],
+      removed: [],
+      hasChanges: true,
+    });
+
+    const message = formatWatcherNotification("watcher-003", "https://example.com", diff);
+
+    expect(message).toContain("[...truncated]");
+    // The diff content portion should be truncated, but the header should be intact
+    expect(message).toContain("watcher-003");
+    expect(message).toContain(`Added: ${longElements.length} elements`);
+  });
+
+  it("produces no diff content section for empty diff", () => {
+    const diff = makeDiff({ hasChanges: false });
+
+    const message = formatWatcherNotification("watcher-004", "https://example.com", diff);
+
+    expect(message).toContain("Added: 0 elements");
+    expect(message).toContain("Changed: 0 elements");
+    expect(message).toContain("Removed: 0 elements");
+    // No diff content lines beyond the summary
+    expect(message).not.toContain("[...truncated]");
+  });
+});
+
+describe("ConversationNotificationDelivery", () => {
+  it("delivers notification to the most recently active conversation", async () => {
+    const mockManager = new MockConversationManager();
+    mockManager.conversations = [{ id: "conv-1", title: "Active Chat" }];
+    const logger = new MockNotificationLogger();
+
+    const delivery = new ConversationNotificationDelivery(
+      mockManager as unknown as ConversationManager,
+      logger,
+    );
+
+    const diff = makeDiff({
+      added: ["e1:button \"New\""],
+      changed: [],
+      removed: [],
+      hasChanges: true,
+    });
+
+    await delivery.sendWatcherNotification("watcher-001", "https://example.com", diff);
+
+    expect(mockManager.addMessageCalls).toHaveLength(1);
+    const call = mockManager.addMessageCalls[0]!;
+    expect(call.conversationId).toBe("conv-1");
+    expect(call.message.role).toBe("system");
+    expect(call.message.content).toContain("watcher-001");
+    expect(call.message.content).toContain("https://example.com");
+  });
+
+  it("logs warning and returns when no conversation is active", async () => {
+    const mockManager = new MockConversationManager();
+    mockManager.conversations = [];
+    const logger = new MockNotificationLogger();
+
+    const delivery = new ConversationNotificationDelivery(
+      mockManager as unknown as ConversationManager,
+      logger,
+    );
+
+    const diff = makeDiff({ added: ["e1:link \"X\""], hasChanges: true });
+
+    await delivery.sendWatcherNotification("watcher-002", "https://example.com", diff);
+
+    expect(mockManager.addMessageCalls).toHaveLength(0);
+    expect(logger.warnings).toHaveLength(1);
+    expect(logger.warnings[0]).toContain("no active conversation");
+  });
+
+  it("does not crash when list throws", async () => {
+    const mockManager = new MockConversationManager();
+    mockManager.listShouldThrow = true;
+    const logger = new MockNotificationLogger();
+
+    const delivery = new ConversationNotificationDelivery(
+      mockManager as unknown as ConversationManager,
+      logger,
+    );
+
+    const diff = makeDiff({ added: ["e1:link \"X\""], hasChanges: true });
+
+    // Should not throw
+    await delivery.sendWatcherNotification("watcher-003", "https://example.com", diff);
+
+    expect(logger.errors).toHaveLength(1);
+    expect(logger.errors[0]).toContain("notification delivery failed");
+  });
+
+  it("does not crash when addMessage throws", async () => {
+    const mockManager = new MockConversationManager();
+    mockManager.conversations = [{ id: "conv-1", title: "Chat" }];
+    mockManager.addMessageShouldThrow = true;
+    const logger = new MockNotificationLogger();
+
+    const delivery = new ConversationNotificationDelivery(
+      mockManager as unknown as ConversationManager,
+      logger,
+    );
+
+    const diff = makeDiff({ added: ["e1:link \"X\""], hasChanges: true });
+
+    // Should not throw
+    await delivery.sendWatcherNotification("watcher-004", "https://example.com", diff);
+
+    expect(logger.errors).toHaveLength(1);
+    expect(logger.errors[0]).toContain("notification delivery failed");
+  });
+
+  it("notification message contains change counts", async () => {
+    const mockManager = new MockConversationManager();
+    mockManager.conversations = [{ id: "conv-1", title: "Chat" }];
+    const logger = new MockNotificationLogger();
+
+    const delivery = new ConversationNotificationDelivery(
+      mockManager as unknown as ConversationManager,
+      logger,
+    );
+
+    const diff = makeDiff({
+      added: ["e1:button \"A\"", "e2:button \"B\""],
+      changed: ["e3:input \"C\""],
+      removed: ["e4:link \"D\"", "e5:link \"E\"", "e6:link \"F\""],
+      hasChanges: true,
+    });
+
+    await delivery.sendWatcherNotification("watcher-005", "https://example.com", diff);
+
+    const content = mockManager.addMessageCalls[0]!.message.content;
+    expect(content).toContain("Added: 2 elements");
+    expect(content).toContain("Changed: 1 elements");
+    expect(content).toContain("Removed: 3 elements");
   });
 });
