@@ -10,5 +10,6 @@ export { ElementRefRegistry } from "./element-ref-registry";
 export { SnapshotEngine } from "./snapshot";
 export type { SnapshotOptions, TakeSnapshotParams } from "./snapshot";
 export { BrowserTool } from "./tools/browser-tool";
+export { BrowserSnapshotTool } from "./tools/browser-snapshot-tool";
 export * from "./types";
 export * from "./errors";
