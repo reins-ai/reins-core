@@ -204,13 +204,16 @@ export class ClawHubSource implements MarketplaceSource {
   }
 
   private normalizeSearchResult(response: ClawHubSkillsResponse): MarketplaceSearchResult {
-    const skills = response.skills.map((skill) => this.normalizeSkill(skill));
+    const rawSkills = Array.isArray(response.skills) ? response.skills : [];
+    const skills = rawSkills.map((skill) => this.normalizeSkill(skill));
     return {
       skills,
-      total: response.total,
-      page: response.page,
-      pageSize: response.pageSize,
-      hasMore: response.page * response.pageSize < response.total,
+      total: typeof response.total === "number" ? response.total : skills.length,
+      page: typeof response.page === "number" ? response.page : 1,
+      pageSize: typeof response.pageSize === "number" ? response.pageSize : skills.length,
+      hasMore: typeof response.page === "number" && typeof response.pageSize === "number"
+        ? response.page * response.pageSize < (response.total ?? 0)
+        : false,
     };
   }
 
