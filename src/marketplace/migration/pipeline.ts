@@ -211,31 +211,39 @@ export class MigrationPipeline {
   }
 
   private async validateStagedSkill(stagingDir: string): Promise<ValidationResult> {
+    const allErrors: string[] = [];
+
+    // Run external skill validator for structural checks (SKILL.md exists, scripts/ structure, etc.)
     const externalValidation = await this.validateWithExternalSkillValidator(stagingDir);
-    if (externalValidation !== null) {
-      return externalValidation;
+    if (externalValidation !== null && !externalValidation.valid) {
+      allErrors.push(...externalValidation.errors);
     }
 
+    // Always run built-in content validation for required frontmatter fields
     const skillPath = join(stagingDir, "SKILL.md");
     let skillContent: string;
     try {
       skillContent = await readFile(skillPath, "utf8");
     } catch (error) {
-      return {
-        valid: false,
-        errors: [`SKILL.md is missing in staging directory: ${toErrorMessage(error)}`],
-      };
+      allErrors.push(`SKILL.md is missing in staging directory: ${toErrorMessage(error)}`);
+      return { valid: false, errors: allErrors };
     }
 
     const frontmatter = parseFrontmatter(skillContent);
     if (!frontmatter) {
-      return {
-        valid: false,
-        errors: ["SKILL.md must include YAML frontmatter delimited by ---"],
-      };
+      allErrors.push("SKILL.md must include YAML frontmatter delimited by ---");
+      return { valid: false, errors: allErrors };
     }
 
-    return validateBasicYaml(frontmatter.yaml);
+    const contentValidation = validateBasicYaml(frontmatter.yaml);
+    if (!contentValidation.valid) {
+      allErrors.push(...contentValidation.errors);
+    }
+
+    return {
+      valid: allErrors.length === 0,
+      errors: allErrors,
+    };
   }
 
   private async validateWithExternalSkillValidator(stagingDir: string): Promise<ValidationResult | null> {
