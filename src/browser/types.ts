@@ -348,29 +348,33 @@ export interface SnapshotDiff {
   removed: ElementRef[];
 }
 
-export type WatcherStatus = "active" | "paused" | "failed";
+export type WatcherStatus = "active" | "paused" | "error";
 
 export interface WatcherConfig {
   id: string;
   url: string;
-  interval: string;
+  intervalSeconds: number;
+  format: SnapshotFormat;
+  filter: SnapshotFilter;
   maxTokens?: number;
-}
-
-export interface WatcherState extends WatcherConfig {
-  status: WatcherStatus;
   createdAt: number;
-  lastCheckedAt?: number;
-  baselineSnapshot?: Snapshot;
-  lastDiff?: SnapshotDiff;
-  cronJobId?: string;
 }
 
 export interface WatcherDiff {
-  watcherId: string;
-  url: string;
-  diff: SnapshotDiff;
-  checkedAt: number;
+  added: string[];
+  changed: string[];
+  removed: string[];
+  timestamp: number;
+  hasChanges: boolean;
+}
+
+export interface WatcherState {
+  config: WatcherConfig;
+  status: WatcherStatus;
+  baselineSnapshot?: string;
+  lastDiff?: WatcherDiff;
+  lastCheckedAt?: number;
+  lastError?: string;
 }
 
 export interface WatcherNotification {

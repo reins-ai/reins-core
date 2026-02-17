@@ -6,6 +6,8 @@ export {
   _resetFileExistsForTests,
 } from "./chrome-finder";
 export { BrowserDaemonService } from "./browser-daemon-service";
+export { BrowserWatcher } from "./watcher";
+export { WatcherRegistry } from "./watcher-registry";
 export { ElementRefRegistry } from "./element-ref-registry";
 export { SnapshotEngine } from "./snapshot";
 export type { SnapshotOptions, TakeSnapshotParams } from "./snapshot";
