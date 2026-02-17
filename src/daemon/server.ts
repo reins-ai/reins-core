@@ -47,6 +47,7 @@ import {
   SkillTool,
   type SkillDaemonService,
 } from "../skills";
+import type { BrowserDaemonService } from "../browser/browser-daemon-service";
 
 import {
   parseListMemoryQueryParams,
@@ -334,6 +335,7 @@ export interface DaemonHttpServerOptions {
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
   channelService?: ChannelDaemonService;
   skillService?: SkillDaemonService;
+  browserService?: BrowserDaemonService;
 }
 
 interface ProviderExecutionContext {
