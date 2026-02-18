@@ -10,6 +10,7 @@ import {
 import type { BrowserDaemonService } from "../browser-daemon-service";
 import type { CdpClient } from "../cdp-client";
 import type { ElementRefRegistry } from "../element-ref-registry";
+import type { SnapshotEngine, TakeSnapshotParams } from "../snapshot";
 import type { WatcherCronManager } from "../watcher-cron-manager";
 import type {
   AttachToTargetResult,
@@ -20,6 +21,7 @@ import type {
   GetBoxModelResult,
   GetTargetsResult,
   ResolveNodeResult,
+  Snapshot,
   SnapshotFilter,
   SnapshotFormat,
 } from "../types";
@@ -58,6 +60,7 @@ export interface BrowserActToolOptions {
   mkdirFn?: typeof mkdir;
   writeFileFn?: typeof writeFile;
   watcherManager?: WatcherCronManager;
+  snapshotEngine?: SnapshotEngine;
 }
 
 export class BrowserActTool implements Tool {
@@ -201,6 +204,8 @@ export class BrowserActTool implements Tool {
   private readonly mkdirFn: typeof mkdir;
   private readonly writeFileFn: typeof writeFile;
   private readonly watcherManager?: WatcherCronManager;
+  private readonly snapshotEngine?: SnapshotEngine;
+  private _recovering = false;
 
   constructor(
     private readonly service: BrowserDaemonService,
@@ -213,6 +218,7 @@ export class BrowserActTool implements Tool {
     this.mkdirFn = options.mkdirFn ?? mkdir;
     this.writeFileFn = options.writeFileFn ?? writeFile;
     this.watcherManager = options.watcherManager;
+    this.snapshotEngine = options.snapshotEngine;
   }
 
   async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
@@ -227,6 +233,22 @@ export class BrowserActTool implements Tool {
   }
 
   private async executeAction(args: Record<string, unknown>): Promise<unknown> {
+    try {
+      return await this.executeActionInner(args);
+    } catch (error) {
+      if (
+        error instanceof ElementNotFoundError
+        && !this._recovering
+        && this.snapshotEngine !== undefined
+        && typeof args.ref === "string"
+      ) {
+        return await this.recoverAndRetry(args, error);
+      }
+      throw error;
+    }
+  }
+
+  private async executeActionInner(args: Record<string, unknown>): Promise<unknown> {
     const action = this.readAction(args.action);
     if (!action) {
       throw new BrowserError("Missing or invalid 'action' argument.");
@@ -299,6 +321,50 @@ export class BrowserActTool implements Tool {
         );
       case "clear_storage":
         return await this.clearStorage(this.readStorageType(args.storageType));
+    }
+  }
+
+  private async recoverAndRetry(
+    args: Record<string, unknown>,
+    originalError: ElementNotFoundError,
+  ): Promise<unknown> {
+    const ref = args.ref as string;
+    const { client, tabId, sessionId } = await this.attachToActiveTab();
+
+    const originalRefInfo = this.elementRefRegistry.lookupRefInfo(tabId, ref);
+    if (originalRefInfo === undefined) {
+      throw originalError;
+    }
+
+    const snapshotParams: TakeSnapshotParams = {
+      cdpClient: client,
+      tabId,
+      url: "",
+      title: "",
+      sessionId,
+      options: { format: "compact", filter: "none" },
+    };
+
+    let freshSnapshot: Snapshot;
+    try {
+      freshSnapshot = await this.snapshotEngine!.takeSnapshot(snapshotParams);
+    } catch {
+      throw originalError;
+    }
+
+    const matchingNode = freshSnapshot.nodes.find(
+      (node) => node.role === originalRefInfo.role && node.name === originalRefInfo.name,
+    );
+
+    if (matchingNode === undefined) {
+      throw originalError;
+    }
+
+    this._recovering = true;
+    try {
+      return await this.executeActionInner({ ...args, ref: matchingNode.ref });
+    } finally {
+      this._recovering = false;
     }
   }
 
