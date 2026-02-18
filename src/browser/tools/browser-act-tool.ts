@@ -13,6 +13,7 @@ import type { ElementRefRegistry } from "../element-ref-registry";
 import type { WatcherCronManager } from "../watcher-cron-manager";
 import type {
   AttachToTargetResult,
+  BatchActionResult,
   CaptureScreenshotResult,
   CdpTargetInfo,
   EvaluateResult,
@@ -43,7 +44,8 @@ type SupportedBrowserActAction =
   | "watch"
   | "unwatch"
   | "list_watchers"
-  | "wait";
+  | "wait"
+  | "batch";
 
 export interface BrowserActToolOptions {
   screenshotDir?: string;
@@ -56,13 +58,13 @@ export class BrowserActTool implements Tool {
   readonly definition: ToolDefinition = {
     name: "browser_act",
     description:
-      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, screenshot, watch, unwatch, list_watchers, and wait actions.",
+      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, screenshot, watch, unwatch, list_watchers, wait, and batch actions.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot", "watch", "unwatch", "list_watchers", "wait"],
+          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot", "watch", "unwatch", "list_watchers", "wait", "batch"],
           description: "Interaction action to perform.",
         },
         ref: {
@@ -162,6 +164,11 @@ export class BrowserActTool implements Tool {
           type: "number",
           description: "Maximum wait time in milliseconds (for wait action). Default: 5000.",
         },
+        actions: {
+          type: "array",
+          items: { type: "object", description: "A single browser_act action object with an 'action' field." },
+          description: "Array of actions to execute sequentially (for batch action). Each item follows the same schema as a single browser_act call.",
+        },
       },
       required: ["action"],
     },
@@ -189,88 +196,118 @@ export class BrowserActTool implements Tool {
     const callId = typeof args.callId === "string" ? args.callId : "unknown-call";
 
     try {
-      const action = this.readAction(args.action);
-      if (!action) {
-        throw new BrowserError("Missing or invalid 'action' argument.");
-      }
-
-      switch (action) {
-        case "click":
-          return this.success(callId, await this.click(this.requireString(args.ref, "'ref' is required for click action.")));
-        case "type":
-          return this.success(
-            callId,
-            await this.type(
-              this.requireString(args.ref, "'ref' is required for type action."),
-              this.requireString(args.text, "'text' is required for type action."),
-              typeof args.clear === "boolean" ? args.clear : false,
-            ),
-          );
-        case "fill":
-          return this.success(
-            callId,
-            await this.fill(
-              this.requireString(args.ref, "'ref' is required for fill action."),
-              this.requireString(args.value, "'value' is required for fill action."),
-            ),
-          );
-        case "select":
-          return this.success(
-            callId,
-            await this.select(
-              this.requireString(args.ref, "'ref' is required for select action."),
-              this.requireString(args.value, "'value' is required for select action."),
-            ),
-          );
-        case "scroll":
-          return this.success(
-            callId,
-            await this.scroll(
-              this.readDirection(args.direction),
-              typeof args.amount === "number" && Number.isFinite(args.amount) ? args.amount : undefined,
-            ),
-          );
-        case "hover":
-          return this.success(callId, await this.hover(this.requireString(args.ref, "'ref' is required for hover action.")));
-        case "press_key":
-          return this.success(
-            callId,
-            await this.pressKeyAction(
-              this.requireString(args.key, "'key' is required for press_key action."),
-              this.readModifiers(args.modifiers),
-            ),
-          );
-        case "evaluate":
-          return this.success(
-            callId,
-            await this.evaluate(
-              this.requireString(args.script, "'script' is required for evaluate action."),
-              typeof args.awaitPromise === "boolean" ? args.awaitPromise : false,
-            ),
-          );
-        case "screenshot":
-          return this.success(
-            callId,
-            await this.screenshot(
-              this.readQuality(args.quality),
-              this.readOutput(args.output),
-            ),
-          );
-        case "watch":
-          return this.success(callId, await this.watch(args));
-        case "unwatch":
-          return this.success(
-            callId,
-            await this.unwatch(this.requireString(args.watcherId, "'watcherId' is required for unwatch action.")),
-          );
-        case "list_watchers":
-          return this.success(callId, this.listWatchers());
-        case "wait":
-          return this.success(callId, await this.wait(args));
-      }
+      const result = await this.executeAction(args);
+      return this.success(callId, result);
     } catch (error) {
       return this.toErrorResult(callId, error);
     }
+  }
+
+  private async executeAction(args: Record<string, unknown>): Promise<unknown> {
+    const action = this.readAction(args.action);
+    if (!action) {
+      throw new BrowserError("Missing or invalid 'action' argument.");
+    }
+
+    switch (action) {
+      case "click":
+        return await this.click(this.requireString(args.ref, "'ref' is required for click action."));
+      case "type":
+        return await this.type(
+          this.requireString(args.ref, "'ref' is required for type action."),
+          this.requireString(args.text, "'text' is required for type action."),
+          typeof args.clear === "boolean" ? args.clear : false,
+        );
+      case "fill":
+        return await this.fill(
+          this.requireString(args.ref, "'ref' is required for fill action."),
+          this.requireString(args.value, "'value' is required for fill action."),
+        );
+      case "select":
+        return await this.select(
+          this.requireString(args.ref, "'ref' is required for select action."),
+          this.requireString(args.value, "'value' is required for select action."),
+        );
+      case "scroll":
+        return await this.scroll(
+          this.readDirection(args.direction),
+          typeof args.amount === "number" && Number.isFinite(args.amount) ? args.amount : undefined,
+        );
+      case "hover":
+        return await this.hover(this.requireString(args.ref, "'ref' is required for hover action."));
+      case "press_key":
+        return await this.pressKeyAction(
+          this.requireString(args.key, "'key' is required for press_key action."),
+          this.readModifiers(args.modifiers),
+        );
+      case "evaluate":
+        return await this.evaluate(
+          this.requireString(args.script, "'script' is required for evaluate action."),
+          typeof args.awaitPromise === "boolean" ? args.awaitPromise : false,
+        );
+      case "screenshot":
+        return await this.screenshot(
+          this.readQuality(args.quality),
+          this.readOutput(args.output),
+        );
+      case "watch":
+        return await this.watch(args);
+      case "unwatch":
+        return await this.unwatch(this.requireString(args.watcherId, "'watcherId' is required for unwatch action."));
+      case "list_watchers":
+        return this.listWatchers();
+      case "wait":
+        return await this.wait(args);
+      case "batch":
+        return await this.executeBatch(args);
+    }
+  }
+
+  private async executeBatch(args: Record<string, unknown>): Promise<BatchActionResult> {
+    const actions = args.actions;
+    if (!Array.isArray(actions)) {
+      throw new BrowserError("'actions' must be an array for batch action.");
+    }
+
+    if (actions.length === 0) {
+      return { completedCount: 0, results: [] };
+    }
+
+    const results: unknown[] = [];
+    for (let step = 0; step < actions.length; step++) {
+      const subAction = actions[step];
+      if (typeof subAction !== "object" || subAction === null) {
+        return {
+          completedCount: step,
+          results,
+          error: { step, message: `Step ${step}: action must be an object`, code: "BROWSER_ERROR" },
+        };
+      }
+
+      const subArgs = subAction as Record<string, unknown>;
+      if (subArgs.action === "batch") {
+        return {
+          completedCount: step,
+          results,
+          error: { step, message: "Nested batch actions are not supported.", code: "BROWSER_ERROR" },
+        };
+      }
+
+      try {
+        const subResult = await this.executeAction(subArgs);
+        results.push(subResult);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const detail = this.classifyError(error);
+        return {
+          completedCount: step,
+          results,
+          error: { step, message, code: detail.code },
+        };
+      }
+    }
+
+    return { completedCount: actions.length, results };
   }
 
   private async attachToActiveTab(): Promise<{ client: CdpClient; tabId: string; sessionId: string }> {
@@ -684,6 +721,7 @@ export class BrowserActTool implements Tool {
       || value === "unwatch"
       || value === "list_watchers"
       || value === "wait"
+      || value === "batch"
     ) {
       return value;
     }

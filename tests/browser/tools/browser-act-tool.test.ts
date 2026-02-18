@@ -109,7 +109,7 @@ describe("BrowserActTool", () => {
       expect(tool.definition.name).toBe("browser_act");
     });
 
-    it("has all 12 actions in enum", () => {
+    it("has all actions in enum", () => {
       const { tool } = setup();
       const actions = tool.definition.parameters.properties.action?.enum;
       expect(actions).toEqual([
@@ -125,6 +125,8 @@ describe("BrowserActTool", () => {
         "watch",
         "unwatch",
         "list_watchers",
+        "wait",
+        "batch",
       ]);
     });
   });
