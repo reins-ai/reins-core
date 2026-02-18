@@ -1287,6 +1287,16 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleBrowserStop(corsHeaders);
       }
 
+      // Browser launch-headed endpoint
+      if (url.pathname === "/api/browser/launch-headed" && method === "POST") {
+        return this.handleBrowserLaunchHeaded(corsHeaders);
+      }
+
+      // Browser screenshot endpoint
+      if (url.pathname === "/api/browser/screenshot" && method === "POST") {
+        return this.handleBrowserTakeScreenshot(request, corsHeaders);
+      }
+
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
       if (environmentRoute) {
         return this.handleEnvironmentRequest(environmentRoute, method, request, corsHeaders);
@@ -1622,6 +1632,65 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     return Response.json(
       { stopped: true },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleBrowserLaunchHeaded(corsHeaders: Record<string, string>): Promise<Response> {
+    if (!this.browserService) {
+      return Response.json(
+        { ok: false, error: "Browser service not available" },
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const result = await this.browserService.launchHeaded();
+
+    if (!result.ok) {
+      return Response.json(
+        { ok: false, error: result.error.message },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      { ok: true, message: "Browser relaunched in headed mode" },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleBrowserTakeScreenshot(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.browserService) {
+      return Response.json(
+        { ok: false, error: "Browser service not available" },
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    let quality = 80;
+    try {
+      const body = (await request.json()) as { quality?: unknown };
+      if (typeof body.quality === "number" && body.quality >= 0 && body.quality <= 100) {
+        quality = body.quality;
+      }
+    } catch {
+      // Use default quality if body is missing or invalid.
+    }
+
+    const result = await this.browserService.takeScreenshot(quality);
+
+    if (!result.ok) {
+      return Response.json(
+        { ok: false, error: result.error.message },
+        { status: result.error.message.includes("not running") ? 409 : 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      { ok: true, path: result.value.path, message: `Screenshot saved to ${result.value.path}` },
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

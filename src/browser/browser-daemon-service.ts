@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { err, ok, type Result } from "../result";
 import { DaemonError, type DaemonManagedService } from "../daemon/types";
@@ -8,7 +9,7 @@ import { CdpClient } from "./cdp-client";
 import { findChromeBinary } from "./chrome-finder";
 import { BrowserError } from "./errors";
 import { injectStealthScripts } from "./stealth";
-import type { BrowserConfig, BrowserStatus, TabInfo } from "./types";
+import type { BrowserConfig, BrowserStatus, CaptureScreenshotResult, TabInfo } from "./types";
 
 const DEFAULT_CONFIG: BrowserConfig = {
   profilePath: process.env.REINS_BROWSER_PROFILE?.trim() || `${homedir()}/.reins/browser/profiles/default`,
@@ -18,7 +19,6 @@ const DEFAULT_CONFIG: BrowserConfig = {
 };
 
 const CHROME_FLAGS = [
-  "--headless=new",
   "--no-first-run",
   "--no-default-browser-check",
   "--disable-default-apps",
@@ -127,6 +127,64 @@ export class BrowserDaemonService implements DaemonManagedService {
     }
   }
 
+  /**
+   * Stop the current Chrome process (if running) and relaunch in headed
+   * (visible window) mode. Watcher cron jobs are intentionally NOT stopped —
+   * this is a Chrome restart, not a full service shutdown.
+   */
+  async launchHeaded(): Promise<Result<void, DaemonError>> {
+    try {
+      await this.stopChrome("SIGTERM");
+      this.config.headless = false;
+      await this.launchChrome();
+      return ok(undefined);
+    } catch (error) {
+      return err(new DaemonError(
+        `Failed to launch headed browser: ${error instanceof Error ? error.message : String(error)}`,
+        "BROWSER_LAUNCH_HEADED_FAILED",
+        error instanceof Error ? error : undefined,
+      ));
+    }
+  }
+
+  /**
+   * Capture a JPEG screenshot of the currently active page and save it to
+   * the configured screenshot directory. Returns the absolute file path.
+   *
+   * Returns an error result if the browser is not running.
+   */
+  async takeScreenshot(quality: number = 80): Promise<Result<{ path: string }, DaemonError>> {
+    const status = this.getStatus();
+    if (!status.running) {
+      return err(new DaemonError("Browser is not running", "BROWSER_NOT_RUNNING"));
+    }
+
+    const client = this.cdpClient as CdpClient;
+    const screenshotDir = this.config.screenshotDir
+      ?? join(homedir(), ".reins", "browser", "screenshots");
+
+    try {
+      const result = await client.send<CaptureScreenshotResult>("Page.captureScreenshot", {
+        format: "jpeg",
+        quality,
+      });
+
+      await mkdir(screenshotDir, { recursive: true });
+
+      const filename = `screenshot-${Date.now()}.jpg`;
+      const filePath = join(screenshotDir, filename);
+      await Bun.write(filePath, Buffer.from(result.data, "base64"));
+
+      return ok({ path: filePath });
+    } catch (error) {
+      return err(new DaemonError(
+        `Screenshot failed: ${error instanceof Error ? error.message : String(error)}`,
+        "SCREENSHOT_FAILED",
+        error instanceof Error ? error : undefined,
+      ));
+    }
+  }
+
   async ensureBrowser(): Promise<CdpClient> {
     if (this.isBrowserHealthy()) {
       return this.cdpClient as CdpClient;
@@ -220,6 +278,7 @@ export class BrowserDaemonService implements DaemonManagedService {
     await mkdir(profilePath, { recursive: true });
 
     const chromeFlags = [
+      ...(this.config.headless ? ["--headless=new"] : []),
       ...CHROME_FLAGS,
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profilePath}`,
