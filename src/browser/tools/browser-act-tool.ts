@@ -42,7 +42,8 @@ type SupportedBrowserActAction =
   | "screenshot"
   | "watch"
   | "unwatch"
-  | "list_watchers";
+  | "list_watchers"
+  | "wait";
 
 export interface BrowserActToolOptions {
   screenshotDir?: string;
@@ -55,13 +56,13 @@ export class BrowserActTool implements Tool {
   readonly definition: ToolDefinition = {
     name: "browser_act",
     description:
-      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, screenshot, watch, unwatch, and list_watchers actions.",
+      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, screenshot, watch, unwatch, list_watchers, and wait actions.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot", "watch", "unwatch", "list_watchers"],
+          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot", "watch", "unwatch", "list_watchers", "wait"],
           description: "Interaction action to perform.",
         },
         ref: {
@@ -146,6 +147,20 @@ export class BrowserActTool implements Tool {
         watcherId: {
           type: "string",
           description: "Watcher ID to remove (for unwatch action).",
+        },
+        condition: {
+          type: "string",
+          enum: ["ref_visible", "ref_present", "text_present", "load_state"],
+          description: "Condition to wait for (for wait action).",
+        },
+        state: {
+          type: "string",
+          enum: ["complete", "interactive"],
+          description: "Page load state to wait for (for wait action with load_state condition).",
+        },
+        timeout: {
+          type: "number",
+          description: "Maximum wait time in milliseconds (for wait action). Default: 5000.",
         },
       },
       required: ["action"],
@@ -250,6 +265,8 @@ export class BrowserActTool implements Tool {
           );
         case "list_watchers":
           return this.success(callId, this.listWatchers());
+        case "wait":
+          return this.success(callId, await this.wait(args));
       }
     } catch (error) {
       return this.toErrorResult(callId, error);
@@ -506,6 +523,96 @@ export class BrowserActTool implements Tool {
     });
   }
 
+  private async wait(args: Record<string, unknown>): Promise<unknown> {
+    const condition = args.condition;
+    if (
+      condition !== "ref_visible"
+      && condition !== "ref_present"
+      && condition !== "text_present"
+      && condition !== "load_state"
+    ) {
+      throw new BrowserError(
+        "'condition' must be one of: ref_visible, ref_present, text_present, load_state",
+      );
+    }
+
+    const timeoutMs = typeof args.timeout === "number" && Number.isFinite(args.timeout)
+      ? args.timeout
+      : 5000;
+    const pollIntervalMs = 250;
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      const conditionMet = await this.checkWaitCondition(condition, args);
+      if (conditionMet) {
+        return { action: "wait", condition, satisfied: true };
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    throw new BrowserError(`Wait condition '${condition}' timed out after ${timeoutMs}ms`);
+  }
+
+  private async checkWaitCondition(
+    condition: "ref_visible" | "ref_present" | "text_present" | "load_state",
+    args: Record<string, unknown>,
+  ): Promise<boolean> {
+    const { client, tabId, sessionId } = await this.attachToActiveTab();
+
+    switch (condition) {
+      case "ref_visible": {
+        const ref = this.requireString(args.ref, "'ref' is required for ref_visible condition.");
+        const backendNodeId = this.elementRefRegistry.lookupRef(tabId, ref);
+        if (backendNodeId === undefined) return false;
+        try {
+          const boxModel = await client.send<GetBoxModelResult>(
+            "DOM.getBoxModel",
+            { backendNodeId },
+            sessionId,
+          );
+          return boxModel.model.width > 0 && boxModel.model.height > 0;
+        } catch {
+          return false;
+        }
+      }
+      case "ref_present": {
+        const ref = this.requireString(args.ref, "'ref' is required for ref_present condition.");
+        return this.elementRefRegistry.lookupRef(tabId, ref) !== undefined;
+      }
+      case "text_present": {
+        const text = this.requireString(args.text, "'text' is required for text_present condition.");
+        try {
+          const evalResult = await client.send<EvaluateResult>("Runtime.evaluate", {
+            expression: `document.body.innerText.includes(${JSON.stringify(text)})`,
+            returnByValue: true,
+          }, sessionId);
+          return evalResult.result.value === true;
+        } catch {
+          return false;
+        }
+      }
+      case "load_state": {
+        const state = args.state;
+        if (state !== "complete" && state !== "interactive") {
+          throw new BrowserError(
+            "'state' must be 'complete' or 'interactive' for load_state condition.",
+          );
+        }
+        try {
+          const evalResult = await client.send<EvaluateResult>("Runtime.evaluate", {
+            expression: "document.readyState",
+            returnByValue: true,
+          }, sessionId);
+          const readyState = evalResult.result.value as string;
+          if (state === "complete") return readyState === "complete";
+          return readyState === "complete" || readyState === "interactive";
+        } catch {
+          return false;
+        }
+      }
+    }
+  }
+
   private readSnapshotFormat(value: unknown): SnapshotFormat {
     if (value === "text" || value === "compact" || value === "json") {
       return value;
@@ -576,6 +683,7 @@ export class BrowserActTool implements Tool {
       || value === "watch"
       || value === "unwatch"
       || value === "list_watchers"
+      || value === "wait"
     ) {
       return value;
     }
