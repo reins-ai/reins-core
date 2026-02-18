@@ -21,6 +21,7 @@ import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-reg
 import { MemoryCapabilitiesResolver } from "./memory-capabilities";
 import { bootstrapInstallRoot } from "../environment";
 import { SkillDaemonService } from "../skills";
+import { BrowserDaemonService } from "../browser/browser-daemon-service";
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryService;
@@ -166,11 +167,13 @@ async function main() {
     skillsDir,
   });
   const conversationDbPath = join(dataRoot, "conversation.db");
+  const browserService = new BrowserDaemonService();
   const httpServer = new DaemonHttpServer({
     toolDefinitions: getBuiltinToolDefinitions(),
     memoryService: memoryRuntime.memoryService,
     memoryCapabilitiesResolver,
     skillService,
+    browserService,
     conversation: {
       sqliteStorePath: conversationDbPath,
     },
@@ -184,6 +187,12 @@ async function main() {
     closeStorage: memoryRuntime.closeStorage,
     capabilitiesResolver: memoryCapabilitiesResolver,
   });
+
+  const browserRegistration = runtime.registerService(browserService);
+  if (!browserRegistration.ok) {
+    console.error("Failed to register browser service:", browserRegistration.error.message);
+    process.exit(1);
+  }
 
   const skillRegistration = runtime.registerService(skillService);
   if (!skillRegistration.ok) {
