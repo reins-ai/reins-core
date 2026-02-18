@@ -1292,6 +1292,11 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleBrowserLaunchHeaded(corsHeaders);
       }
 
+      // Browser launch-headless endpoint
+      if (url.pathname === "/api/browser/launch-headless" && method === "POST") {
+        return this.handleBrowserLaunchHeadless(corsHeaders);
+      }
+
       // Browser screenshot endpoint
       if (url.pathname === "/api/browser/screenshot" && method === "POST") {
         return this.handleBrowserTakeScreenshot(request, corsHeaders);
@@ -1655,6 +1660,29 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     return Response.json(
       { ok: true, message: "Browser relaunched in headed mode" },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleBrowserLaunchHeadless(corsHeaders: Record<string, string>): Promise<Response> {
+    if (!this.browserService) {
+      return Response.json(
+        { ok: false, error: "Browser service not available" },
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const result = await this.browserService.launchHeadless();
+
+    if (!result.ok) {
+      return Response.json(
+        { ok: false, error: result.error.message },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      { ok: true, message: "Browser relaunched in headless mode" },
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

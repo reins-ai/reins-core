@@ -14,7 +14,7 @@ import type { BrowserConfig, BrowserStatus, CaptureScreenshotResult, TabInfo } f
 const DEFAULT_CONFIG: BrowserConfig = {
   profilePath: process.env.REINS_BROWSER_PROFILE?.trim() || `${homedir()}/.reins/browser/profiles/default`,
   port: 9222,
-  headless: true,
+  headless: false,
   maxWatchers: 10,
 };
 
@@ -151,6 +151,26 @@ export class BrowserDaemonService implements DaemonManagedService {
       return err(new DaemonError(
         `Failed to launch headed browser: ${error instanceof Error ? error.message : String(error)}`,
         "BROWSER_LAUNCH_HEADED_FAILED",
+        error instanceof Error ? error : undefined,
+      ));
+    }
+  }
+
+  /**
+   * Stop the current Chrome process (if running) and relaunch in headless
+   * mode. Watcher cron jobs are intentionally NOT stopped — this is a Chrome
+   * restart, not a full service shutdown.
+   */
+  async launchHeadless(): Promise<Result<void, DaemonError>> {
+    try {
+      await this.stopChrome("SIGTERM");
+      this.config.headless = true;
+      await this.launchChrome();
+      return ok(undefined);
+    } catch (error) {
+      return err(new DaemonError(
+        `Failed to launch headless browser: ${error instanceof Error ? error.message : String(error)}`,
+        "BROWSER_LAUNCH_HEADLESS_FAILED",
         error instanceof Error ? error : undefined,
       ));
     }

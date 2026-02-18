@@ -14,6 +14,7 @@ class MockBrowserDaemonService extends BrowserDaemonService {
   private mockStatus: BrowserStatus;
   private stopResult: ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>;
   private launchHeadedResult: ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>;
+  private launchHeadlessResult: ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>;
   private screenshotResult:
     | ReturnType<typeof ok<{ path: string }>>
     | ReturnType<typeof err<DaemonError>>;
@@ -23,6 +24,7 @@ class MockBrowserDaemonService extends BrowserDaemonService {
     opts: {
       stopResult?: ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>;
       launchHeadedResult?: ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>;
+      launchHeadlessResult?: ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>;
       screenshotResult?:
         | ReturnType<typeof ok<{ path: string }>>
         | ReturnType<typeof err<DaemonError>>;
@@ -37,6 +39,7 @@ class MockBrowserDaemonService extends BrowserDaemonService {
     this.mockStatus = status;
     this.stopResult = opts.stopResult ?? ok(undefined);
     this.launchHeadedResult = opts.launchHeadedResult ?? ok(undefined);
+    this.launchHeadlessResult = opts.launchHeadlessResult ?? ok(undefined);
     this.screenshotResult = opts.screenshotResult ?? ok({ path: "/tmp/screenshot-123.jpg" });
   }
 
@@ -50,6 +53,10 @@ class MockBrowserDaemonService extends BrowserDaemonService {
 
   override async launchHeaded(): Promise<ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>> {
     return this.launchHeadedResult;
+  }
+
+  override async launchHeadless(): Promise<ReturnType<typeof ok<void>> | ReturnType<typeof err<DaemonError>>> {
+    return this.launchHeadlessResult;
   }
 
   override async takeScreenshot(_quality?: number): Promise<
@@ -324,6 +331,65 @@ describe("POST /api/browser/screenshot", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quality: 50 }),
+      });
+      expect(res.headers.get("content-type")).toContain("application/json");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/browser/launch-headless
+// ---------------------------------------------------------------------------
+
+describe("POST /api/browser/launch-headless", () => {
+  it("returns 503 when browser service is not provided", async () => {
+    await withServer(null, async (port) => {
+      const res = await fetch(`http://localhost:${port}/api/browser/launch-headless`, {
+        method: "POST",
+      });
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+    });
+  });
+
+  it("returns { ok: true, message } on successful relaunch in headless mode", async () => {
+    const svc = new MockBrowserDaemonService(runningStatus({ headless: false }), {
+      launchHeadlessResult: ok(undefined),
+    });
+    await withServer(svc, async (port) => {
+      const res = await fetch(`http://localhost:${port}/api/browser/launch-headless`, {
+        method: "POST",
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(typeof body.message).toBe("string");
+    });
+  });
+
+  it("returns 500 and { ok: false } when launch fails", async () => {
+    const svc = new MockBrowserDaemonService(runningStatus(), {
+      launchHeadlessResult: err(
+        new DaemonError("Chrome binary not found", "BROWSER_LAUNCH_HEADLESS_FAILED"),
+      ),
+    });
+    await withServer(svc, async (port) => {
+      const res = await fetch(`http://localhost:${port}/api/browser/launch-headless`, {
+        method: "POST",
+      });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+      expect(typeof body.error).toBe("string");
+    });
+  });
+
+  it("returns Content-Type application/json", async () => {
+    const svc = new MockBrowserDaemonService();
+    await withServer(svc, async (port) => {
+      const res = await fetch(`http://localhost:${port}/api/browser/launch-headless`, {
+        method: "POST",
       });
       expect(res.headers.get("content-type")).toContain("application/json");
     });
