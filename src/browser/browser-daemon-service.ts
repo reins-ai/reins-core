@@ -67,7 +67,7 @@ export class BrowserDaemonService implements DaemonManagedService {
   private readonly spawnFn: SpawnFn;
   private readonly findBinaryFn: () => Promise<string>;
   private readonly cdpClientFactory: (port: number) => CdpClient;
-  private readonly watcherManager?: WatcherManagerLike;
+  private watcherManager?: WatcherManagerLike;
 
   private chromeProcess: ReturnType<SpawnFn> | null = null;
   private cdpClient: CdpClient | null = null;
@@ -86,6 +86,15 @@ export class BrowserDaemonService implements DaemonManagedService {
     this.findBinaryFn = options.findBinaryFn ?? findChromeBinary;
     this.cdpClientFactory = options.cdpClientFactory ?? ((port) => new CdpClient({ port }));
     this.watcherManager = options.watcherManager;
+  }
+
+  /**
+   * Wire in the watcher manager after construction. Used to break the
+   * circular dependency between BrowserDaemonService and WatcherCronManager
+   * (each needs the other at construction time).
+   */
+  setWatcherManager(manager: WatcherManagerLike): void {
+    this.watcherManager = manager;
   }
 
   static _setBunSpawnForTests(fn: typeof Bun.spawn): void {

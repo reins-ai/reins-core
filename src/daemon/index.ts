@@ -22,6 +22,15 @@ import { MemoryCapabilitiesResolver } from "./memory-capabilities";
 import { bootstrapInstallRoot } from "../environment";
 import { SkillDaemonService } from "../skills";
 import { BrowserDaemonService } from "../browser/browser-daemon-service";
+import { WatcherCronManager } from "../browser/watcher-cron-manager";
+import { SnapshotEngine } from "../browser/snapshot";
+import { ElementRefRegistry } from "../browser/element-ref-registry";
+import {
+  ConversationNotificationDelivery,
+  type NotificationDelivery,
+} from "../browser/conversation-notification-delivery";
+import { CronScheduler } from "../cron/scheduler";
+import { LocalCronStore } from "../cron/store";
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryService;
@@ -167,7 +176,54 @@ async function main() {
     skillsDir,
   });
   const conversationDbPath = join(dataRoot, "conversation.db");
+
+  // ── Browser + Watcher stack ──────────────────────────────────────────────
+  // BrowserDaemonService and WatcherCronManager have a mutual dependency:
+  // each needs the other at construction time. We break the cycle by creating
+  // BrowserDaemonService first, then calling setWatcherManager() afterwards.
+  //
+  // ConversationNotificationDelivery also has a dependency on ConversationManager
+  // which is only available after httpServer.start(). We use a stable proxy
+  // object captured in a closure to allow late initialization.
+
+  const browserCronDir = join(dataRoot, "browser", "cron");
+  const browserCronStore = new LocalCronStore(browserCronDir);
+
+  // Container for the cron manager — populated below after construction.
+  // The closure in onExecute safely reads it only at tick time (post-start).
+  const watcherContainer: { cronManager: WatcherCronManager | undefined } = {
+    cronManager: undefined,
+  };
+  const browserCronScheduler = new CronScheduler({
+    store: browserCronStore,
+    onExecute: async (job) => {
+      await watcherContainer.cronManager?.handleCronExecution(job.id);
+    },
+  });
+
+  // Lazy notification delivery — initialized after httpServer.start() once the
+  // ConversationManager is available. Silently drops notifications until then.
+  let conversationNotificationDelivery: ConversationNotificationDelivery | undefined;
+  const lazyNotificationDelivery: NotificationDelivery = {
+    async sendWatcherNotification(watcherId, url, diff) {
+      return conversationNotificationDelivery?.sendWatcherNotification(watcherId, url, diff);
+    },
+  };
+
   const browserService = new BrowserDaemonService();
+  const watcherElementRefRegistry = new ElementRefRegistry();
+  const watcherSnapshotEngine = new SnapshotEngine(watcherElementRefRegistry);
+
+  const watcherCronManager = new WatcherCronManager({
+    snapshotEngine: watcherSnapshotEngine,
+    browserService,
+    cronScheduler: browserCronScheduler,
+    notificationDelivery: lazyNotificationDelivery,
+  });
+  watcherContainer.cronManager = watcherCronManager;
+  browserService.setWatcherManager(watcherCronManager);
+  // ── End browser + watcher stack ──────────────────────────────────────────
+
   const httpServer = new DaemonHttpServer({
     toolDefinitions: getBuiltinToolDefinitions(),
     memoryService: memoryRuntime.memoryService,
@@ -220,6 +276,21 @@ async function main() {
     process.exit(1);
   }
 
+  // Start the browser watcher cron scheduler now that all services are running.
+  const schedulerStartResult = await browserCronScheduler.start();
+  if (!schedulerStartResult.ok) {
+    console.warn("Failed to start browser watcher cron scheduler:", schedulerStartResult.error.message);
+  }
+
+  // Wire up conversation notifications for watchers — the ConversationManager
+  // is only available after httpServer has started.
+  const conversationManager = httpServer.getConversationManager();
+  if (conversationManager) {
+    conversationNotificationDelivery = new ConversationNotificationDelivery(conversationManager);
+  } else {
+    console.warn("ConversationManager not available — watcher notifications will be suppressed");
+  }
+
   // Register memory cron jobs after memory service is confirmed ready.
   // Consolidation and briefing runners use stub implementations until
   // the full pipeline (embedding provider, LLM) is configured in Wave 5.
@@ -247,6 +318,7 @@ async function main() {
   process.on("SIGTERM", async () => {
     console.log("Received SIGTERM, shutting down...");
     cronHandle?.stopAll();
+    await browserCronScheduler.stop();
     await runtime.stop({ signal: "SIGTERM" });
     process.exit(0);
   });
@@ -254,6 +326,7 @@ async function main() {
   process.on("SIGINT", async () => {
     console.log("Received SIGINT, shutting down...");
     cronHandle?.stopAll();
+    await browserCronScheduler.stop();
     await runtime.stop({ signal: "SIGINT" });
     process.exit(0);
   });
