@@ -61,6 +61,8 @@ export interface BrowserActToolOptions {
   writeFileFn?: typeof writeFile;
   watcherManager?: WatcherCronManager;
   snapshotEngine?: SnapshotEngine;
+  delayFn?: (ms: number) => Promise<void>;
+  randomFn?: (min: number, max: number) => number;
 }
 
 export class BrowserActTool implements Tool {
@@ -92,6 +94,11 @@ export class BrowserActTool implements Tool {
         clear: {
           type: "boolean",
           description: "Clear existing value before typing (for type action). Default: false.",
+        },
+        humanize: {
+          type: "boolean",
+          description:
+            "Enable human-like interaction patterns for click and type actions. Adds random delays between keystrokes and bezier curve mouse movement. Default: false.",
         },
         direction: {
           type: "string",
@@ -205,6 +212,8 @@ export class BrowserActTool implements Tool {
   private readonly writeFileFn: typeof writeFile;
   private readonly watcherManager?: WatcherCronManager;
   private readonly snapshotEngine?: SnapshotEngine;
+  private readonly delayFn: (ms: number) => Promise<void>;
+  private readonly randomFn: (min: number, max: number) => number;
   private _recovering = false;
 
   constructor(
@@ -219,6 +228,8 @@ export class BrowserActTool implements Tool {
     this.writeFileFn = options.writeFileFn ?? writeFile;
     this.watcherManager = options.watcherManager;
     this.snapshotEngine = options.snapshotEngine;
+    this.delayFn = options.delayFn ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.randomFn = options.randomFn ?? ((min, max) => min + Math.random() * (max - min));
   }
 
   async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
@@ -256,12 +267,16 @@ export class BrowserActTool implements Tool {
 
     switch (action) {
       case "click":
-        return await this.click(this.requireString(args.ref, "'ref' is required for click action."));
+        return await this.click(
+          this.requireString(args.ref, "'ref' is required for click action."),
+          typeof args.humanize === "boolean" ? args.humanize : false,
+        );
       case "type":
         return await this.type(
           this.requireString(args.ref, "'ref' is required for type action."),
           this.requireString(args.text, "'text' is required for type action."),
           typeof args.clear === "boolean" ? args.clear : false,
+          typeof args.humanize === "boolean" ? args.humanize : false,
         );
       case "fill":
         return await this.fill(
@@ -498,7 +513,7 @@ export class BrowserActTool implements Tool {
     return firstPage?.targetId;
   }
 
-  private async click(ref: string): Promise<unknown> {
+  private async click(ref: string, humanize = false): Promise<unknown> {
     const { client, tabId, sessionId } = await this.attachToActiveTab();
     const backendNodeId = this.resolveRef(tabId, ref);
 
@@ -506,6 +521,16 @@ export class BrowserActTool implements Tool {
     const [x1, y1, x2, y2, x3, y3, x4, y4] = boxModel.model.content;
     const x = ((x1 ?? 0) + (x2 ?? 0) + (x3 ?? 0) + (x4 ?? 0)) / 4;
     const y = ((y1 ?? 0) + (y2 ?? 0) + (y3 ?? 0) + (y4 ?? 0)) / 4;
+
+    if (humanize) {
+      const startX = this.randomFn(0, 1280);
+      const startY = this.randomFn(0, 800);
+      const points = this.bezierPoints(startX, startY, x, y, 8);
+      for (const point of points) {
+        await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y }, sessionId);
+        await this.delayFn(this.randomFn(10, 30));
+      }
+    }
 
     const commonParams = { x, y, button: "left" as const, clickCount: 1, buttons: 1 };
     await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, sessionId);
@@ -515,7 +540,7 @@ export class BrowserActTool implements Tool {
     return { action: "click", ref, x, y };
   }
 
-  private async type(ref: string, text: string, clear: boolean): Promise<unknown> {
+  private async type(ref: string, text: string, clear: boolean, humanize = false): Promise<unknown> {
     const { client, tabId, sessionId } = await this.attachToActiveTab();
     const backendNodeId = this.resolveRef(tabId, ref);
 
@@ -536,6 +561,10 @@ export class BrowserActTool implements Tool {
         key: char,
         text: char,
       }, sessionId);
+
+      if (humanize) {
+        await this.delayFn(this.randomFn(40, 120));
+      }
     }
 
     return { action: "type", ref, text };
@@ -859,6 +888,27 @@ export class BrowserActTool implements Tool {
     if (modifiers.includes("Meta")) bitmask |= 4;
     if (modifiers.includes("Shift")) bitmask |= 8;
     return bitmask;
+  }
+
+  private bezierPoints(
+    x0: number,
+    y0: number,
+    x2: number,
+    y2: number,
+    steps: number,
+  ): Array<{ x: number; y: number }> {
+    const cx = (x0 + x2) / 2 + this.randomFn(-50, 50);
+    const cy = (y0 + y2) / 2 + this.randomFn(-50, 50);
+    const points: Array<{ x: number; y: number }> = [];
+
+    for (let i = 1; i <= steps; i++) {
+      const t = i / (steps + 1);
+      const bx = (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x2;
+      const by = (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y2;
+      points.push({ x: Math.round(bx), y: Math.round(by) });
+    }
+
+    return points;
   }
 
   private resolveRef(tabId: string, ref: string): number {
