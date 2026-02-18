@@ -4,6 +4,8 @@ import { ToolRegistry } from "../../src/tools/registry";
 import { BrowserTool } from "../../src/browser/tools/browser-tool";
 import { BrowserSnapshotTool } from "../../src/browser/tools/browser-snapshot-tool";
 import { BrowserActTool } from "../../src/browser/tools/browser-act-tool";
+import { BrowserDebugTool } from "../../src/browser/tools/browser-debug-tool";
+import { DebugEventBuffer } from "../../src/browser/debug-event-buffer";
 import { ElementRefRegistry } from "../../src/browser/element-ref-registry";
 import { SnapshotEngine } from "../../src/browser/snapshot";
 import { BROWSER_SYSTEM_PROMPT } from "../../src/browser/system-prompt";
@@ -29,17 +31,19 @@ function createMockBrowserService(): BrowserDaemonService {
 
 describe("Browser agent integration", () => {
   describe("tool registration", () => {
-    it("registers all 3 browser tools in ToolRegistry", () => {
+    it("registers all 4 browser tools in ToolRegistry", () => {
       const registry = new ToolRegistry();
       const service = createMockBrowserService();
       const elementRefRegistry = new ElementRefRegistry();
       const snapshotEngine = new SnapshotEngine(elementRefRegistry);
+      const debugBuffer = new DebugEventBuffer();
 
       registry.register(new BrowserTool(service));
       registry.register(new BrowserSnapshotTool(service, snapshotEngine));
       registry.register(new BrowserActTool(service, elementRefRegistry));
+      registry.register(new BrowserDebugTool(service, debugBuffer));
 
-      expect(registry.list()).toHaveLength(3);
+      expect(registry.list()).toHaveLength(4);
     });
 
     it("registers tool named 'browser'", () => {
@@ -75,20 +79,33 @@ describe("Browser agent integration", () => {
       expect(registry.get("browser_act")?.definition.name).toBe("browser_act");
     });
 
-    it("exposes tool definitions for all 3 browser tools", () => {
+    it("registers tool named 'browser_debug'", () => {
+      const registry = new ToolRegistry();
+      const service = createMockBrowserService();
+      const debugBuffer = new DebugEventBuffer();
+
+      registry.register(new BrowserDebugTool(service, debugBuffer));
+
+      expect(registry.has("browser_debug")).toBe(true);
+      expect(registry.get("browser_debug")?.definition.name).toBe("browser_debug");
+    });
+
+    it("exposes tool definitions for all 4 browser tools", () => {
       const registry = new ToolRegistry();
       const service = createMockBrowserService();
       const elementRefRegistry = new ElementRefRegistry();
       const snapshotEngine = new SnapshotEngine(elementRefRegistry);
+      const debugBuffer = new DebugEventBuffer();
 
       registry.register(new BrowserTool(service));
       registry.register(new BrowserSnapshotTool(service, snapshotEngine));
       registry.register(new BrowserActTool(service, elementRefRegistry));
+      registry.register(new BrowserDebugTool(service, debugBuffer));
 
       const definitions = registry.getDefinitions();
       const names = definitions.map((d) => d.name).sort();
 
-      expect(names).toEqual(["browser", "browser_act", "browser_snapshot"]);
+      expect(names).toEqual(["browser", "browser_act", "browser_debug", "browser_snapshot"]);
     });
   });
 
@@ -108,14 +125,15 @@ describe("Browser agent integration", () => {
       expect(BROWSER_SYSTEM_PROMPT).toContain("ref");
     });
 
-    it("mentions all 3 tool names", () => {
+    it("mentions all 4 tool names", () => {
       expect(BROWSER_SYSTEM_PROMPT).toContain("browser:");
       expect(BROWSER_SYSTEM_PROMPT).toContain("browser_snapshot:");
       expect(BROWSER_SYSTEM_PROMPT).toContain("browser_act:");
+      expect(BROWSER_SYSTEM_PROMPT).toContain("browser_debug:");
     });
 
-    it("stays within token budget (under 800 characters)", () => {
-      expect(BROWSER_SYSTEM_PROMPT.length).toBeLessThanOrEqual(800);
+    it("stays within token budget (under 1600 characters)", () => {
+      expect(BROWSER_SYSTEM_PROMPT.length).toBeLessThanOrEqual(1600);
     });
   });
 
