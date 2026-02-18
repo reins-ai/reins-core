@@ -45,7 +45,13 @@ type SupportedBrowserActAction =
   | "unwatch"
   | "list_watchers"
   | "wait"
-  | "batch";
+  | "batch"
+  | "get_cookies"
+  | "set_cookie"
+  | "clear_cookies"
+  | "get_storage"
+  | "set_storage"
+  | "clear_storage";
 
 export interface BrowserActToolOptions {
   screenshotDir?: string;
@@ -58,13 +64,13 @@ export class BrowserActTool implements Tool {
   readonly definition: ToolDefinition = {
     name: "browser_act",
     description:
-      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, screenshot, watch, unwatch, list_watchers, wait, and batch actions.",
+      "Interact with page elements using element refs from browser_snapshot. Supports click, type, fill, select, scroll, hover, press_key, evaluate, screenshot, watch, unwatch, list_watchers, wait, batch, and cookie/storage actions.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot", "watch", "unwatch", "list_watchers", "wait", "batch"],
+          enum: ["click", "type", "fill", "select", "scroll", "hover", "press_key", "evaluate", "screenshot", "watch", "unwatch", "list_watchers", "wait", "batch", "get_cookies", "set_cookie", "clear_cookies", "get_storage", "set_storage", "clear_storage"],
           description: "Interaction action to perform.",
         },
         ref: {
@@ -169,6 +175,23 @@ export class BrowserActTool implements Tool {
           items: { type: "object", description: "A single browser_act action object with an 'action' field." },
           description: "Array of actions to execute sequentially (for batch action). Each item follows the same schema as a single browser_act call.",
         },
+        name: {
+          type: "string",
+          description: "Cookie name (for set_cookie action).",
+        },
+        domain: {
+          type: "string",
+          description: "Cookie domain (for set_cookie action).",
+        },
+        path: {
+          type: "string",
+          description: "Cookie path (for set_cookie action).",
+        },
+        storageType: {
+          type: "string",
+          enum: ["local", "session"],
+          description: "Storage type for get_storage, set_storage, clear_storage actions. Default: local.",
+        },
       },
       required: ["action"],
     },
@@ -260,6 +283,22 @@ export class BrowserActTool implements Tool {
         return await this.wait(args);
       case "batch":
         return await this.executeBatch(args);
+      case "get_cookies":
+        return await this.getCookies();
+      case "set_cookie":
+        return await this.setCookie(args);
+      case "clear_cookies":
+        return await this.clearCookies();
+      case "get_storage":
+        return await this.getStorage(this.readStorageType(args.storageType));
+      case "set_storage":
+        return await this.setStorage(
+          this.requireString(args.key, "'key' is required for set_storage action."),
+          this.requireString(args.value, "'value' is required for set_storage action."),
+          this.readStorageType(args.storageType),
+        );
+      case "clear_storage":
+        return await this.clearStorage(this.readStorageType(args.storageType));
     }
   }
 
@@ -308,6 +347,68 @@ export class BrowserActTool implements Tool {
     }
 
     return { completedCount: actions.length, results };
+  }
+
+  private async getCookies(): Promise<unknown> {
+    const { client, sessionId } = await this.attachToActiveTab();
+    const result = await client.send<{ cookies: unknown[] }>("Network.getCookies", {}, sessionId);
+    return { action: "get_cookies", cookies: result.cookies };
+  }
+
+  private async setCookie(args: Record<string, unknown>): Promise<unknown> {
+    const { client, sessionId } = await this.attachToActiveTab();
+    const name = this.requireString(args.name, "'name' is required for set_cookie action.");
+    const value = this.requireString(args.value, "'value' is required for set_cookie action.");
+    const params: Record<string, unknown> = { name, value };
+    if (typeof args.domain === "string") params.domain = args.domain;
+    if (typeof args.path === "string") params.path = args.path;
+    await client.send("Network.setCookie", params, sessionId);
+    return { action: "set_cookie", name, value };
+  }
+
+  private async clearCookies(): Promise<unknown> {
+    const { client, sessionId } = await this.attachToActiveTab();
+    await client.send("Network.clearBrowserCookies", {}, sessionId);
+    return { action: "clear_cookies" };
+  }
+
+  private async getStorage(storageType: "local" | "session"): Promise<unknown> {
+    const { client, sessionId } = await this.attachToActiveTab();
+    const prop = storageType === "local" ? "localStorage" : "sessionStorage";
+    const evalResult = await client.send<EvaluateResult>("Runtime.evaluate", {
+      expression: `JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(${prop}))))`,
+      returnByValue: true,
+    }, sessionId);
+    return { action: "get_storage", storageType, data: evalResult.result.value };
+  }
+
+  private async setStorage(
+    key: string,
+    value: string,
+    storageType: "local" | "session",
+  ): Promise<unknown> {
+    const { client, sessionId } = await this.attachToActiveTab();
+    const prop = storageType === "local" ? "localStorage" : "sessionStorage";
+    await client.send<EvaluateResult>("Runtime.evaluate", {
+      expression: `${prop}.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
+      returnByValue: true,
+    }, sessionId);
+    return { action: "set_storage", storageType, key, value };
+  }
+
+  private async clearStorage(storageType: "local" | "session"): Promise<unknown> {
+    const { client, sessionId } = await this.attachToActiveTab();
+    const prop = storageType === "local" ? "localStorage" : "sessionStorage";
+    await client.send<EvaluateResult>("Runtime.evaluate", {
+      expression: `${prop}.clear()`,
+      returnByValue: true,
+    }, sessionId);
+    return { action: "clear_storage", storageType };
+  }
+
+  private readStorageType(value: unknown): "local" | "session" {
+    if (value === "session") return "session";
+    return "local";
   }
 
   private async attachToActiveTab(): Promise<{ client: CdpClient; tabId: string; sessionId: string }> {
@@ -722,6 +823,12 @@ export class BrowserActTool implements Tool {
       || value === "list_watchers"
       || value === "wait"
       || value === "batch"
+      || value === "get_cookies"
+      || value === "set_cookie"
+      || value === "clear_cookies"
+      || value === "get_storage"
+      || value === "set_storage"
+      || value === "clear_storage"
     ) {
       return value;
     }

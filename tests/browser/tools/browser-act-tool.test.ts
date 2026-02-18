@@ -127,6 +127,12 @@ describe("BrowserActTool", () => {
         "list_watchers",
         "wait",
         "batch",
+        "get_cookies",
+        "set_cookie",
+        "clear_cookies",
+        "get_storage",
+        "set_storage",
+        "clear_storage",
       ]);
     });
   });
