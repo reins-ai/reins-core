@@ -1282,6 +1282,11 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleBrowserStatus(corsHeaders);
       }
 
+      // Browser stop endpoint
+      if (url.pathname === "/api/browser/stop" && method === "POST") {
+        return this.handleBrowserStop(corsHeaders);
+      }
+
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
       if (environmentRoute) {
         return this.handleEnvironmentRequest(environmentRoute, method, request, corsHeaders);
@@ -1596,6 +1601,29 @@ export class DaemonHttpServer implements DaemonManagedService {
     return Response.json(response, {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
+  }
+
+  private async handleBrowserStop(corsHeaders: Record<string, string>): Promise<Response> {
+    if (!this.browserService) {
+      return Response.json(
+        { stopped: true, message: "Browser service not running" },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const result = await this.browserService.stop();
+
+    if (!result.ok) {
+      return Response.json(
+        { stopped: false, error: result.error.message },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      { stopped: true },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 
   private async initializeIntegrationServices(): Promise<void> {
