@@ -39,7 +39,14 @@ export type CdpMethod =
   | "Runtime.evaluate"
   | "Runtime.callFunctionOn"
   | "Input.dispatchMouseEvent"
-  | "Input.dispatchKeyEvent";
+  | "Input.dispatchKeyEvent"
+  | "Network.getCookies"
+  | "Network.setCookie"
+  | "Network.clearBrowserCookies"
+  | "Runtime.enable"
+  | "Console.enable"
+  | "Network.enable"
+  | "Page.frameNavigated";
 
 export interface CdpTargetInfo {
   targetId: string;
@@ -221,7 +228,15 @@ export type BrowserActAction =
   | "screenshot"
   | "watch"
   | "unwatch"
-  | "list_watchers";
+  | "list_watchers"
+  | "wait"
+  | "batch"
+  | "get_cookies"
+  | "set_cookie"
+  | "clear_cookies"
+  | "get_storage"
+  | "set_storage"
+  | "clear_storage";
 
 export interface BrowserClickArgs {
   action: "click";
@@ -292,6 +307,134 @@ export interface BrowserListWatchersArgs {
   action: "list_watchers";
 }
 
+// --- Wait primitive types ---
+
+export type WaitCondition = "ref_visible" | "ref_present" | "text_present" | "load_state";
+
+export type LoadState = "complete" | "interactive";
+
+export interface BrowserWaitArgs {
+  action: "wait";
+  condition: WaitCondition;
+  ref?: string;
+  text?: string;
+  state?: LoadState;
+  timeout?: number;
+}
+
+// --- Batch action types ---
+
+export interface BrowserBatchArgs {
+  action: "batch";
+  actions: Array<
+    | BrowserClickArgs
+    | BrowserTypeArgs
+    | BrowserFillArgs
+    | BrowserSelectArgs
+    | BrowserScrollArgs
+    | BrowserHoverArgs
+    | BrowserPressKeyArgs
+    | BrowserEvaluateArgs
+    | BrowserScreenshotArgs
+    | BrowserWatchArgs
+    | BrowserUnwatchArgs
+    | BrowserListWatchersArgs
+    | BrowserWaitArgs
+    | BrowserGetCookiesArgs
+    | BrowserSetCookieArgs
+    | BrowserClearCookiesArgs
+    | BrowserGetStorageArgs
+    | BrowserSetStorageArgs
+    | BrowserClearStorageArgs
+  >;
+}
+
+export interface BatchActionResult {
+  completedCount: number;
+  results: unknown[];
+  error?: {
+    step: number;
+    message: string;
+    code: string;
+  };
+}
+
+// --- Cookie and storage types ---
+
+export type StorageType = "local" | "session";
+
+export interface BrowserGetCookiesArgs {
+  action: "get_cookies";
+}
+
+export interface BrowserSetCookieArgs {
+  action: "set_cookie";
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+}
+
+export interface BrowserClearCookiesArgs {
+  action: "clear_cookies";
+}
+
+export interface BrowserGetStorageArgs {
+  action: "get_storage";
+  storageType?: StorageType;
+}
+
+export interface BrowserSetStorageArgs {
+  action: "set_storage";
+  key: string;
+  value: string;
+  storageType?: StorageType;
+}
+
+export interface BrowserClearStorageArgs {
+  action: "clear_storage";
+  storageType?: StorageType;
+}
+
+// --- Debug tool types ---
+
+export type DebugAction = "console" | "errors" | "network" | "all";
+
+export interface BrowserDebugArgs {
+  action: DebugAction;
+}
+
+export interface ConsoleEntry {
+  level: string;
+  text: string;
+  timestamp: number;
+}
+
+export interface PageError {
+  message: string;
+  stack?: string;
+}
+
+export interface NetworkEntry {
+  url: string;
+  method: string;
+  status?: number;
+  failed: boolean;
+}
+
+export interface DebugSnapshot {
+  console?: ConsoleEntry[];
+  errors?: PageError[];
+  network?: NetworkEntry[];
+}
+
+// --- Humanized interaction types ---
+
+export interface HumanizeConfig {
+  minDelay: number;
+  maxDelay: number;
+}
+
 export type BrowserActArgs =
   | BrowserClickArgs
   | BrowserTypeArgs
@@ -304,7 +447,15 @@ export type BrowserActArgs =
   | BrowserScreenshotArgs
   | BrowserWatchArgs
   | BrowserUnwatchArgs
-  | BrowserListWatchersArgs;
+  | BrowserListWatchersArgs
+  | BrowserWaitArgs
+  | BrowserBatchArgs
+  | BrowserGetCookiesArgs
+  | BrowserSetCookieArgs
+  | BrowserClearCookiesArgs
+  | BrowserGetStorageArgs
+  | BrowserSetStorageArgs
+  | BrowserClearStorageArgs;
 
 export interface ElementRef {
   ref: string;
