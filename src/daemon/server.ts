@@ -620,6 +620,8 @@ const ENVIRONMENTS_ROUTE = {
 const WEBSOCKET_ROUTE = "/ws";
 const WS_HEARTBEAT_INTERVAL_MS = 15_000;
 const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
+const STREAM_SUBSCRIPTION_GRACE_MS = 500;
+const STREAM_SUBSCRIPTION_POLL_MS = 10;
 
 const RUN_SKILL_SCRIPT_TOOL_DEFINITION: ToolDefinition = {
   name: "run_skill_script",
@@ -2576,7 +2578,10 @@ export class DaemonHttpServer implements DaemonManagedService {
   private scheduleProviderExecution(context: ProviderExecutionContext): void {
     void Promise.resolve()
       .then(async () => {
-        await Bun.sleep(25);
+        await this.waitForStreamSubscriptionWindow(
+          context.conversationId,
+          context.assistantMessageId,
+        );
         await this.executeProviderGeneration(context);
       })
       .catch((error) => {
@@ -2586,6 +2591,29 @@ export class DaemonHttpServer implements DaemonManagedService {
           error: error instanceof Error ? error.message : String(error),
         });
       });
+  }
+
+  private async waitForStreamSubscriptionWindow(
+    conversationId: string,
+    assistantMessageId: string,
+  ): Promise<void> {
+    const target = { conversationId, assistantMessageId };
+    if (this.wsRegistry.getSubscriptionCount(target) > 0) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < STREAM_SUBSCRIPTION_GRACE_MS) {
+      if (this.wsRegistry.getSubscriptionCount(target) > 0) {
+        return;
+      }
+
+      if (this.streamSubscriptionsByConnection.size === 0) {
+        return;
+      }
+
+      await Bun.sleep(STREAM_SUBSCRIPTION_POLL_MS);
+    }
   }
 
   private async executeProviderGeneration(context: ProviderExecutionContext): Promise<void> {
