@@ -13,8 +13,14 @@ import { SQLiteConversationStore } from "../conversation/sqlite-store";
 import { TranscriptStore } from "../conversation/transcript-store";
 import { ConfigStore } from "../config/store";
 import { ProviderAuthService } from "../providers/auth-service";
+import {
+  BYOKAnthropicProvider,
+  BYOKGoogleProvider,
+  BYOKOpenAIProvider,
+} from "../providers/byok";
 import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strategy";
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
+import type { CredentialRecord } from "../providers/credentials/types";
 import { AnthropicOAuthProvider } from "../providers/oauth/anthropic";
 import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
@@ -300,6 +306,61 @@ interface DefaultServices {
   authService: ProviderAuthService;
   modelRouter: ModelRouter;
   credentialStore: EncryptedCredentialStore;
+  providerRegistry: ProviderRegistry;
+}
+
+interface StoredApiKeyPayload {
+  key: string;
+}
+
+const SUPPORTED_BYOK_PROVIDER_IDS = ["anthropic", "openai", "google"] as const;
+
+function isStoredApiKeyPayload(value: unknown): value is StoredApiKeyPayload {
+  return typeof value === "object" && value !== null && typeof (value as { key?: unknown }).key === "string";
+}
+
+function createByokProvider(providerId: string, apiKey: string): Provider | null {
+  switch (providerId) {
+    case "anthropic":
+      return withProviderIdentity(new BYOKAnthropicProvider(apiKey), {
+        id: "anthropic",
+        name: "Anthropic BYOK",
+      });
+    case "openai":
+      return withProviderIdentity(new BYOKOpenAIProvider(apiKey), {
+        id: "openai",
+        name: "OpenAI BYOK",
+      });
+    case "google":
+      return withProviderIdentity(new BYOKGoogleProvider(apiKey), {
+        id: "google",
+        name: "Google BYOK",
+      });
+    default:
+      return null;
+  }
+}
+
+function withProviderIdentity(provider: Provider, identity: { id: string; name: string }): Provider {
+  return {
+    config: {
+      ...provider.config,
+      id: identity.id,
+      name: identity.name,
+      type: "byok",
+    },
+    capabilities: provider.capabilities,
+    chat: async (request) => await provider.chat(request),
+    stream: (request) => provider.stream(request),
+    listModels: async () => {
+      const models = await provider.listModels();
+      return models.map((model) => ({
+        ...model,
+        provider: identity.id,
+      }));
+    },
+    validateConnection: async () => await provider.validateConnection(),
+  };
 }
 
 interface ConversationServiceOptions {
@@ -758,7 +819,12 @@ function createDefaultServices(): DefaultServices {
 
   const modelRouter = new ModelRouter(registry, authService);
 
-  return { authService, modelRouter, credentialStore: store };
+  return {
+    authService,
+    modelRouter,
+    credentialStore: store,
+    providerRegistry: registry,
+  };
 }
 
 function createDefaultToolExecutor(
@@ -967,6 +1033,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly memoryService: MemoryService | null;
   private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
   private readonly credentialStore: EncryptedCredentialStore | null;
+  private readonly providerRegistry: ProviderRegistry | null;
   private readonly providedChannelService: ChannelDaemonService | null;
   private readonly environmentOptions: {
     daemonPathOptions?: DaemonPathOptions;
@@ -1008,17 +1075,25 @@ export class DaemonHttpServer implements DaemonManagedService {
       ?? (isMachineAuthService(legacyService) ? legacyService : null);
 
     let credentialStore: EncryptedCredentialStore | undefined;
+    let providerRegistry: ProviderRegistry | undefined;
     if (providerAuthService) {
       this.authService = providerAuthService;
-      this.modelRouter = options.modelRouter ?? new ModelRouter(new ProviderRegistry());
+      if (options.modelRouter) {
+        this.modelRouter = options.modelRouter;
+      } else {
+        providerRegistry = new ProviderRegistry();
+        this.modelRouter = new ModelRouter(providerRegistry);
+      }
     } else {
       const services = createDefaultServices();
       this.authService = services.authService;
       this.modelRouter = services.modelRouter;
       credentialStore = services.credentialStore;
+      providerRegistry = services.providerRegistry;
     }
 
     this.credentialStore = credentialStore ?? null;
+    this.providerRegistry = providerRegistry ?? null;
 
     this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService, credentialStore);
 
@@ -1072,6 +1147,8 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.environmentContextProvider = null;
       this.personaRegistry = null;
     }
+
+    await this.initializeByokProviders();
 
     try {
       this.initializeConversationServices();
@@ -1721,6 +1798,96 @@ export class DaemonHttpServer implements DaemonManagedService {
       { ok: true, path: result.value.path, message: `Screenshot saved to ${result.value.path}` },
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
+  }
+
+  private async initializeByokProviders(): Promise<void> {
+    if (!this.providerRegistry || !this.credentialStore) {
+      return;
+    }
+
+    const credentialResult = await this.credentialStore.list({
+      type: "api_key",
+      includeRevoked: false,
+    });
+
+    if (!credentialResult.ok) {
+      log("warn", "Unable to load BYOK credentials for provider bootstrap", {
+        error: credentialResult.error.message,
+      });
+      return;
+    }
+
+    const latestCredentialByProvider = new Map<string, CredentialRecord>();
+    for (const credential of credentialResult.value) {
+      if (!SUPPORTED_BYOK_PROVIDER_IDS.includes(credential.provider as (typeof SUPPORTED_BYOK_PROVIDER_IDS)[number])) {
+        continue;
+      }
+
+      const current = latestCredentialByProvider.get(credential.provider);
+      if (!current || credential.updatedAt > current.updatedAt) {
+        latestCredentialByProvider.set(credential.provider, credential);
+      }
+    }
+
+    if (latestCredentialByProvider.size === 0) {
+      return;
+    }
+
+    let registeredCount = 0;
+
+    for (const [providerId, credential] of latestCredentialByProvider.entries()) {
+      const payloadResult = await this.credentialStore.decryptPayload<unknown>(credential);
+      if (!payloadResult.ok) {
+        log("warn", "Unable to decrypt BYOK credential payload", {
+          provider: providerId,
+          credentialId: credential.id,
+          error: payloadResult.error.message,
+        });
+        continue;
+      }
+
+      if (!isStoredApiKeyPayload(payloadResult.value)) {
+        log("warn", "Skipping non-BYOK API key payload during provider bootstrap", {
+          provider: providerId,
+          credentialId: credential.id,
+        });
+        continue;
+      }
+
+      const apiKey = payloadResult.value.key.trim();
+      if (apiKey.length === 0) {
+        log("warn", "Skipping empty API key payload during provider bootstrap", {
+          provider: providerId,
+          credentialId: credential.id,
+        });
+        continue;
+      }
+
+      const provider = createByokProvider(providerId, apiKey);
+      if (!provider) {
+        continue;
+      }
+
+      if (this.providerRegistry.has(providerId)) {
+        this.providerRegistry.remove(providerId);
+      }
+
+      try {
+        this.providerRegistry.register(provider);
+        registeredCount += 1;
+      } catch (error) {
+        log("warn", "Failed to register BYOK provider during daemon startup", {
+          provider: providerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (registeredCount > 0) {
+      log("info", "Initialized BYOK providers in daemon registry", {
+        registeredCount,
+      });
+    }
   }
 
   private async initializeIntegrationServices(): Promise<void> {
