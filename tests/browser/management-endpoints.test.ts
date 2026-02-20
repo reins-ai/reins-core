@@ -5,6 +5,7 @@ import { BrowserDaemonService } from "../../src/browser/browser-daemon-service";
 import type { BrowserStatus } from "../../src/browser/types";
 import { ok, err } from "../../src/result";
 import { DaemonError } from "../../src/daemon/types";
+import type { Tool, ToolContext, ToolResult } from "../../src/types";
 
 // ---------------------------------------------------------------------------
 // Minimal mock of BrowserDaemonService — no Chrome, no CDP
@@ -63,6 +64,30 @@ class MockBrowserDaemonService extends BrowserDaemonService {
     ReturnType<typeof ok<{ path: string }>> | ReturnType<typeof err<DaemonError>>
   > {
     return this.screenshotResult;
+  }
+}
+
+class CapturingSnapshotTool implements Tool {
+  readonly definition = {
+    name: "browser_snapshot",
+    description: "Mock snapshot tool for endpoint tests",
+    parameters: {
+      type: "object" as const,
+      properties: {},
+    },
+  };
+
+  lastArgs: Record<string, unknown> | null = null;
+
+  async execute(args: Record<string, unknown>, _context: ToolContext): Promise<ToolResult> {
+    this.lastArgs = args;
+    return {
+      callId: "mock",
+      name: "browser_snapshot",
+      result: {
+        content: "snapshot-content",
+      },
+    };
   }
 }
 
@@ -393,5 +418,48 @@ describe("POST /api/browser/launch-headless", () => {
       });
       expect(res.headers.get("content-type")).toContain("application/json");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/browser/snapshot
+// ---------------------------------------------------------------------------
+
+describe("GET /api/browser/snapshot", () => {
+  it("enforces smart mode with 8,000 maxTokens and diff mode enabled", async () => {
+    const browserService = new MockBrowserDaemonService(runningStatus());
+    const server = new DaemonHttpServer({ port: 0, browserService });
+    const snapshotTool = new CapturingSnapshotTool();
+    const registry = (
+      server as unknown as { toolExecutor: { getRegistry: () => { register: (tool: Tool) => void } } }
+    ).toolExecutor.getRegistry();
+    registry.register(snapshotTool);
+
+    const startResult = await server.start();
+    expect(startResult.ok).toBe(true);
+
+    try {
+      const address = (server as unknown as { server: { port: number } }).server;
+      const response = await fetch(`http://localhost:${address.port}/api/browser/snapshot?mode=smart`);
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        snapshot?: string;
+        mode?: string;
+        diffMode?: boolean;
+        maxTokens?: number | null;
+      };
+
+      expect(snapshotTool.lastArgs).toEqual({
+        diff: true,
+        maxTokens: 8000,
+      });
+      expect(body.snapshot).toBe("snapshot-content");
+      expect(body.mode).toBe("smart");
+      expect(body.diffMode).toBe(true);
+      expect(body.maxTokens).toBe(8000);
+    } finally {
+      await server.stop();
+    }
   });
 });

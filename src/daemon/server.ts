@@ -132,6 +132,40 @@ interface ActiveExecution {
   controller: AbortController;
 }
 
+type BrowserSnapshotMode = "full" | "smart" | "lean";
+
+interface BrowserSnapshotRequestOptions {
+  mode: BrowserSnapshotMode;
+  diffMode: boolean;
+  maxTokens?: number;
+}
+
+const SMART_SNAPSHOT_MAX_TOKENS = 8_000;
+const LEAN_SNAPSHOT_MAX_TOKENS = 3_000;
+
+function resolveBrowserSnapshotOptions(modeParam: string | null): BrowserSnapshotRequestOptions {
+  if (modeParam === "full") {
+    return {
+      mode: "full",
+      diffMode: false,
+    };
+  }
+
+  if (modeParam === "lean") {
+    return {
+      mode: "lean",
+      diffMode: true,
+      maxTokens: LEAN_SNAPSHOT_MAX_TOKENS,
+    };
+  }
+
+  return {
+    mode: "smart",
+    diffMode: true,
+    maxTokens: SMART_SNAPSHOT_MAX_TOKENS,
+  };
+}
+
 /**
  * Stream lifecycle event emitted over WebSocket during provider generation.
  * Events follow a deterministic order per assistant message:
@@ -1445,6 +1479,11 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleBrowserTakeScreenshot(request, corsHeaders);
       }
 
+      // Browser snapshot endpoint
+      if (url.pathname === "/api/browser/snapshot" && method === "GET") {
+        return this.handleBrowserSnapshot(url, corsHeaders);
+      }
+
       // Agent status endpoint
       if (url.pathname === "/api/agents/status" && method === "GET") {
         return this.handleAgentsStatus(corsHeaders);
@@ -1882,6 +1921,67 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     return Response.json(
       { ok: true, path: result.value.path, message: `Screenshot saved to ${result.value.path}` },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleBrowserSnapshot(
+    url: URL,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.browserService) {
+      return Response.json(
+        { error: "Browser service not available" },
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const options = resolveBrowserSnapshotOptions(url.searchParams.get("mode"));
+    const result = await this.toolExecutor.execute(
+      {
+        id: crypto.randomUUID(),
+        name: "browser_snapshot",
+        arguments: {
+          diff: options.diffMode,
+          ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+        },
+      },
+      {
+        conversationId: "browser-http-snapshot",
+        userId: "daemon",
+      },
+    );
+
+    if (typeof result.error === "string") {
+      const status = result.error.toLowerCase().includes("not running") ? 409 : 500;
+      return Response.json(
+        { error: result.error },
+        { status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const payload = result.result;
+    const content =
+      payload !== null
+      && typeof payload === "object"
+      && typeof (payload as { content?: unknown }).content === "string"
+        ? (payload as { content: string }).content
+        : null;
+
+    if (content === null) {
+      return Response.json(
+        { error: "Snapshot response missing content" },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      {
+        snapshot: content,
+        mode: options.mode,
+        diffMode: options.diffMode,
+        maxTokens: options.maxTokens ?? null,
+      },
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
