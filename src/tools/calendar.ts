@@ -383,8 +383,8 @@ export class CalendarTool implements Tool {
 
     if (allowNaturalLanguage || field === "date") {
       const parsed = parseRelativeTime(input);
-      if (parsed !== null) {
-        return new Date(parsed);
+      if (parsed?.runAt) {
+        return parsed.runAt;
       }
     }
 

@@ -160,15 +160,15 @@ export class RemindersTool implements Tool {
     const priority = this.optionalPriority(args.priority);
     const recurrence = this.optionalObject(args.recurrence, "'recurrence' must be an object.");
 
-    const dueAtTimestamp = parseRelativeTime(dueAtInput);
-    if (dueAtTimestamp === null) {
+    const dueAtResult = parseRelativeTime(dueAtInput);
+    if (!dueAtResult || !dueAtResult.runAt) {
       return this.errorResult(callId, `Unable to parse due date/time from '${dueAtInput}'.`);
     }
 
     const reminder = await this.backendClient.createReminder({
       title,
       description,
-      dueAt: new Date(dueAtTimestamp).toISOString(),
+      dueAt: dueAtResult.runAt.toISOString(),
       priority,
       recurrence,
       conversationId: context.conversationId,
