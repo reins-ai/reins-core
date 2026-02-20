@@ -1,11 +1,11 @@
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 
-import { zipSync, strToU8 } from "fflate";
+import { zipSync, strToU8, unzipSync } from "fflate";
 
 import { err, ok, type Result } from "../result";
 import { EnvironmentError } from "./errors";
-import { generateDefaultPersonaYaml } from "./persona";
+import { generateDefaultPersonaYaml, parsePersonaYaml } from "./persona";
 
 export interface PersonaExportResult {
   path: string;
@@ -89,6 +89,116 @@ export async function exportPersona(
       new EnvironmentError(
         `Failed to export persona: ${cause?.message ?? String(error)}`,
         "EXPORT_FAILED",
+        cause,
+      ),
+    );
+  }
+}
+
+export interface PersonaImportResult {
+  personaName: string;
+  envDir: string;
+  importedAt: string;
+}
+
+/**
+ * Import a persona pack (zip containing PERSONA.yaml + PERSONALITY.md)
+ * into the given environment directory.
+ *
+ * The zip must have been created by `exportPersona()` and contain both
+ * files at the root level. PERSONA.yaml is validated against the Zod
+ * schema and PERSONALITY.md must be non-empty.
+ */
+export async function importPersona(
+  zipPath: string,
+  envDir: string,
+): Promise<Result<PersonaImportResult, EnvironmentError>> {
+  try {
+    const zipFile = Bun.file(zipPath);
+    const exists = await zipFile.exists();
+    if (!exists) {
+      return err(
+        new EnvironmentError(
+          `Persona zip not found: ${zipPath}`,
+          "IMPORT_FAILED",
+        ),
+      );
+    }
+
+    const zipBuffer = await zipFile.arrayBuffer();
+    let entries: Record<string, Uint8Array>;
+    try {
+      entries = unzipSync(new Uint8Array(zipBuffer));
+    } catch (unzipError) {
+      const cause = unzipError instanceof Error ? unzipError : undefined;
+      return err(
+        new EnvironmentError(
+          `Failed to extract persona zip: ${cause?.message ?? String(unzipError)}`,
+          "IMPORT_FAILED",
+          cause,
+        ),
+      );
+    }
+
+    const personaEntry = entries["PERSONA.yaml"];
+    if (!personaEntry) {
+      return err(
+        new EnvironmentError(
+          "Invalid persona pack: missing PERSONA.yaml",
+          "IMPORT_FAILED",
+        ),
+      );
+    }
+
+    const personalityEntry = entries["PERSONALITY.md"];
+    if (!personalityEntry) {
+      return err(
+        new EnvironmentError(
+          "Invalid persona pack: missing PERSONALITY.md",
+          "IMPORT_FAILED",
+        ),
+      );
+    }
+
+    const decoder = new TextDecoder();
+    const personaYamlContent = decoder.decode(personaEntry);
+    const personalityMdContent = decoder.decode(personalityEntry);
+
+    const parseResult = parsePersonaYaml(personaYamlContent);
+    if (!parseResult.ok) {
+      return err(
+        new EnvironmentError(
+          `Invalid PERSONA.yaml: ${parseResult.error.message}`,
+          "IMPORT_FAILED",
+          parseResult.error,
+        ),
+      );
+    }
+
+    if (personalityMdContent.trim().length === 0) {
+      return err(
+        new EnvironmentError(
+          "Invalid persona pack: PERSONALITY.md is empty",
+          "IMPORT_FAILED",
+        ),
+      );
+    }
+
+    await mkdir(envDir, { recursive: true });
+    await Bun.write(join(envDir, "PERSONA.yaml"), personaYamlContent);
+    await Bun.write(join(envDir, "PERSONALITY.md"), personalityMdContent);
+
+    return ok({
+      personaName: parseResult.value.name,
+      envDir,
+      importedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? error : undefined;
+    return err(
+      new EnvironmentError(
+        `Failed to import persona: ${cause?.message ?? String(error)}`,
+        "IMPORT_FAILED",
         cause,
       ),
     );

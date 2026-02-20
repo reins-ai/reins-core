@@ -8,6 +8,7 @@ export const ENVIRONMENT_ERROR_CODES = [
   "SCOPE_VIOLATION",
   "SWITCH_FAILED",
   "EXPORT_FAILED",
+  "IMPORT_FAILED",
 ] as const;
 
 export type EnvironmentErrorCode = (typeof ENVIRONMENT_ERROR_CODES)[number];

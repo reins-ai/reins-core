@@ -39,6 +39,7 @@ import {
   parsePersonaYaml,
   DEFAULT_PERSONA,
   exportPersona,
+  importPersona,
 } from "../environment";
 import { generatePersonalityMarkdown } from "../environment/templates/personality.md";
 import { err, ok, type Result } from "../result";
@@ -1516,6 +1517,10 @@ export class DaemonHttpServer implements DaemonManagedService {
 
       if (url.pathname === "/api/persona/export" && method === "POST") {
         return this.handleExportPersona(request, corsHeaders);
+      }
+
+      if (url.pathname === "/api/persona/import" && method === "POST") {
+        return this.handleImportPersona(request, corsHeaders);
       }
 
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
@@ -4409,6 +4414,64 @@ export class DaemonHttpServer implements DaemonManagedService {
       );
     } catch (error) {
       log("error", "Failed to export persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        { success: false, error: error instanceof Error ? error.message : "Internal server error" },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+  }
+
+  private async handleImportPersona(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          { success: false, error: "Environment services not initialized" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      let body: { zipPath?: string };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return Response.json(
+          { success: false, error: "Invalid JSON in request body" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const zipPath = typeof body.zipPath === "string" ? body.zipPath.trim() : "";
+      if (zipPath.length === 0) {
+        return Response.json(
+          { success: false, error: "Missing required field: zipPath" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const result = await importPersona(zipPath, envDir);
+      if (!result.ok) {
+        return Response.json(
+          { success: false, error: result.error.message },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      return Response.json(
+        {
+          success: true,
+          personaName: result.value.personaName,
+          importedAt: result.value.importedAt,
+        },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to import persona", {
         error: error instanceof Error ? error.message : String(error),
       });
       return Response.json(

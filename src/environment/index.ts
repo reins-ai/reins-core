@@ -83,8 +83,8 @@ export {
 } from "./persona";
 export type { Persona } from "./persona";
 
-export { exportPersona } from "./persona-io";
-export type { PersonaExportResult } from "./persona-io";
+export { exportPersona, importPersona } from "./persona-io";
+export type { PersonaExportResult, PersonaImportResult } from "./persona-io";
 
 export { PersonalityWatcher } from "./personality-watcher";
 export type { PersonalityWatcherOptions } from "./personality-watcher";

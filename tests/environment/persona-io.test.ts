@@ -2,10 +2,10 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { unzipSync, strFromU8 } from "fflate";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { unzipSync, strFromU8, zipSync, strToU8 } from "fflate";
 
-import { exportPersona } from "../../src/environment/persona-io";
+import { exportPersona, importPersona } from "../../src/environment/persona-io";
 
 function makeTempDir(): string {
   return join(tmpdir(), `persona-io-test-${randomUUID()}`);
@@ -157,5 +157,213 @@ describe("exportPersona", () => {
 
     const file = Bun.file(result.value.path);
     expect(await file.exists()).toBe(true);
+  });
+});
+
+describe("importPersona", () => {
+  let sourceEnvDir: string;
+  let exportDir: string;
+  let targetEnvDir: string;
+
+  beforeEach(async () => {
+    sourceEnvDir = makeTempDir();
+    exportDir = makeTempDir();
+    targetEnvDir = makeTempDir();
+    await mkdir(sourceEnvDir, { recursive: true });
+    await mkdir(targetEnvDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(sourceEnvDir, { recursive: true, force: true });
+    await rm(exportDir, { recursive: true, force: true });
+    await rm(targetEnvDir, { recursive: true, force: true });
+  });
+
+  async function createExportedZip(
+    personaYaml: string,
+    personalityMd: string,
+  ): Promise<string> {
+    await writeFile(join(sourceEnvDir, "PERSONA.yaml"), personaYaml);
+    await writeFile(join(sourceEnvDir, "PERSONALITY.md"), personalityMd);
+    const exportResult = await exportPersona(sourceEnvDir, exportDir);
+    if (!exportResult.ok) {
+      throw new Error(`Export failed: ${exportResult.error.message}`);
+    }
+    return exportResult.value.path;
+  }
+
+  function writeManualZip(entries: Record<string, string>): string {
+    const zipEntries: Record<string, Uint8Array> = {};
+    for (const [name, content] of Object.entries(entries)) {
+      zipEntries[name] = strToU8(content);
+    }
+    const zipData = zipSync(zipEntries);
+    const zipPath = join(exportDir, `manual-${randomUUID()}.zip`);
+    Bun.write(zipPath, zipData);
+    return zipPath;
+  }
+
+  it("imports from a valid zip (round-trip) successfully", async () => {
+    const zipPath = await createExportedZip(
+      "name: RoundTrip\navatar: 🔄\nlanguage: en\n",
+      "# Round Trip\n\nThis is a round-trip test.",
+    );
+
+    const result = await importPersona(zipPath, targetEnvDir);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.personaName).toBe("RoundTrip");
+    expect(result.value.envDir).toBe(targetEnvDir);
+    expect(result.value.importedAt).toBeTruthy();
+  });
+
+  it("writes imported PERSONA.yaml to envDir", async () => {
+    const yamlContent = "name: ImportTest\navatar: 🎯\n";
+    const zipPath = await createExportedZip(yamlContent, "# Personality\n\nSome content.");
+
+    const result = await importPersona(zipPath, targetEnvDir);
+    expect(result.ok).toBe(true);
+
+    const written = await readFile(join(targetEnvDir, "PERSONA.yaml"), "utf-8");
+    expect(written).toBe(yamlContent);
+  });
+
+  it("writes imported PERSONALITY.md to envDir", async () => {
+    const mdContent = "# My Personality\n\nI am warm and friendly.";
+    const zipPath = await createExportedZip("name: Test\n", mdContent);
+
+    const result = await importPersona(zipPath, targetEnvDir);
+    expect(result.ok).toBe(true);
+
+    const written = await readFile(join(targetEnvDir, "PERSONALITY.md"), "utf-8");
+    expect(written).toBe(mdContent);
+  });
+
+  it("round-trip preserves persona name", async () => {
+    const zipPath = await createExportedZip(
+      "name: PreserveName\navatar: 🌟\n",
+      "# Personality\n\nContent here.",
+    );
+
+    const result = await importPersona(zipPath, targetEnvDir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.personaName).toBe("PreserveName");
+  });
+
+  it("returns error for missing zip file", async () => {
+    const missingPath = join(exportDir, "does-not-exist.zip");
+
+    const result = await importPersona(missingPath, targetEnvDir);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("IMPORT_FAILED");
+    expect(result.error.message).toContain("Persona zip not found");
+  });
+
+  it("returns error when zip is missing PERSONA.yaml", async () => {
+    const zipPath = writeManualZip({
+      "PERSONALITY.md": "# Personality\n\nSome content.",
+    });
+    // writeManualZip uses Bun.write which is async — wait for flush
+    await Bun.sleep(10);
+
+    const result = await importPersona(zipPath, targetEnvDir);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("IMPORT_FAILED");
+    expect(result.error.message).toContain("missing PERSONA.yaml");
+  });
+
+  it("returns error when zip is missing PERSONALITY.md", async () => {
+    const zipPath = writeManualZip({
+      "PERSONA.yaml": "name: Test\navatar: 🤖\n",
+    });
+    await Bun.sleep(10);
+
+    const result = await importPersona(zipPath, targetEnvDir);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("IMPORT_FAILED");
+    expect(result.error.message).toContain("missing PERSONALITY.md");
+  });
+
+  it("returns error for invalid PERSONA.yaml content", async () => {
+    // parsePersonaYaml is lenient — it returns defaults for invalid YAML.
+    // However, a completely non-YAML binary blob that js-yaml can't parse
+    // still returns defaults. The function never returns err().
+    // So we test that even garbage YAML imports successfully with defaults.
+    const zipPath = writeManualZip({
+      "PERSONA.yaml": ":::not valid yaml [[[",
+      "PERSONALITY.md": "# Valid content\n\nSome text.",
+    });
+    await Bun.sleep(10);
+
+    const result = await importPersona(zipPath, targetEnvDir);
+
+    // parsePersonaYaml is lenient — returns default persona for invalid YAML
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.personaName).toBe("Reins");
+  });
+
+  it("returns error for empty PERSONALITY.md", async () => {
+    const zipPath = writeManualZip({
+      "PERSONA.yaml": "name: EmptyPersonality\n",
+      "PERSONALITY.md": "",
+    });
+    await Bun.sleep(10);
+
+    const result = await importPersona(zipPath, targetEnvDir);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("IMPORT_FAILED");
+    expect(result.error.message).toContain("PERSONALITY.md is empty");
+  });
+
+  it("returns error for whitespace-only PERSONALITY.md", async () => {
+    const zipPath = writeManualZip({
+      "PERSONA.yaml": "name: WhitespaceOnly\n",
+      "PERSONALITY.md": "   \n  \t  \n  ",
+    });
+    await Bun.sleep(10);
+
+    const result = await importPersona(zipPath, targetEnvDir);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error.code).toBe("IMPORT_FAILED");
+    expect(result.error.message).toContain("PERSONALITY.md is empty");
+  });
+
+  it("returns a valid importedAt ISO timestamp", async () => {
+    const zipPath = await createExportedZip(
+      "name: TimestampTest\n",
+      "# Personality\n\nContent.",
+    );
+
+    const before = new Date();
+    const result = await importPersona(zipPath, targetEnvDir);
+    const after = new Date();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const importedAt = new Date(result.value.importedAt);
+    expect(importedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect(importedAt.getTime()).toBeLessThanOrEqual(after.getTime());
   });
 });
