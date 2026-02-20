@@ -10,6 +10,7 @@ import { InMemoryConversationStore } from "../../src/conversation/memory-store";
 import { SQLiteConversationStore } from "../../src/conversation/sqlite-store";
 import { DaemonHttpServer, StreamRegistry, type StreamLifecycleEvent } from "../../src/daemon/server";
 import { DaemonRuntime } from "../../src/daemon/runtime";
+import { createConvexDaemonClientFromEnv } from "../../src/convex/daemon-client";
 import { ProviderAuthService } from "../../src/providers/auth-service";
 import { MockProvider } from "../../src/providers/mock";
 import { ProviderRegistry } from "../../src/providers/registry";
@@ -734,6 +735,74 @@ describe("DaemonHttpServer health endpoint with conversation services", () => {
   });
 });
 
+describe("DaemonHttpServer Convex wiring", () => {
+  const servers: DaemonHttpServer[] = [];
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+  });
+
+  it("returns null Convex client from env when CONVEX_URL is missing", () => {
+    const previousConvexUrl = process.env.CONVEX_URL;
+
+    try {
+      delete process.env.CONVEX_URL;
+
+      const client = createConvexDaemonClientFromEnv();
+      expect(client).toBeNull();
+    } finally {
+      if (typeof previousConvexUrl === "string") {
+        process.env.CONVEX_URL = previousConvexUrl;
+      } else {
+        delete process.env.CONVEX_URL;
+      }
+    }
+  });
+
+  it("boots optional Convex client from env and stores auth token", async () => {
+    const previousConvexUrl = process.env.CONVEX_URL;
+    const previousConvexAuthToken = process.env.CONVEX_AUTH_TOKEN;
+
+    try {
+      process.env.CONVEX_URL = "https://example.convex.cloud";
+      process.env.CONVEX_AUTH_TOKEN = "test-auth-token";
+
+      const server = new DaemonHttpServer({
+        port: 0,
+        authService: createStubAuthService(),
+        modelRouter: new ModelRouter(new ProviderRegistry()),
+        conversation: {
+          conversationManager: new ConversationManager(new InMemoryConversationStore()),
+        },
+      });
+      servers.push(server);
+
+      const startResult = await server.start();
+      expect(startResult.ok).toBe(true);
+
+      const convexClient = server.getConvexClient();
+      expect(convexClient).not.toBeNull();
+      expect(convexClient?.getConvexUrl()).toBe("https://example.convex.cloud");
+      expect(convexClient?.getAuthToken()).toBe("test-auth-token");
+    } finally {
+      if (typeof previousConvexUrl === "string") {
+        process.env.CONVEX_URL = previousConvexUrl;
+      } else {
+        delete process.env.CONVEX_URL;
+      }
+
+      if (typeof previousConvexAuthToken === "string") {
+        process.env.CONVEX_AUTH_TOKEN = previousConvexAuthToken;
+      } else {
+        delete process.env.CONVEX_AUTH_TOKEN;
+      }
+    }
+  });
+});
+
 describe("DaemonHttpServer environment routes", () => {
   const servers: DaemonHttpServer[] = [];
   const tempHomes: string[] = [];
@@ -1408,6 +1477,127 @@ describe("DaemonHttpServer provider execution pipeline", () => {
 
     const activeExecutions = (server as unknown as { activeExecutions: Map<string, unknown> }).activeExecutions;
     expect(activeExecutions.size).toBe(0);
+  });
+
+  it("delivers stream lifecycle events over websocket when subscription is slightly delayed", async () => {
+    const manager = new ConversationManager(new InMemoryConversationStore());
+    const authService = createConversationReadyStubAuthService({
+      allowed: true,
+      provider: "anthropic",
+      connectionState: "ready",
+    });
+
+    const registry = new ProviderRegistry();
+    registry.register(
+      new MockProvider({
+        config: { id: "anthropic", type: "oauth" },
+        models: [createMockModel("anthropic-test-model", "anthropic")],
+        responseContent: "Hi",
+      }),
+    );
+
+    const modelRouter = new ModelRouter(registry, authService);
+    const port = testPort++;
+    const server = new DaemonHttpServer({
+      port,
+      authService,
+      modelRouter,
+      conversation: { conversationManager: manager },
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const ws = new WebSocket(`ws://localhost:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("websocket open timeout")), 500);
+      ws.addEventListener("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      ws.addEventListener("error", () => {
+        clearTimeout(timeout);
+        reject(new Error("websocket failed to open"));
+      }, { once: true });
+    });
+
+    const streamEvents: Array<Record<string, unknown>> = [];
+    ws.addEventListener("message", (event) => {
+      const raw = event.data;
+      const text =
+        typeof raw === "string"
+          ? raw
+          : raw instanceof ArrayBuffer
+            ? new TextDecoder().decode(new Uint8Array(raw))
+            : ArrayBuffer.isView(raw)
+              ? new TextDecoder().decode(raw)
+              : null;
+
+      if (!text) {
+        return;
+      }
+
+      let payload: unknown;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        return;
+      }
+
+      if (!payload || typeof payload !== "object") {
+        return;
+      }
+
+      const envelope = payload as { type?: unknown; event?: unknown };
+      if (envelope.type !== "stream-event" || !envelope.event || typeof envelope.event !== "object") {
+        return;
+      }
+
+      streamEvents.push(envelope.event as Record<string, unknown>);
+    });
+
+    const postResponse = await fetch(`http://localhost:${port}/api/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: "Hello",
+        provider: "anthropic",
+        model: "anthropic-test-model",
+      }),
+    });
+
+    expect(postResponse.status).toBe(201);
+    const payload = (await postResponse.json()) as {
+      conversationId: string;
+      assistantMessageId: string;
+    };
+
+    // Intentionally subscribe after the POST acknowledgement to validate
+    // daemon-side subscriber grace handling.
+    await Bun.sleep(120);
+
+    ws.send(JSON.stringify({
+      type: "stream.subscribe",
+      conversationId: payload.conversationId,
+      assistantMessageId: payload.assistantMessageId,
+    }));
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 2500) {
+      if (streamEvents.some((event) => event["type"] === "message_complete" || event["type"] === "error")) {
+        break;
+      }
+      await Bun.sleep(20);
+    }
+
+    ws.close();
+
+    expect(streamEvents.some((event) => event["type"] === "message_start")).toBe(true);
+    expect(streamEvents.some((event) => event["type"] === "content_chunk")).toBe(true);
+
+    const completeEvent = streamEvents.find((event) => event["type"] === "message_complete");
+    expect(completeEvent).toBeDefined();
+    expect(completeEvent?.["usage"]).toBeDefined();
   });
 
   it("keeps single-turn behavior when harness routing is not enabled", async () => {

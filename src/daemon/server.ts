@@ -13,8 +13,14 @@ import { SQLiteConversationStore } from "../conversation/sqlite-store";
 import { TranscriptStore } from "../conversation/transcript-store";
 import { ConfigStore } from "../config/store";
 import { ProviderAuthService } from "../providers/auth-service";
+import {
+  BYOKAnthropicProvider,
+  BYOKGoogleProvider,
+  BYOKOpenAIProvider,
+} from "../providers/byok";
 import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strategy";
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
+import type { CredentialRecord } from "../providers/credentials/types";
 import { AnthropicOAuthProvider } from "../providers/oauth/anthropic";
 import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
@@ -39,7 +45,9 @@ import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
 import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
+import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
+import { generateDeviceCode, pollDeviceCode } from "./device-code-auth";
 import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
 import {
   SKILL_TOOL_DEFINITION,
@@ -300,6 +308,68 @@ interface DefaultServices {
   authService: ProviderAuthService;
   modelRouter: ModelRouter;
   credentialStore: EncryptedCredentialStore;
+  providerRegistry: ProviderRegistry;
+}
+
+interface StoredApiKeyPayload {
+  key: string;
+}
+
+interface StoredDeviceSessionPayload {
+  sessionToken: string;
+  userId?: string;
+  issuedAt: string;
+  source: "device_code";
+}
+
+const SUPPORTED_BYOK_PROVIDER_IDS = ["anthropic", "openai", "google"] as const;
+
+function isStoredApiKeyPayload(value: unknown): value is StoredApiKeyPayload {
+  return typeof value === "object" && value !== null && typeof (value as { key?: unknown }).key === "string";
+}
+
+function createByokProvider(providerId: string, apiKey: string): Provider | null {
+  switch (providerId) {
+    case "anthropic":
+      return withProviderIdentity(new BYOKAnthropicProvider(apiKey), {
+        id: "anthropic",
+        name: "Anthropic BYOK",
+      });
+    case "openai":
+      return withProviderIdentity(new BYOKOpenAIProvider(apiKey), {
+        id: "openai",
+        name: "OpenAI BYOK",
+      });
+    case "google":
+      return withProviderIdentity(new BYOKGoogleProvider(apiKey), {
+        id: "google",
+        name: "Google BYOK",
+      });
+    default:
+      return null;
+  }
+}
+
+function withProviderIdentity(provider: Provider, identity: { id: string; name: string }): Provider {
+  return {
+    config: {
+      ...provider.config,
+      id: identity.id,
+      name: identity.name,
+      type: "byok",
+    },
+    capabilities: provider.capabilities,
+    chat: async (request) => await provider.chat(request),
+    stream: (request) => provider.stream(request),
+    listModels: async () => {
+      const models = await provider.listModels();
+      return models.map((model) => ({
+        ...model,
+        provider: identity.id,
+      }));
+    },
+    validateConnection: async () => await provider.validateConnection(),
+  };
 }
 
 interface ConversationServiceOptions {
@@ -342,6 +412,7 @@ export interface DaemonHttpServerOptions {
   channelService?: ChannelDaemonService;
   skillService?: SkillDaemonService;
   browserService?: BrowserDaemonService;
+  convexAuthToken?: string;
 }
 
 interface ProviderExecutionContext {
@@ -559,6 +630,8 @@ const ENVIRONMENTS_ROUTE = {
 const WEBSOCKET_ROUTE = "/ws";
 const WS_HEARTBEAT_INTERVAL_MS = 15_000;
 const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
+const STREAM_SUBSCRIPTION_GRACE_MS = 500;
+const STREAM_SUBSCRIPTION_POLL_MS = 10;
 
 const RUN_SKILL_SCRIPT_TOOL_DEFINITION: ToolDefinition = {
   name: "run_skill_script",
@@ -758,7 +831,12 @@ function createDefaultServices(): DefaultServices {
 
   const modelRouter = new ModelRouter(registry, authService);
 
-  return { authService, modelRouter, credentialStore: store };
+  return {
+    authService,
+    modelRouter,
+    credentialStore: store,
+    providerRegistry: registry,
+  };
 }
 
 function createDefaultToolExecutor(
@@ -967,6 +1045,8 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly memoryService: MemoryService | null;
   private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
   private readonly credentialStore: EncryptedCredentialStore | null;
+  private readonly providerRegistry: ProviderRegistry | null;
+  private readonly configuredConvexAuthToken: string | null;
   private readonly providedChannelService: ChannelDaemonService | null;
   private readonly environmentOptions: {
     daemonPathOptions?: DaemonPathOptions;
@@ -979,6 +1059,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private environmentContextProvider: EnvironmentContextProvider | null = null;
   private personaRegistry: PersonaRegistry | null = null;
   private integrationService: IntegrationService | null = null;
+  private convexClient: ConvexDaemonClient | null = null;
   private readonly skillService: SkillDaemonService | null;
   private readonly browserService: BrowserDaemonService | null;
   private integrationHealth: HealthResponse["integrations"] = {
@@ -999,6 +1080,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.providedChannelService = options.channelService ?? null;
     this.skillService = options.skillService ?? null;
     this.browserService = options.browserService ?? null;
+    this.configuredConvexAuthToken = normalizeOptionalToken(options.convexAuthToken);
 
     // Create auth services first so credential store is available for tool registration
     const legacyService = options.authService;
@@ -1008,17 +1090,25 @@ export class DaemonHttpServer implements DaemonManagedService {
       ?? (isMachineAuthService(legacyService) ? legacyService : null);
 
     let credentialStore: EncryptedCredentialStore | undefined;
+    let providerRegistry: ProviderRegistry | undefined;
     if (providerAuthService) {
       this.authService = providerAuthService;
-      this.modelRouter = options.modelRouter ?? new ModelRouter(new ProviderRegistry());
+      if (options.modelRouter) {
+        this.modelRouter = options.modelRouter;
+      } else {
+        providerRegistry = new ProviderRegistry();
+        this.modelRouter = new ModelRouter(providerRegistry);
+      }
     } else {
       const services = createDefaultServices();
       this.authService = services.authService;
       this.modelRouter = services.modelRouter;
       credentialStore = services.credentialStore;
+      providerRegistry = services.providerRegistry;
     }
 
     this.credentialStore = credentialStore ?? null;
+    this.providerRegistry = providerRegistry ?? null;
 
     this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService, credentialStore);
 
@@ -1051,6 +1141,25 @@ export class DaemonHttpServer implements DaemonManagedService {
     return this.streamRegistry;
   }
 
+  /**
+   * Returns the daemon Convex client when configured.
+   */
+  getConvexClient(): ConvexDaemonClient | null {
+    return this.convexClient;
+  }
+
+  /**
+   * Updates daemon Convex auth token for authenticated mutations.
+   */
+  setConvexAuthToken(token: string): void {
+    const normalized = normalizeOptionalToken(token);
+    if (!normalized || !this.convexClient) {
+      return;
+    }
+
+    this.convexClient.setAuthToken(normalized);
+  }
+
   async start(): Promise<Result<void, DaemonError>> {
     if (this.server) {
       return err({
@@ -1072,6 +1181,10 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.environmentContextProvider = null;
       this.personaRegistry = null;
     }
+
+    await this.initializeConvexClient();
+
+    await this.initializeByokProviders();
 
     try {
       this.initializeConversationServices();
@@ -1193,6 +1306,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.server.stop();
       this.server = null;
       this.cleanupConversationServices();
+      this.convexClient = null;
       log("info", "Daemon HTTP server stopped");
       return ok(undefined);
     } catch (error) {
@@ -1310,6 +1424,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Provider auth endpoints
       if (url.pathname.startsWith("/api/providers/auth/")) {
         return this.handleAuthRequest(url, method, request, corsHeaders);
+      }
+
+      const deviceCodeResponse = await this.handleDeviceCodeRequest(url, method, corsHeaders);
+      if (deviceCodeResponse) {
+        return deviceCodeResponse;
       }
 
       const channelResponse = await this.handleChannelRequest(url, method, request, corsHeaders);
@@ -1723,6 +1842,96 @@ export class DaemonHttpServer implements DaemonManagedService {
     );
   }
 
+  private async initializeByokProviders(): Promise<void> {
+    if (!this.providerRegistry || !this.credentialStore) {
+      return;
+    }
+
+    const credentialResult = await this.credentialStore.list({
+      type: "api_key",
+      includeRevoked: false,
+    });
+
+    if (!credentialResult.ok) {
+      log("warn", "Unable to load BYOK credentials for provider bootstrap", {
+        error: credentialResult.error.message,
+      });
+      return;
+    }
+
+    const latestCredentialByProvider = new Map<string, CredentialRecord>();
+    for (const credential of credentialResult.value) {
+      if (!SUPPORTED_BYOK_PROVIDER_IDS.includes(credential.provider as (typeof SUPPORTED_BYOK_PROVIDER_IDS)[number])) {
+        continue;
+      }
+
+      const current = latestCredentialByProvider.get(credential.provider);
+      if (!current || credential.updatedAt > current.updatedAt) {
+        latestCredentialByProvider.set(credential.provider, credential);
+      }
+    }
+
+    if (latestCredentialByProvider.size === 0) {
+      return;
+    }
+
+    let registeredCount = 0;
+
+    for (const [providerId, credential] of latestCredentialByProvider.entries()) {
+      const payloadResult = await this.credentialStore.decryptPayload<unknown>(credential);
+      if (!payloadResult.ok) {
+        log("warn", "Unable to decrypt BYOK credential payload", {
+          provider: providerId,
+          credentialId: credential.id,
+          error: payloadResult.error.message,
+        });
+        continue;
+      }
+
+      if (!isStoredApiKeyPayload(payloadResult.value)) {
+        log("warn", "Skipping non-BYOK API key payload during provider bootstrap", {
+          provider: providerId,
+          credentialId: credential.id,
+        });
+        continue;
+      }
+
+      const apiKey = payloadResult.value.key.trim();
+      if (apiKey.length === 0) {
+        log("warn", "Skipping empty API key payload during provider bootstrap", {
+          provider: providerId,
+          credentialId: credential.id,
+        });
+        continue;
+      }
+
+      const provider = createByokProvider(providerId, apiKey);
+      if (!provider) {
+        continue;
+      }
+
+      if (this.providerRegistry.has(providerId)) {
+        this.providerRegistry.remove(providerId);
+      }
+
+      try {
+        this.providerRegistry.register(provider);
+        registeredCount += 1;
+      } catch (error) {
+        log("warn", "Failed to register BYOK provider during daemon startup", {
+          provider: providerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (registeredCount > 0) {
+      log("info", "Initialized BYOK providers in daemon registry", {
+        registeredCount,
+      });
+    }
+  }
+
   private async initializeIntegrationServices(): Promise<void> {
     const toolRegistry = this.toolExecutor.getRegistry();
     const integrationService = new IntegrationService({
@@ -2057,6 +2266,214 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     log("warn", `Auth endpoint not found: ${method} ${path}`);
     return new Response("Not Found", { status: 404, headers: corsHeaders });
+  }
+
+  private async handleDeviceCodeRequest(
+    url: URL,
+    method: string,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response | null> {
+    if (url.pathname === "/auth/device-code") {
+      if (method !== "POST") {
+        return Response.json(
+          { error: `Method ${method} not allowed on /auth/device-code` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      return await this.handleCreateDeviceCode(corsHeaders);
+    }
+
+    const statusMatch = url.pathname.match(/^\/auth\/device-code\/([^/]+)\/status$/);
+    if (!statusMatch) {
+      return null;
+    }
+
+    if (method !== "GET") {
+      return Response.json(
+        { error: `Method ${method} not allowed on /auth/device-code/:code/status` },
+        { status: 405, headers: corsHeaders },
+      );
+    }
+
+    const code = decodeURIComponent(statusMatch[1]);
+    return await this.handleGetDeviceCodeStatus(code, corsHeaders);
+  }
+
+  private async handleCreateDeviceCode(corsHeaders: Record<string, string>): Promise<Response> {
+    if (!this.convexClient || !this.convexClient.isReady()) {
+      return Response.json(
+        { error: "Convex client is not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    const generationResult = await generateDeviceCode({
+      convexClient: this.convexClient,
+    });
+    if (!generationResult.ok) {
+      log("error", "Device code generation failed", { error: generationResult.error.message });
+      return Response.json(
+        { error: generationResult.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    const verificationUrl = this.buildDeviceCodeVerificationUrl(generationResult.value.code);
+    return Response.json(
+      {
+        code: generationResult.value.code,
+        verificationUrl,
+        expiresAt: generationResult.value.expiresAt,
+      },
+      { headers: corsHeaders },
+    );
+  }
+
+  private async handleGetDeviceCodeStatus(
+    code: string,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.convexClient || !this.convexClient.isReady()) {
+      return Response.json(
+        { error: "Convex client is not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    const statusResult = await pollDeviceCode({
+      convexClient: this.convexClient,
+      code,
+    });
+    if (!statusResult.ok) {
+      log("error", "Device code polling failed", { code, error: statusResult.error.message });
+      return Response.json(
+        { error: statusResult.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    if (statusResult.value.status !== "verified") {
+      return Response.json(
+        {
+          status: statusResult.value.status,
+          expiresAt: statusResult.value.expiresAt,
+        },
+        { headers: corsHeaders },
+      );
+    }
+
+    const sessionTokenResult = await this.resolveDeviceCodeSessionToken(
+      code,
+      statusResult.value.sessionToken,
+      statusResult.value.userId,
+    );
+    if (!sessionTokenResult.ok) {
+      log("error", "Failed to resolve device session token", {
+        code,
+        error: sessionTokenResult.error.message,
+      });
+      return Response.json(
+        { error: sessionTokenResult.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    this.setConvexAuthToken(sessionTokenResult.value);
+
+    return Response.json(
+      {
+        status: "verified",
+        sessionToken: sessionTokenResult.value,
+      },
+      { headers: corsHeaders },
+    );
+  }
+
+  private async resolveDeviceCodeSessionToken(
+    code: string,
+    providedSessionToken: string | undefined,
+    userId: string | undefined,
+  ): Promise<Result<string, AuthError>> {
+    const normalizedProvidedToken = normalizeOptionalToken(providedSessionToken);
+    if (normalizedProvidedToken) {
+      await this.persistDeviceSessionToken(code, normalizedProvidedToken, userId);
+      return ok(normalizedProvidedToken);
+    }
+
+    if (!this.credentialStore) {
+      return ok(createDeviceSessionToken());
+    }
+
+    const accountId = `device-code:${code}`;
+    const existingResult = await this.credentialStore.get({
+      provider: "convex",
+      type: "token",
+      accountId,
+    });
+    if (!existingResult.ok) {
+      return err(existingResult.error);
+    }
+
+    const existingRecord = existingResult.value;
+    if (existingRecord) {
+      const existingPayloadResult = await this.credentialStore.decryptPayload<StoredDeviceSessionPayload>(existingRecord);
+      if (existingPayloadResult.ok) {
+        const existingToken = normalizeOptionalToken(existingPayloadResult.value.sessionToken);
+        if (existingToken) {
+          return ok(existingToken);
+        }
+      }
+    }
+
+    const sessionToken = createDeviceSessionToken();
+    const persistResult = await this.persistDeviceSessionToken(code, sessionToken, userId);
+    if (!persistResult.ok) {
+      return persistResult;
+    }
+
+    return ok(sessionToken);
+  }
+
+  private async persistDeviceSessionToken(
+    code: string,
+    sessionToken: string,
+    userId: string | undefined,
+  ): Promise<Result<void, AuthError>> {
+    if (!this.credentialStore) {
+      return ok(undefined);
+    }
+
+    const persistedResult = await this.credentialStore.set({
+      provider: "convex",
+      type: "token",
+      accountId: `device-code:${code}`,
+      metadata: userId ? { userId } : undefined,
+      payload: {
+        sessionToken,
+        userId,
+        issuedAt: new Date().toISOString(),
+        source: "device_code",
+      } as StoredDeviceSessionPayload,
+    });
+    if (!persistedResult.ok) {
+      return err(persistedResult.error);
+    }
+
+    return ok(undefined);
+  }
+
+  private buildDeviceCodeVerificationUrl(code: string): string {
+    if (!this.convexClient) {
+      return `https://bold-malamute-667.convex.site/device-auth?code=${encodeURIComponent(code)}`;
+    }
+
+    const siteOrigin = toConvexSiteOrigin(this.convexClient.getConvexUrl());
+    if (!siteOrigin) {
+      return `https://bold-malamute-667.convex.site/device-auth?code=${encodeURIComponent(code)}`;
+    }
+
+    return `${siteOrigin}/device-auth?code=${encodeURIComponent(code)}`;
   }
 
   private async handleChannelRequest(
@@ -2409,7 +2826,10 @@ export class DaemonHttpServer implements DaemonManagedService {
   private scheduleProviderExecution(context: ProviderExecutionContext): void {
     void Promise.resolve()
       .then(async () => {
-        await Bun.sleep(25);
+        await this.waitForStreamSubscriptionWindow(
+          context.conversationId,
+          context.assistantMessageId,
+        );
         await this.executeProviderGeneration(context);
       })
       .catch((error) => {
@@ -2419,6 +2839,29 @@ export class DaemonHttpServer implements DaemonManagedService {
           error: error instanceof Error ? error.message : String(error),
         });
       });
+  }
+
+  private async waitForStreamSubscriptionWindow(
+    conversationId: string,
+    assistantMessageId: string,
+  ): Promise<void> {
+    const target = { conversationId, assistantMessageId };
+    if (this.wsRegistry.getSubscriptionCount(target) > 0) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < STREAM_SUBSCRIPTION_GRACE_MS) {
+      if (this.wsRegistry.getSubscriptionCount(target) > 0) {
+        return;
+      }
+
+      if (this.streamSubscriptionsByConnection.size === 0) {
+        return;
+      }
+
+      await Bun.sleep(STREAM_SUBSCRIPTION_POLL_MS);
+    }
   }
 
   private async executeProviderGeneration(context: ProviderExecutionContext): Promise<void> {
@@ -3599,6 +4042,30 @@ export class DaemonHttpServer implements DaemonManagedService {
     await this.channelService.start();
   }
 
+  private async initializeConvexClient(): Promise<void> {
+    const authToken = this.configuredConvexAuthToken
+      ?? normalizeOptionalToken(process.env.CONVEX_AUTH_TOKEN ?? Bun.env.CONVEX_AUTH_TOKEN);
+    this.convexClient = createConvexDaemonClientFromEnv(authToken ?? undefined);
+
+    if (!this.convexClient) {
+      log("warn", "CONVEX_URL is not configured; daemon will continue without Convex conversation sync");
+      return;
+    }
+
+    const initialized = await this.convexClient.initialize();
+    if (!initialized) {
+      log("warn", "Convex client failed to initialize; daemon will continue without Convex conversation sync", {
+        error: this.convexClient.getLoadError()?.message,
+      });
+      return;
+    }
+
+    log("info", "Convex client initialized", {
+      convexUrl: this.convexClient.getConvexUrl(),
+      authenticated: this.convexClient.getAuthToken() !== null,
+    });
+  }
+
   private buildCompactionOptions(
     sqliteStorePath: string,
   ): {
@@ -4274,4 +4741,32 @@ export class DaemonHttpServer implements DaemonManagedService {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function normalizeOptionalToken(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function createDeviceSessionToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return `rcs_${Buffer.from(bytes).toString("hex")}`;
+}
+
+function toConvexSiteOrigin(convexUrl: string): string | null {
+  try {
+    const parsed = new URL(convexUrl);
+    const cloudSuffix = ".convex.cloud";
+    if (parsed.hostname.endsWith(cloudSuffix)) {
+      parsed.hostname = `${parsed.hostname.slice(0, -cloudSuffix.length)}.convex.site`;
+    }
+
+    return parsed.origin;
+  } catch {
+    return null;
+  }
 }
