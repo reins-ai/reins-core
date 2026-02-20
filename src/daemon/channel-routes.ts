@@ -73,6 +73,18 @@ function validateAddChannelRequest(body: unknown): AddChannelRequest {
   };
 }
 
+function extractIdSegment(pathname: string, prefix: string, suffix?: string): string | null {
+  if (!pathname.startsWith(prefix)) return null;
+  const rest = pathname.slice(prefix.length);
+  if (suffix !== undefined) {
+    if (!rest.endsWith("/" + suffix)) return null;
+    const id = rest.slice(0, rest.length - suffix.length - 1);
+    return id.length > 0 ? decodeURIComponent(id) : null;
+  }
+  if (rest.includes("/")) return null;
+  return rest.length > 0 ? decodeURIComponent(rest) : null;
+}
+
 function validateChannelIdRequest(body: unknown): ChannelIdRequest {
   if (typeof body !== "object" || body === null) {
     throw new ChannelError("Request body must be an object");
@@ -171,6 +183,40 @@ export function createChannelRouteHandler(options: ChannelRouteHandlerOptions): 
           const message = error instanceof Error ? error.message : "Invalid request";
           const status = message.includes("not found") ? 404 : 400;
           return Response.json({ error: message }, { status, headers: withJsonHeaders(corsHeaders) });
+        }
+      }
+
+      // DELETE /channels/:id
+      const deleteChannelId = extractIdSegment(url.pathname, "/channels/");
+      if (deleteChannelId !== null && method === "DELETE") {
+        try {
+          const removed = await channelService.removeChannel(deleteChannelId);
+          if (!removed) {
+            return Response.json(
+              { error: `Channel not found: ${deleteChannelId}` },
+              { status: 404, headers: withJsonHeaders(corsHeaders) },
+            );
+          }
+          return Response.json(
+            { removed: true, channelId: deleteChannelId },
+            { headers: withJsonHeaders(corsHeaders) },
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Invalid request";
+          return Response.json({ error: message }, { status: 400, headers: withJsonHeaders(corsHeaders) });
+        }
+      }
+
+      // POST /channels/:id/test
+      const testChannelId = extractIdSegment(url.pathname, "/channels/", "test");
+      if (testChannelId !== null && method === "POST") {
+        try {
+          const status = channelService.testChannel(testChannelId);
+          return Response.json({ channel: status }, { headers: withJsonHeaders(corsHeaders) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Invalid request";
+          const httpStatus = message.includes("not found") ? 404 : 400;
+          return Response.json({ error: message }, { status: httpStatus, headers: withJsonHeaders(corsHeaders) });
         }
       }
 

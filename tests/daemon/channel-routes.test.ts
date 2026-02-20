@@ -46,6 +46,7 @@ function createMockChannelService(
     disableChannel: async (channelId: string) =>
       makeHealthStatus({ channelId, enabled: false, state: "disconnected" }),
     listChannels: () => [],
+    testChannel: (channelId: string) => makeHealthStatus({ channelId }),
     getStatusSnapshot: (): ChannelServiceStatusSnapshot => ({
       channels: [],
       summary: { total: 0, enabled: 0, healthy: 0, unhealthy: 0 },
@@ -272,6 +273,65 @@ describe("ChannelRouteHandler", () => {
 
     const data = (await readJson(response!)) as { error: string };
     expect(data.error).toContain("channelId");
+  });
+
+  // ── DELETE /channels/:id ─────────────────────────────────────────
+
+  it("DELETE /channels/:id removes existing channel", async () => {
+    const handler = createHandler({
+      removeChannel: async () => true,
+    });
+
+    const response = await sendRequest(handler, "/channels/ch-1", "DELETE");
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+
+    const data = (await readJson(response!)) as { removed: boolean; channelId: string };
+    expect(data.removed).toBe(true);
+    expect(data.channelId).toBe("ch-1");
+  });
+
+  it("DELETE /channels/:id returns 404 when channel not found", async () => {
+    const handler = createHandler({
+      removeChannel: async () => false,
+    });
+
+    const response = await sendRequest(handler, "/channels/nonexistent", "DELETE");
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(404);
+
+    const data = (await readJson(response!)) as { error: string };
+    expect(data.error).toContain("nonexistent");
+  });
+
+  // ── POST /channels/:id/test ────────────────────────────────────
+
+  it("POST /channels/:id/test returns health status", async () => {
+    const handler = createHandler({
+      testChannel: (channelId: string) => makeHealthStatus({ channelId }),
+    });
+
+    const response = await sendRequest(handler, "/channels/ch-1/test", "POST");
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+
+    const data = (await readJson(response!)) as { channel: ChannelHealthStatus };
+    expect(data.channel.channelId).toBe("ch-1");
+  });
+
+  it("POST /channels/:id/test returns 404 when channel not found", async () => {
+    const handler = createHandler({
+      testChannel: () => {
+        throw new ChannelError("Channel not found: missing");
+      },
+    });
+
+    const response = await sendRequest(handler, "/channels/missing/test", "POST");
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(404);
+
+    const data = (await readJson(response!)) as { error: string };
+    expect(data.error).toContain("not found");
   });
 
   // ── POST /channels/enable ──────────────────────────────────────
