@@ -4,6 +4,7 @@ import { join, win32 } from "node:path";
 
 import { err, ok, type Result } from "../result";
 import type { DaemonPathOptions } from "../daemon/paths";
+import type { PersonalityPreset } from "../onboarding/types";
 import {
   CONFIG_SCHEMA_VERSION,
   DEFAULT_HEARTBEAT_INTERVAL_MINUTES,
@@ -27,6 +28,13 @@ export interface BootstrapResult {
   paths: InstallPaths;
   configCreated: boolean;
   directoriesCreated: string[];
+}
+
+export interface BootstrapOptions extends DaemonPathOptions {
+  /** Personality preset to use when generating PERSONALITY.md for new environments. */
+  personalityPreset?: PersonalityPreset;
+  /** Custom instructions for the "custom" personality preset. */
+  customInstructions?: string;
 }
 
 /**
@@ -86,7 +94,7 @@ export function buildInstallPaths(options: DaemonPathOptions = {}): InstallPaths
  * - Global config file (config.json5) with default values if absent
  */
 export async function bootstrapInstallRoot(
-  options: DaemonPathOptions = {},
+  options: BootstrapOptions = {},
 ): Promise<Result<BootstrapResult, EnvironmentBootstrapFailedError>> {
   const platform = options.platform ?? process.platform;
   const paths = buildInstallPaths(options);
@@ -108,7 +116,12 @@ export async function bootstrapInstallRoot(
     }
 
     const configCreated = await ensureDefaultConfig(paths.globalConfigPath, platform);
-    await ensureDefaultEnvironmentDocuments(paths.defaultEnvironmentDir, platform);
+    await ensureDefaultEnvironmentDocuments(
+      paths.defaultEnvironmentDir,
+      platform,
+      options.personalityPreset,
+      options.customInstructions,
+    );
 
     return ok({
       paths,
@@ -188,8 +201,14 @@ async function ensureDefaultConfig(configPath: string, platform: NodeJS.Platform
 async function ensureDefaultEnvironmentDocuments(
   defaultEnvironmentDir: string,
   platform: NodeJS.Platform,
+  personalityPreset?: PersonalityPreset,
+  customInstructions?: string,
 ): Promise<void> {
-  const templates = getAllTemplates();
+  const templates = getAllTemplates(
+    personalityPreset
+      ? { personalityPreset, customInstructions }
+      : undefined,
+  );
 
   for (const [name, content] of templates) {
     const documentPath = platformJoin(platform, defaultEnvironmentDir, name);

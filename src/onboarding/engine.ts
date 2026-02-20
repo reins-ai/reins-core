@@ -1,4 +1,5 @@
 import { err, ok, type Result } from "../result";
+import { generatePersonalityMarkdown } from "../environment/templates/personality.md";
 
 import {
   OnboardingError,
@@ -8,6 +9,7 @@ import {
   ONBOARDING_CHECKPOINT_VERSION,
   ONBOARDING_STEPS,
   type PersonalityConfig,
+  type PersonalityPreset,
   type CompletedStepRecord,
   type OnboardingConfig,
   type OnboardingMode,
@@ -326,6 +328,28 @@ export class OnboardingEngine {
   /** Get accumulated data from all completed steps. */
   getCollectedData(): Record<string, unknown> {
     return { ...this.collectedData };
+  }
+
+  /** Get the selected personality preset, defaulting to "balanced". */
+  getPersonalityPreset(): PersonalityPreset {
+    const personality = this.readPersonalityConfig(this.collectedData);
+    return personality?.preset ?? this.config?.personality?.preset ?? "balanced";
+  }
+
+  /**
+   * Generate PERSONALITY.md content using the selected preset.
+   *
+   * Uses the collected personality preset and optional custom instructions
+   * to produce preset-specific markdown content via `generatePersonalityMarkdown()`.
+   */
+  generatePersonalityContent(): string {
+    const preset = this.getPersonalityPreset();
+    const customInstructions = preset === "custom"
+      ? (typeof this.collectedData.customPrompt === "string"
+        ? this.collectedData.customPrompt
+        : this.config?.personality?.customPrompt)
+      : undefined;
+    return generatePersonalityMarkdown(preset, customInstructions);
   }
 
   private getCurrentStep(): OnboardingStep | null {

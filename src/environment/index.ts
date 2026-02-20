@@ -4,7 +4,7 @@ export {
   generateDefaultConfigContent,
   resolveInstallRoot,
 } from "./bootstrap";
-export type { BootstrapResult, InstallPaths } from "./bootstrap";
+export type { BootstrapOptions, BootstrapResult, InstallPaths } from "./bootstrap";
 
 export {
   DocumentNotFoundError,

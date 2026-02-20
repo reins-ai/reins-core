@@ -1,4 +1,5 @@
-import { PERSONALITY_TEMPLATE } from "./personality.md";
+import type { PersonalityPreset } from "../../onboarding/types";
+import { generatePersonalityMarkdown, PERSONALITY_TEMPLATE } from "./personality.md";
 import { USER_TEMPLATE } from "./user.md";
 import { HEARTBEAT_TEMPLATE } from "./heartbeat.md";
 import { ROUTINES_TEMPLATE } from "./routines.md";
@@ -61,10 +62,28 @@ function isDocumentName(name: string): name is DocumentName {
 }
 
 /**
- * Get all template entries as an array of [name, content] tuples.
+ * Options for customizing template generation.
  */
-export function getAllTemplates(): Array<[DocumentName, string]> {
-  return REQUIRED_DOCUMENTS.map((name) => [name, TEMPLATES[name]]);
+export interface TemplateOptions {
+  /** Personality preset to use for PERSONALITY.md generation. */
+  personalityPreset?: PersonalityPreset;
+  /** Custom instructions for the "custom" personality preset. */
+  customInstructions?: string;
+}
+
+/**
+ * Get all template entries as an array of [name, content] tuples.
+ *
+ * When a `personalityPreset` is provided, PERSONALITY.md is generated
+ * using `generatePersonalityMarkdown()` instead of the static template.
+ */
+export function getAllTemplates(options?: TemplateOptions): Array<[DocumentName, string]> {
+  return REQUIRED_DOCUMENTS.map((name) => {
+    if (name === "PERSONALITY.md" && options?.personalityPreset) {
+      return [name, generatePersonalityMarkdown(options.personalityPreset, options.customInstructions)];
+    }
+    return [name, TEMPLATES[name]];
+  });
 }
 
 // Re-export individual templates for direct access
@@ -79,3 +98,7 @@ export {
   STRUCTURED_EXTRACTION_EXAMPLES,
   BOUNDARIES_TEMPLATE,
 };
+
+// Re-export personality generation utilities
+export { generatePersonalityMarkdown } from "./personality.md";
+export type { PersonalityContent } from "./personality.md";
