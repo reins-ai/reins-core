@@ -1,5 +1,9 @@
 import { ReinsError } from "../../errors";
 import { err, ok, type Result } from "../../result";
+import { getStaleMemories } from "../services/stale-detection";
+import { formatRelativeDate } from "../services/memory-summary-generator";
+import type { MemoryRepository } from "../storage/memory-repository";
+import type { MemoryRecord } from "../types/memory-record";
 import type { MemoryType } from "../types/index";
 
 const DEFAULT_LOOKBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -11,6 +15,7 @@ export const BRIEFING_SECTION_TYPES = [
   "high_importance",
   "recent_decisions",
   "upcoming",
+  "health_check",
 ] as const;
 
 export type BriefingSectionType = (typeof BRIEFING_SECTION_TYPES)[number];
@@ -95,6 +100,7 @@ export class MorningBriefingError extends ReinsError {
 
 export interface MorningBriefingServiceOptions {
   retrieval: BriefingRetrievalProvider;
+  repository?: MemoryRepository;
   config?: Partial<BriefingConfig>;
   now?: () => Date;
 }
@@ -104,6 +110,7 @@ const SECTION_TITLES: Record<BriefingSectionType, string> = {
   high_importance: "High Importance Memories",
   recent_decisions: "Recent Decisions",
   upcoming: "Upcoming & Time-Sensitive",
+  health_check: "Memory Health Check",
 };
 
 const SECTION_MEMORY_TYPES: Record<BriefingSectionType, MemoryType[]> = {
@@ -111,6 +118,7 @@ const SECTION_MEMORY_TYPES: Record<BriefingSectionType, MemoryType[]> = {
   high_importance: ["fact", "preference", "skill", "entity"],
   recent_decisions: ["decision"],
   upcoming: ["episode", "fact"],
+  health_check: [],
 };
 
 const SECTION_MIN_IMPORTANCE: Record<BriefingSectionType, number> = {
@@ -118,6 +126,7 @@ const SECTION_MIN_IMPORTANCE: Record<BriefingSectionType, number> = {
   high_importance: 0.7,
   recent_decisions: 0.4,
   upcoming: 0.3,
+  health_check: 0,
 };
 
 const SECTION_TAGS: Record<BriefingSectionType, string[]> = {
@@ -125,6 +134,7 @@ const SECTION_TAGS: Record<BriefingSectionType, string[]> = {
   high_importance: [],
   recent_decisions: [],
   upcoming: ["upcoming", "deadline", "scheduled", "reminder", "time-sensitive"],
+  health_check: [],
 };
 
 function buildConfig(partial?: Partial<BriefingConfig>): BriefingConfig {
@@ -172,13 +182,26 @@ function deduplicateResults(results: BriefingMemoryResult[]): BriefingMemoryResu
   return unique;
 }
 
+const STALE_THRESHOLD_DAYS = 90;
+
+function healthCheckContentPreview(content: string, maxLength: number = 60): string {
+  const singleLine = content.replace(/\n/g, " ").trim();
+  if (singleLine.length <= maxLength) {
+    return singleLine;
+  }
+
+  return singleLine.slice(0, maxLength - 3) + "...";
+}
+
 export class MorningBriefingService {
   private readonly retrieval: BriefingRetrievalProvider;
+  private readonly repository: MemoryRepository | undefined;
   private readonly config: BriefingConfig;
   private readonly now: () => Date;
 
   constructor(options: MorningBriefingServiceOptions) {
     this.retrieval = options.retrieval;
+    this.repository = options.repository;
     this.config = buildConfig(options.config);
     this.now = options.now ?? (() => new Date());
   }
@@ -201,6 +224,10 @@ export class MorningBriefingService {
     const sections: BriefingSection[] = [];
 
     for (const sectionType of sectionTypes) {
+      if (sectionType === "health_check") {
+        continue;
+      }
+
       const sectionResult = await this.buildSection(sectionType, lookbackCutoff);
       if (!sectionResult.ok) {
         return sectionResult;
@@ -209,6 +236,15 @@ export class MorningBriefingService {
       if (sectionResult.value.items.length > 0) {
         sections.push(sectionResult.value);
       }
+    }
+
+    const healthCheckResult = await this.buildHealthCheckSection(timestamp);
+    if (!healthCheckResult.ok) {
+      return healthCheckResult;
+    }
+
+    if (healthCheckResult.value !== null) {
+      sections.push(healthCheckResult.value);
     }
 
     const totalItems = sections.reduce((sum, section) => sum + section.itemCount, 0);
@@ -223,6 +259,70 @@ export class MorningBriefingService {
 
   getConfig(): BriefingConfig {
     return { ...this.config };
+  }
+
+  private async buildHealthCheckSection(
+    timestamp: Date,
+  ): Promise<Result<BriefingSection | null, MorningBriefingError>> {
+    if (!this.repository) {
+      return ok(null);
+    }
+
+    try {
+      const listResult = await this.repository.list();
+      if (!listResult.ok) {
+        return err(
+          new MorningBriefingError(
+            "Failed to retrieve memories for health check",
+            "MORNING_BRIEFING_RETRIEVAL_FAILED",
+            listResult.error,
+          ),
+        );
+      }
+
+      const staleRecords = getStaleMemories(listResult.value, STALE_THRESHOLD_DAYS);
+      if (staleRecords.length === 0) {
+        return ok(null);
+      }
+
+      const oldest = staleRecords.reduce<MemoryRecord>(
+        (prev, curr) => (curr.accessedAt < prev.accessedAt ? curr : prev),
+        staleRecords[0],
+      );
+
+      const relativeDate = formatRelativeDate(oldest.accessedAt, timestamp);
+      const preview = healthCheckContentPreview(oldest.content);
+
+      const summaryContent =
+        `🧠 Memory Health Check\n\n` +
+        `You have ${staleRecords.length} ${staleRecords.length === 1 ? "memory" : "memories"} that haven't been accessed in over 90 days.\n` +
+        `Oldest: "${preview}" (last accessed ${relativeDate})\n\n` +
+        `Consider reviewing your stored memories to keep them current.`;
+
+      const item: BriefingItem = {
+        content: summaryContent,
+        type: "fact",
+        importance: 0.5,
+        source: "health_check",
+        timestamp,
+      };
+
+      return ok({
+        type: "health_check" as BriefingSectionType,
+        title: SECTION_TITLES.health_check,
+        items: [item],
+        itemCount: staleRecords.length,
+      });
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      return err(
+        new MorningBriefingError(
+          "Failed to build health check section",
+          "MORNING_BRIEFING_RETRIEVAL_FAILED",
+          error,
+        ),
+      );
+    }
   }
 
   private async buildSection(
