@@ -62,6 +62,8 @@ import { BrowserActTool } from "../browser/tools/browser-act-tool";
 import { ElementRefRegistry } from "../browser/element-ref-registry";
 import { SnapshotEngine } from "../browser/snapshot";
 import { BROWSER_SYSTEM_PROMPT } from "../browser/system-prompt";
+import type { CronScheduler } from "../cron/scheduler";
+import type { CronJobDefinition } from "../cron/types";
 
 import {
   parseListMemoryQueryParams,
@@ -412,6 +414,7 @@ export interface DaemonHttpServerOptions {
   channelService?: ChannelDaemonService;
   skillService?: SkillDaemonService;
   browserService?: BrowserDaemonService;
+  cronScheduler?: CronScheduler;
   convexAuthToken?: string;
 }
 
@@ -1062,6 +1065,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private convexClient: ConvexDaemonClient | null = null;
   private readonly skillService: SkillDaemonService | null;
   private readonly browserService: BrowserDaemonService | null;
+  private readonly cronScheduler: CronScheduler | null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
     registeredCount: 0,
@@ -1080,6 +1084,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.providedChannelService = options.channelService ?? null;
     this.skillService = options.skillService ?? null;
     this.browserService = options.browserService ?? null;
+    this.cronScheduler = options.cronScheduler ?? null;
     this.configuredConvexAuthToken = normalizeOptionalToken(options.convexAuthToken);
 
     // Create auth services first so credential store is available for tool registration
@@ -1414,6 +1419,16 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Browser screenshot endpoint
       if (url.pathname === "/api/browser/screenshot" && method === "POST") {
         return this.handleBrowserTakeScreenshot(request, corsHeaders);
+      }
+
+      // Schedule list endpoint
+      if (url.pathname === "/api/schedule/list" && method === "GET") {
+        return this.handleScheduleList(corsHeaders);
+      }
+
+      // Schedule cancel endpoint
+      if (url.pathname === "/api/schedule/cancel" && method === "POST") {
+        return this.handleScheduleCancel(request, corsHeaders);
       }
 
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
@@ -1839,6 +1854,99 @@ export class DaemonHttpServer implements DaemonManagedService {
     return Response.json(
       { ok: true, path: result.value.path, message: `Screenshot saved to ${result.value.path}` },
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleScheduleList(corsHeaders: Record<string, string>): Promise<Response> {
+    if (!this.cronScheduler) {
+      return Response.json(
+        { items: [] },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const result = await this.cronScheduler.listJobs();
+    if (!result.ok) {
+      return Response.json(
+        { items: [], error: result.error.message },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const activeJobs = result.value.filter(
+      (job: CronJobDefinition) => job.status === "active" && job.nextRunAt !== null,
+    );
+
+    const items = activeJobs
+      .map((job: CronJobDefinition) => ({
+        id: job.id,
+        type: "cron" as const,
+        title: job.name,
+        schedule: job.schedule,
+        nextRunAt: job.nextRunAt,
+        humanReadable: job.description || job.schedule,
+      }))
+      .sort((a, b) => {
+        const aTime = a.nextRunAt ? Date.parse(a.nextRunAt) : Infinity;
+        const bTime = b.nextRunAt ? Date.parse(b.nextRunAt) : Infinity;
+        return aTime - bTime;
+      });
+
+    return Response.json(
+      { items },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleScheduleCancel(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    let body: { id?: unknown; type?: unknown };
+    try {
+      body = (await request.json()) as { id?: unknown; type?: unknown };
+    } catch {
+      return Response.json(
+        { success: false, error: "Invalid JSON body" },
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    const itemType = typeof body.type === "string" ? body.type : "";
+
+    if (id.length === 0) {
+      return Response.json(
+        { success: false, error: "Missing required field: id" },
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (itemType === "cron") {
+      if (!this.cronScheduler) {
+        return Response.json(
+          { success: false, error: "Scheduler not available" },
+          { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      const result = await this.cronScheduler.remove(id);
+      if (!result.ok) {
+        return Response.json(
+          { success: false, error: result.error.message },
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      return Response.json(
+        { success: true },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      { success: false, error: `Unsupported item type: ${itemType}` },
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 
