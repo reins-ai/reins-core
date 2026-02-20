@@ -84,6 +84,7 @@ import {
 } from "./environment-api";
 import { getTextContent, serializeContent, type Conversation, type Message } from "../types";
 import { AgentLoop } from "../harness/agent-loop";
+import type { SubAgentPool } from "../harness/sub-agent-pool";
 import { ToolExecutor, ToolRegistry } from "../tools";
 import { EDIT_DEFINITION, GLOB_DEFINITION, GREP_DEFINITION, READ_DEFINITION, WRITE_DEFINITION } from "../tools/builtins";
 import { MemoryTool } from "../tools/memory-tool";
@@ -1071,6 +1072,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly skillService: SkillDaemonService | null;
   private readonly browserService: BrowserDaemonService | null;
   private readonly cronScheduler: CronScheduler | null;
+  private activeSubAgentPool: SubAgentPool | null = null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
     registeredCount: 0,
@@ -1135,6 +1137,21 @@ export class DaemonHttpServer implements DaemonManagedService {
    */
   getConversationManager(): ConversationManager | null {
     return this.conversationManager;
+  }
+
+  /**
+   * Sets the active sub-agent pool for status reporting via /api/agents/status.
+   * Pass null to clear when no pool is active.
+   */
+  setActiveSubAgentPool(pool: SubAgentPool | null): void {
+    this.activeSubAgentPool = pool;
+  }
+
+  /**
+   * Returns the active sub-agent pool, if any.
+   */
+  getActiveSubAgentPool(): SubAgentPool | null {
+    return this.activeSubAgentPool;
   }
 
   /**
@@ -1424,6 +1441,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Browser screenshot endpoint
       if (url.pathname === "/api/browser/screenshot" && method === "POST") {
         return this.handleBrowserTakeScreenshot(request, corsHeaders);
+      }
+
+      // Agent status endpoint
+      if (url.pathname === "/api/agents/status" && method === "GET") {
+        return this.handleAgentsStatus(corsHeaders);
       }
 
       // Schedule list endpoint
@@ -1858,6 +1880,28 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     return Response.json(
       { ok: true, path: result.value.path, message: `Screenshot saved to ${result.value.path}` },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private handleAgentsStatus(corsHeaders: Record<string, string>): Response {
+    if (!this.activeSubAgentPool) {
+      return Response.json(
+        { agents: [] },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const states = this.activeSubAgentPool.getAgentStates();
+    const agents = states.map((state) => ({
+      id: state.id,
+      status: state.status,
+      stepsUsed: state.stepsUsed,
+      prompt: state.prompt,
+    }));
+
+    return Response.json(
+      { agents },
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

@@ -12,6 +12,7 @@ export const harnessEventTypes = [
   "done",
   "permission_request",
   "aborted",
+  "child_agent_event",
 ] as const;
 
 export type HarnessEventType = (typeof harnessEventTypes)[number];
@@ -63,6 +64,12 @@ export interface AbortedEventPayload {
   initiatedBy: "user" | "system";
 }
 
+export interface ChildAgentEventPayload {
+  childId: string;
+  eventType: HarnessEventType;
+  payload: unknown;
+}
+
 export interface HarnessEventMap {
   message_start: MessageStartEventPayload;
   token: TokenEventPayload;
@@ -73,6 +80,7 @@ export interface HarnessEventMap {
   done: DoneEventPayload;
   permission_request: PermissionRequestEventPayload;
   aborted: AbortedEventPayload;
+  child_agent_event: ChildAgentEventPayload;
 }
 
 export interface EventEnvelope<TType extends string, TPayload> {

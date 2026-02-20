@@ -1,5 +1,8 @@
 import { AgentLoop, type AgentLoopOptions, type LoopTerminationReason, type StepResult } from "./agent-loop";
 import { DoomLoopGuard } from "./doom-loop-guard";
+import type { TypedEventBus } from "./event-bus";
+import { createHarnessEventBus } from "./event-bus";
+import type { HarnessEventMap, HarnessEventType } from "./events";
 import type { ToolContext, ToolDefinition } from "../types";
 
 const DEFAULT_MAX_CONCURRENT = 5;
@@ -42,11 +45,23 @@ export interface AgentLoopRunner {
 
 export type AgentLoopFactory = (options: AgentLoopOptions) => AgentLoopRunner;
 
+export type AgentStatus = "queued" | "running" | "done" | "failed";
+
+export interface AgentState {
+  id: string;
+  status: AgentStatus;
+  stepsUsed: number;
+  prompt: string;
+  startedAt?: Date;
+  completedAt?: Date;
+}
+
 export interface SubAgentPoolOptions {
   maxConcurrent?: number;
   tier?: WorkspaceTier;
   signal?: AbortSignal;
   agentLoopFactory?: AgentLoopFactory;
+  eventBus?: TypedEventBus<HarnessEventMap>;
 }
 
 class Semaphore {
@@ -80,20 +95,38 @@ class Semaphore {
   }
 }
 
+const PROMPT_TRUNCATION_LENGTH = 100;
+
 export class SubAgentPool {
   private readonly maxConcurrent: number;
   private readonly signal?: AbortSignal;
   private readonly agentLoopFactory: AgentLoopFactory;
+  private readonly eventBus?: TypedEventBus<HarnessEventMap>;
+  private readonly agentStates = new Map<string, AgentState>();
 
   constructor(options: SubAgentPoolOptions = {}) {
     this.maxConcurrent = this.resolveMaxConcurrent(options.maxConcurrent, options.tier);
     this.signal = options.signal;
     this.agentLoopFactory = options.agentLoopFactory ?? createDefaultAgentLoopFactory();
+    this.eventBus = options.eventBus;
+  }
+
+  getAgentStates(): AgentState[] {
+    return Array.from(this.agentStates.values());
   }
 
   async runAll(tasks: SubAgentTask[]): Promise<SubAgentResult[]> {
     if (tasks.length === 0) {
       return [];
+    }
+
+    for (const task of tasks) {
+      this.agentStates.set(task.id, {
+        id: task.id,
+        status: "queued",
+        stepsUsed: 0,
+        prompt: truncatePrompt(task.prompt),
+      });
     }
 
     const semaphore = new Semaphore(this.maxConcurrent);
@@ -122,23 +155,40 @@ export class SubAgentPool {
     const runPromises = tasks.map(async (task) => {
       const childController = childControllers.get(task.id);
       if (!childController) {
+        this.updateAgentState(task.id, "failed");
         return this.createFailureResult(task.id, new Error(`Missing child controller for task ${task.id}`), false);
       }
 
       await semaphore.acquire();
       try {
         if (childController.signal.aborted) {
+          this.updateAgentState(task.id, "failed");
           return this.createFailureResult(task.id, createAbortError(), true);
         }
+
+        this.updateAgentState(task.id, "running", { startedAt: new Date() });
+
+        const childEventBus = this.eventBus ? createHarnessEventBus() : undefined;
+        const cleanupForwarder = childEventBus
+          ? this.forwardChildEvents(task.id, childEventBus)
+          : undefined;
 
         const doomLoopGuard = new DoomLoopGuard();
         const loopRunner = this.agentLoopFactory({
           maxSteps: task.maxSteps,
           signal: childController.signal,
           doomLoopGuard,
+          eventBus: childEventBus,
         });
 
         const runResult = await loopRunner.runTask(task, childController.signal);
+        cleanupForwarder?.();
+
+        this.updateAgentState(task.id, "done", {
+          stepsUsed: runResult.stepsUsed,
+          completedAt: new Date(),
+        });
+
         return {
           id: task.id,
           output: runResult.output,
@@ -146,6 +196,7 @@ export class SubAgentPool {
           terminationReason: runResult.terminationReason,
         } satisfies SubAgentResult;
       } catch (error) {
+        this.updateAgentState(task.id, "failed", { completedAt: new Date() });
         return this.createFailureResult(task.id, normalizeError(error), childController.signal.aborted);
       } finally {
         semaphore.release();
@@ -175,6 +226,64 @@ export class SubAgentPool {
       error,
       stepsUsed: 0,
       terminationReason: aborted ? "aborted" : "error",
+    };
+  }
+
+  private updateAgentState(
+    taskId: string,
+    status: AgentStatus,
+    updates?: Partial<Pick<AgentState, "stepsUsed" | "startedAt" | "completedAt">>,
+  ): void {
+    const existing = this.agentStates.get(taskId);
+    if (!existing) {
+      return;
+    }
+
+    this.agentStates.set(taskId, {
+      ...existing,
+      status,
+      ...updates,
+    });
+  }
+
+  private forwardChildEvents(
+    childId: string,
+    childEventBus: TypedEventBus<HarnessEventMap>,
+  ): () => void {
+    if (!this.eventBus) {
+      return () => {};
+    }
+
+    const parentBus = this.eventBus;
+    const unsubscribers: Array<() => void> = [];
+
+    const eventTypes: HarnessEventType[] = [
+      "message_start",
+      "token",
+      "tool_call_start",
+      "tool_call_end",
+      "compaction",
+      "error",
+      "done",
+      "permission_request",
+      "aborted",
+    ];
+
+    for (const eventType of eventTypes) {
+      const unsub = childEventBus.on(eventType, (envelope) => {
+        void parentBus.emit("child_agent_event", {
+          childId,
+          eventType: envelope.type,
+          payload: envelope.payload,
+        });
+      });
+      unsubscribers.push(unsub);
+    }
+
+    return () => {
+      for (const unsub of unsubscribers) {
+        unsub();
+      }
     };
   }
 
@@ -255,4 +364,12 @@ function normalizeError(error: unknown): Error {
 
 function createAbortError(): Error {
   return new Error(ABORT_ERROR_MESSAGE);
+}
+
+function truncatePrompt(prompt: string): string {
+  if (prompt.length <= PROMPT_TRUNCATION_LENGTH) {
+    return prompt;
+  }
+
+  return `${prompt.slice(0, PROMPT_TRUNCATION_LENGTH)}...`;
 }

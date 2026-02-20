@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
-import { SubAgentPool, type AgentLoopFactory, type SubAgentTask } from "../../src/harness/sub-agent-pool";
+import { SubAgentPool, type AgentLoopFactory, type AgentState, type SubAgentTask } from "../../src/harness/sub-agent-pool";
 import { DoomLoopGuard } from "../../src/harness/doom-loop-guard";
 import type { AgentLoopOptions, LoopTerminationReason } from "../../src/harness/agent-loop";
+import { createHarnessEventBus } from "../../src/harness/event-bus";
+import type { ChildAgentEventPayload } from "../../src/harness/events";
 
 interface MockBehavior {
   delayMs?: number;
@@ -371,5 +373,190 @@ describe("SubAgentPool", () => {
     expect(result?.output).toBe("echo output");
     expect(result?.terminationReason).toBe("text_only_response");
     expect(result?.error).toBeUndefined();
+  });
+
+  it("event forwarding: child events appear on parent EventBus with childId", async () => {
+    const parentBus = createHarnessEventBus();
+    const receivedEvents: ChildAgentEventPayload[] = [];
+
+    parentBus.on("child_agent_event", (envelope) => {
+      receivedEvents.push(envelope.payload);
+    });
+
+    const pool = new SubAgentPool({
+      eventBus: parentBus,
+      agentLoopFactory: (options) => ({
+        async runTask(task, _signal) {
+          if (options.eventBus) {
+            await options.eventBus.emit("token", { content: `token-from-${task.id}` });
+            await options.eventBus.emit("done", {
+              usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+              finishReason: "stop",
+            });
+          }
+
+          return {
+            output: `output-${task.id}`,
+            stepsUsed: 1,
+            terminationReason: "text_only_response",
+          };
+        },
+      }),
+    });
+
+    await pool.runAll([{ id: "child-1", prompt: "test prompt" }]);
+
+    expect(receivedEvents.length).toBeGreaterThanOrEqual(2);
+
+    const tokenEvent = receivedEvents.find((event) => event.eventType === "token");
+    expect(tokenEvent).toBeDefined();
+    expect(tokenEvent?.childId).toBe("child-1");
+    expect((tokenEvent?.payload as { content: string }).content).toBe("token-from-child-1");
+
+    const doneEvent = receivedEvents.find((event) => event.eventType === "done");
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent?.childId).toBe("child-1");
+  });
+
+  it("event forwarding: events from multiple children carry correct childId", async () => {
+    const parentBus = createHarnessEventBus();
+    const receivedEvents: ChildAgentEventPayload[] = [];
+
+    parentBus.on("child_agent_event", (envelope) => {
+      receivedEvents.push(envelope.payload);
+    });
+
+    const pool = new SubAgentPool({
+      eventBus: parentBus,
+      agentLoopFactory: (options) => ({
+        async runTask(task, _signal) {
+          if (options.eventBus) {
+            await options.eventBus.emit("token", { content: `hello-from-${task.id}` });
+          }
+
+          return {
+            output: `output-${task.id}`,
+            stepsUsed: 1,
+            terminationReason: "text_only_response",
+          };
+        },
+      }),
+    });
+
+    await pool.runAll([
+      { id: "agent-a", prompt: "prompt A" },
+      { id: "agent-b", prompt: "prompt B" },
+      { id: "agent-c", prompt: "prompt C" },
+    ]);
+
+    const childIds = new Set(receivedEvents.map((event) => event.childId));
+    expect(childIds.has("agent-a")).toBe(true);
+    expect(childIds.has("agent-b")).toBe(true);
+    expect(childIds.has("agent-c")).toBe(true);
+
+    for (const event of receivedEvents) {
+      const payload = event.payload as { content: string };
+      expect(payload.content).toBe(`hello-from-${event.childId}`);
+    }
+  });
+
+  it("event forwarding: no events forwarded when eventBus is not provided", async () => {
+    const pool = new SubAgentPool({
+      agentLoopFactory: (options) => ({
+        async runTask(task, _signal) {
+          if (options.eventBus) {
+            await options.eventBus.emit("token", { content: "should-not-forward" });
+          }
+
+          return {
+            output: `output-${task.id}`,
+            stepsUsed: 1,
+            terminationReason: "text_only_response",
+          };
+        },
+      }),
+    });
+
+    const results = await pool.runAll([{ id: "no-bus", prompt: "test" }]);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.output).toBe("output-no-bus");
+  });
+
+  it("status tracking: agent starts as queued, transitions to running, then done", async () => {
+    const statusSnapshots: AgentState[][] = [];
+    let resolveRunning: (() => void) | null = null;
+    const runningPromise = new Promise<void>((resolve) => {
+      resolveRunning = resolve;
+    });
+
+    const pool = new SubAgentPool({
+      agentLoopFactory: () => ({
+        async runTask(task, _signal) {
+          resolveRunning?.();
+          await sleep(30);
+
+          return {
+            output: `output-${task.id}`,
+            stepsUsed: 2,
+            terminationReason: "text_only_response",
+          };
+        },
+      }),
+    });
+
+    // Capture initial queued state before runAll starts executing
+    const runPromise = pool.runAll([{ id: "tracked-1", prompt: "track me" }]);
+
+    // Wait for the task to enter running state
+    await runningPromise;
+    statusSnapshots.push(pool.getAgentStates().map((state) => ({ ...state })));
+
+    await runPromise;
+    statusSnapshots.push(pool.getAgentStates().map((state) => ({ ...state })));
+
+    // Running snapshot
+    const runningSnapshot = statusSnapshots[0];
+    expect(runningSnapshot).toHaveLength(1);
+    expect(runningSnapshot?.[0]?.status).toBe("running");
+    expect(runningSnapshot?.[0]?.id).toBe("tracked-1");
+
+    // Done snapshot
+    const doneSnapshot = statusSnapshots[1];
+    expect(doneSnapshot).toHaveLength(1);
+    expect(doneSnapshot?.[0]?.status).toBe("done");
+    expect(doneSnapshot?.[0]?.stepsUsed).toBe(2);
+    expect(doneSnapshot?.[0]?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("status tracking: failed tasks have failed status", async () => {
+    const pool = new SubAgentPool({
+      agentLoopFactory: () => ({
+        async runTask() {
+          throw new Error("intentional failure");
+        },
+      }),
+    });
+
+    await pool.runAll([{ id: "fail-1", prompt: "will fail" }]);
+    const states = pool.getAgentStates();
+
+    expect(states).toHaveLength(1);
+    expect(states[0]?.status).toBe("failed");
+    expect(states[0]?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("status tracking: prompt is truncated to 100 characters", async () => {
+    const longPrompt = "A".repeat(200);
+
+    const pool = new SubAgentPool({
+      agentLoopFactory: createFactory({ "long-prompt": { output: "ok" } }),
+    });
+
+    await pool.runAll([{ id: "long-prompt", prompt: longPrompt }]);
+    const states = pool.getAgentStates();
+
+    expect(states).toHaveLength(1);
+    expect(states[0]?.prompt.length).toBeLessThanOrEqual(103); // 100 + "..."
+    expect(states[0]?.prompt.endsWith("...")).toBe(true);
   });
 });
