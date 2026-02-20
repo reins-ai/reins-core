@@ -39,8 +39,10 @@ export {
 } from "./personality-prompts";
 
 export {
+  DEFAULT_PERSONA,
   getWelcomeCopy,
   WELCOME_COPY_VARIANTS,
+  type Persona,
   type WelcomeCopy,
   DaemonInstallStep,
   type DaemonInstallStepOptions,
