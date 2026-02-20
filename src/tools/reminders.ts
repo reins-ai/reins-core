@@ -1,5 +1,7 @@
-import { parseRelativeTime } from "./date-parser";
+import { parseNlTime } from "./date-parser";
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
+
+const ISO_DATE_PREFIX_PATTERN = /^\d{4}-/;
 
 type ReminderPriority = "low" | "medium" | "high" | "urgent";
 type ReminderAction =
@@ -160,15 +162,15 @@ export class RemindersTool implements Tool {
     const priority = this.optionalPriority(args.priority);
     const recurrence = this.optionalObject(args.recurrence, "'recurrence' must be an object.");
 
-    const dueAtResult = parseRelativeTime(dueAtInput);
-    if (!dueAtResult || !dueAtResult.runAt) {
-      return this.errorResult(callId, `Unable to parse due date/time from '${dueAtInput}'.`);
+    const dueAtIso = this.resolveDueAt(dueAtInput);
+    if (typeof dueAtIso !== "string") {
+      return this.errorResult(callId, dueAtIso.error);
     }
 
     const reminder = await this.backendClient.createReminder({
       title,
       description,
-      dueAt: dueAtResult.runAt.toISOString(),
+      dueAt: dueAtIso,
       priority,
       recurrence,
       conversationId: context.conversationId,
@@ -252,6 +254,21 @@ export class RemindersTool implements Tool {
       reminderId,
       success: true,
     });
+  }
+
+  private resolveDueAt(input: string): string | { error: string } {
+    if (ISO_DATE_PREFIX_PATTERN.test(input)) {
+      return input;
+    }
+
+    const parsed = parseNlTime(input);
+    if (!parsed || !parsed.runAt) {
+      return {
+        error: `Could not parse due date: '${input}'. Please use an ISO date string or a recognized time phrase.`,
+      };
+    }
+
+    return parsed.runAt.toISOString();
   }
 
   private normalizeAction(value: unknown): "create" | "list" | "snooze" | "dismiss" | "complete" | null {

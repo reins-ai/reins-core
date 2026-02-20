@@ -3,6 +3,7 @@ import { evaluateCronPolicy, type CronPolicyResult } from "../cron/policy";
 import type { CronJobDefinition, CronJobPayload } from "../cron/types";
 import { CronError } from "../cron/types";
 import { err, ok, type Result } from "../result";
+import { parseNlTime } from "./date-parser";
 
 type ScheduleAction = "create" | "update" | "delete" | "list" | "get" | "pause" | "resume";
 
@@ -67,6 +68,11 @@ export class ScheduleTool {
       return err(new CronError("Schedule create requires a taskAction", "CRON_TOOL_ACTION_REQUIRED"));
     }
 
+    const resolvedSchedule = this.resolveSchedule(action.schedule);
+    if (!resolvedSchedule.ok) {
+      return resolvedSchedule;
+    }
+
     const payload: CronJobPayload = {
       action: action.taskAction,
       parameters: action.taskParameters ?? {},
@@ -80,7 +86,7 @@ export class ScheduleTool {
     const created = await this.scheduler.create({
       name: action.name,
       description: action.description,
-      schedule: action.schedule,
+      schedule: resolvedSchedule.value.cron,
       timezone: action.timezone,
       payload,
       maxRuns: action.maxRuns,
@@ -90,9 +96,14 @@ export class ScheduleTool {
       return created;
     }
 
+    let message = "Schedule created";
+    if (resolvedSchedule.value.note) {
+      message += `. ${resolvedSchedule.value.note}`;
+    }
+
     return ok({
       success: true,
-      message: "Schedule created",
+      message,
       job: created.value,
       policyCheck: policyResult.value,
     });
@@ -110,6 +121,17 @@ export class ScheduleTool {
     }
     if (!existing.value) {
       return err(new CronError(`Cron job not found: ${jobId.value}`, "CRON_JOB_NOT_FOUND"));
+    }
+
+    let resolvedSchedule: string | undefined;
+    let scheduleNote: string | undefined;
+    if (action.schedule) {
+      const resolved = this.resolveSchedule(action.schedule);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      resolvedSchedule = resolved.value.cron;
+      scheduleNote = resolved.value.note;
     }
 
     const hasPayloadUpdate = action.taskAction !== undefined || action.taskParameters !== undefined;
@@ -132,7 +154,7 @@ export class ScheduleTool {
     const updated = await this.scheduler.update(jobId.value, {
       name: action.name,
       description: action.description,
-      schedule: action.schedule,
+      schedule: resolvedSchedule,
       timezone: action.timezone,
       payload: payloadUpdate,
       maxRuns: action.maxRuns,
@@ -142,9 +164,14 @@ export class ScheduleTool {
       return updated;
     }
 
+    let message = "Schedule updated";
+    if (scheduleNote) {
+      message += `. ${scheduleNote}`;
+    }
+
     return ok({
       success: true,
-      message: "Schedule updated",
+      message,
       job: updated.value,
       policyCheck,
     });
@@ -243,6 +270,31 @@ export class ScheduleTool {
     return ok(jobId);
   }
 
+  private resolveSchedule(
+    schedule: string,
+  ): Result<{ cron: string; note?: string }, CronError> {
+    if (isCronExpression(schedule)) {
+      return ok({ cron: schedule });
+    }
+
+    const parsed = parseNlTime(schedule);
+    if (!parsed || !parsed.cron) {
+      return err(
+        new CronError(
+          `Could not parse schedule: '${schedule}'. Please use a cron expression or a recognized time phrase.`,
+          "CRON_TOOL_SCHEDULE_PARSE_FAILED",
+        ),
+      );
+    }
+
+    const note =
+      parsed.confidence === "low"
+        ? `Note: schedule interpreted as '${parsed.humanReadable}' (low confidence)`
+        : undefined;
+
+    return ok({ cron: parsed.cron, note });
+  }
+
   private async evaluateAndApprove(payload: CronJobPayload): Promise<Result<CronPolicyResult, CronError>> {
     const policyCheck = evaluateCronPolicy(payload);
     if (!policyCheck.allowed) {
@@ -273,4 +325,10 @@ export class ScheduleTool {
 
     return ok(policyCheck);
   }
+}
+
+const CRON_EXPRESSION_PATTERN = /^[\d*,/\-]+\s+[\d*,/\-]+\s+[\d*,/\-]+\s+[\d*,/\-]+\s+[\d*,/\-]+$/;
+
+function isCronExpression(value: string): boolean {
+  return CRON_EXPRESSION_PATTERN.test(value.trim());
 }
