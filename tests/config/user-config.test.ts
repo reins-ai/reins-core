@@ -264,6 +264,49 @@ describe("UserConfig", () => {
     });
   });
 
+  describe("tasks config", () => {
+    it("persists tasks.maxConcurrentWorkers when provided", async () => {
+      const filePath = await createTempConfigPath();
+
+      const writeResult = await writeUserConfig(
+        { tasks: { maxConcurrentWorkers: 5 } },
+        { filePath },
+      );
+      expect(writeResult.ok).toBe(true);
+      if (!writeResult.ok) return;
+
+      expect(writeResult.value.tasks?.maxConcurrentWorkers).toBe(5);
+
+      const readResult = await readUserConfig({ filePath });
+      expect(readResult.ok).toBe(true);
+      if (!readResult.ok) return;
+
+      expect(readResult.value?.tasks?.maxConcurrentWorkers).toBe(5);
+    });
+
+    it("drops invalid tasks.maxConcurrentWorkers values", async () => {
+      const filePath = await createTempConfigPath();
+
+      await writeFile(
+        filePath,
+        JSON.stringify({
+          name: "test",
+          provider: { mode: "none" },
+          daemon: { host: "localhost", port: 7433 },
+          tasks: { maxConcurrentWorkers: 0 },
+          setupComplete: false,
+        }, null, 2),
+        "utf8",
+      );
+
+      const readResult = await readUserConfig({ filePath });
+      expect(readResult.ok).toBe(true);
+      if (!readResult.ok) return;
+
+      expect(readResult.value?.tasks?.maxConcurrentWorkers).toBeUndefined();
+    });
+  });
+
   describe("config path resolution", () => {
     it("resolves config directory to data root on linux", () => {
       const dir = resolveUserConfigDirectory({

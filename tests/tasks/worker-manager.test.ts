@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -214,6 +214,89 @@ describe("WorkerManager", () => {
       await waitFor(() => manager.getStatus().runningCount === 0, 1_000);
 
       store.close();
+    });
+  });
+
+  test("loads max concurrency from ~/.reins/config.json", async () => {
+    await withTempDb(async (dbPath) => {
+      const tempConfigDir = await mkdtemp(join(tmpdir(), "reins-worker-config-"));
+      const configPath = join(tempConfigDir, "config.json");
+
+      try {
+        await mkdir(tempConfigDir, { recursive: true });
+        await writeFile(
+          configPath,
+          `${JSON.stringify({
+            name: "config-user",
+            provider: { mode: "none" },
+            daemon: { host: "localhost", port: 7433 },
+            tasks: { maxConcurrentWorkers: 2 },
+            setupComplete: true,
+          }, null, 2)}\n`,
+          "utf8",
+        );
+
+        const store = new SQLiteTaskStore({ path: dbPath });
+        const queue = new TaskQueue(store);
+        const providerRegistry = new ProviderRegistry();
+        const permissionChecker = new PermissionChecker(FULL_PROFILE);
+
+        const tasks = await Promise.all([
+          queue.enqueue({ prompt: "task-1" }),
+          queue.enqueue({ prompt: "task-2" }),
+          queue.enqueue({ prompt: "task-3" }),
+        ]);
+
+        const completions = new Map<string, Deferred<string>>();
+        for (const task of tasks) {
+          completions.set(task.id, createDeferred<string>());
+        }
+
+        const manager = new WorkerManager(queue, providerRegistry, permissionChecker, {
+          readUserConfig: async () => {
+            const raw = await Bun.file(configPath).json() as {
+              tasks?: { maxConcurrentWorkers?: number };
+            };
+
+            return {
+              name: "config-user",
+              provider: { mode: "none" as const },
+              daemon: { host: "localhost", port: 7433 },
+              setupComplete: true,
+              tasks: {
+                maxConcurrentWorkers: raw.tasks?.maxConcurrentWorkers,
+              },
+            };
+          },
+          runTask: async (context) => {
+            const completion = completions.get(context.task.id);
+            if (!completion) {
+              throw new Error(`Missing completion for task ${context.task.id}`);
+            }
+
+            return await completion.promise;
+          },
+        });
+
+        for (const task of tasks) {
+          await manager.spawn(task.id);
+        }
+
+        await waitFor(() => manager.getStatus().runningCount === 2);
+
+        expect(manager.getStatus().maxConcurrentWorkers).toBe(2);
+        expect(manager.getStatus().pendingTaskIds).toHaveLength(1);
+
+        for (const completion of completions.values()) {
+          completion.resolve("done");
+        }
+
+        await waitFor(() => manager.getStatus().runningCount === 0, 1_000);
+
+        store.close();
+      } finally {
+        await rm(tempConfigDir, { recursive: true, force: true });
+      }
     });
   });
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { readUserConfig, type UserConfig } from "../config";
 import { AgentLoop } from "../harness/agent-loop";
 import { PermissionChecker } from "../harness/permissions";
 import type { ProviderRegistry } from "../providers";
@@ -53,16 +54,18 @@ export interface WorkerManagerOptions {
   workerTimeoutMs?: number;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
+  readUserConfig?: () => Promise<UserConfig | null>;
   createAgentLoop?: (context: WorkerFactoryContext) => AgentLoop;
   createToolExecutor?: () => ToolExecutor;
   runTask?: (context: WorkerRunContext) => Promise<string>;
 }
 
 export class WorkerManager {
-  private readonly maxConcurrentWorkers: number;
+  private maxConcurrentWorkers: number;
   private readonly workerTimeoutMs: number;
   private readonly setTimeoutFn: typeof setTimeout;
   private readonly clearTimeoutFn: typeof clearTimeout;
+  private readonly configLoadPromise: Promise<void>;
   private readonly createAgentLoop: (context: WorkerFactoryContext) => AgentLoop;
   private readonly createToolExecutor: () => ToolExecutor;
   private readonly runTask: (context: WorkerRunContext) => Promise<string>;
@@ -77,8 +80,15 @@ export class WorkerManager {
     private readonly permissionChecker: PermissionChecker,
     options: WorkerManagerOptions = {},
   ) {
-    this.maxConcurrentWorkers =
-      options.maxConcurrentWorkers ?? DEFAULT_MAX_CONCURRENT_WORKERS;
+    this.maxConcurrentWorkers = DEFAULT_MAX_CONCURRENT_WORKERS;
+    if (typeof options.maxConcurrentWorkers === "number") {
+      this.maxConcurrentWorkers = options.maxConcurrentWorkers;
+      this.configLoadPromise = Promise.resolve();
+    } else {
+      this.configLoadPromise = this.loadMaxConcurrentWorkersFromConfig(
+        options.readUserConfig,
+      );
+    }
     this.workerTimeoutMs = options.workerTimeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
     this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
     this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
@@ -95,6 +105,8 @@ export class WorkerManager {
   }
 
   async spawn(taskId: string): Promise<WorkerSpawnResult> {
+    await this.configLoadPromise;
+
     if (this.runningWorkers.has(taskId) || this.pendingTaskIds.includes(taskId)) {
       return {
         taskId,
@@ -243,6 +255,35 @@ export class WorkerManager {
 
   private async defaultRunTask(context: WorkerRunContext): Promise<string> {
     return `Task ${context.task.id} completed`;
+  }
+
+  private async loadMaxConcurrentWorkersFromConfig(
+    readUserConfigOverride?: () => Promise<UserConfig | null>,
+  ): Promise<void> {
+    const readConfig = readUserConfigOverride ?? this.defaultReadUserConfig;
+    try {
+      const userConfig = await readConfig();
+      const configured = userConfig?.tasks?.maxConcurrentWorkers;
+
+      if (
+        typeof configured === "number"
+        && Number.isInteger(configured)
+        && configured > 0
+      ) {
+        this.maxConcurrentWorkers = configured;
+      }
+    } catch {
+      // Keep default when config read fails.
+    }
+  }
+
+  private async defaultReadUserConfig(): Promise<UserConfig | null> {
+    const result = await readUserConfig();
+    if (!result.ok) {
+      return null;
+    }
+
+    return result.value;
   }
 }
 

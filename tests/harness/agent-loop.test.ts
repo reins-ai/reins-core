@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import { AgentLoop, DoomLoopGuard, ToolPipeline } from "../../src/harness";
 import { ToolExecutor, ToolRegistry } from "../../src/tools";
-import type { AgentMessage, StepResult } from "../../src/harness";
+import type { AgentMessage, LoopEvent, StepResult } from "../../src/harness";
+import type { ConversationContext, NudgeInjector } from "../../src/memory/proactive";
 import type { ChatRequest, Message, Model, Provider, StreamEvent, Tool, ToolCall, ToolContext, ToolDefinition, ToolResult } from "../../src/types";
 
 const toolContext: ToolContext = {
@@ -434,6 +435,64 @@ describe("AgentLoop", () => {
     expect(firstToolStart).toBeGreaterThan(-1);
     expect(firstToolEnd).toBeGreaterThan(firstToolStart);
     expect(doneIndex).toBeGreaterThan(firstToolEnd);
+  });
+
+  it("applies nudge injector addendum before provider turn", async () => {
+    let receivedSystemPrompt = "";
+    let receivedContext: ConversationContext | null = null;
+
+    const provider: Provider = {
+      config: {
+        id: "anthropic",
+        name: "Anthropic",
+        type: "oauth",
+      },
+      async chat() {
+        throw new Error("chat not used in this test");
+      },
+      async *stream(request: ChatRequest): AsyncIterable<StreamEvent> {
+        receivedSystemPrompt = request.systemPrompt ?? "";
+        yield { type: "token", content: "Done" };
+        yield { type: "done", finishReason: "stop" };
+      },
+      async listModels(): Promise<Model[]> {
+        return [createModel("anthropic-test-model")];
+      },
+      async validateConnection(): Promise<boolean> {
+        return true;
+      },
+    };
+
+    const loop = new AgentLoop({
+      nudgeInjector: {
+        injectNudges: async (context, systemPrompt) => {
+          receivedContext = context;
+          return `${systemPrompt}\n\nNudge addendum: keep responses concise.`;
+        },
+      } as NudgeInjector,
+    });
+
+    const events: LoopEvent[] = [];
+    for await (const event of loop.runWithProvider({
+      provider,
+      model: "anthropic-test-model",
+      messages: [{
+        id: "msg-user-1",
+        role: "user",
+        content: "Help me summarize this",
+        createdAt: new Date(),
+      } satisfies Message],
+      toolExecutor: createExecutor("notes.create"),
+      toolContext,
+      systemPrompt: "Base system prompt",
+    })) {
+      events.push(event);
+    }
+
+    expect(receivedSystemPrompt).toContain("Base system prompt");
+    expect(receivedSystemPrompt).toContain("Nudge addendum");
+    expect(receivedContext?.query).toBe("Help me summarize this");
+    expect(events.some((event) => event.type === "done")).toBe(true);
   });
 
   it("respects step limit in provider loop mode", async () => {

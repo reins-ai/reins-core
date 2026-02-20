@@ -101,6 +101,7 @@ export class WelcomeStep implements OnboardingStepHandler {
       data: {
         userName: userName?.trim() || "User",
         selectedMode: "advanced",
+        channelSetupAvailable: true,
         copy: {
           headline: copy.headline,
           subtitle: copy.subtitle,

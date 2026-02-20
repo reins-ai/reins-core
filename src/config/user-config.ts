@@ -35,6 +35,9 @@ export interface UserConfig {
     host: string;
     port: number;
   };
+  tasks?: {
+    maxConcurrentWorkers?: number;
+  };
   setupComplete: boolean;
 }
 
@@ -110,6 +113,14 @@ function normalizeSearchProviderPreference(value: unknown): SearchProviderPrefer
   return "brave";
 }
 
+function normalizeMaxConcurrentWorkers(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+
+  return value;
+}
+
 function normalizeConfig(value: unknown): UserConfig {
   if (!isRecord(value)) {
     return {
@@ -141,6 +152,8 @@ function normalizeConfig(value: unknown): UserConfig {
             : undefined,
         }
       : undefined;
+  const tasksCandidate = isRecord(value.tasks) ? value.tasks : null;
+  const maxConcurrentWorkers = normalizeMaxConcurrentWorkers(tasksCandidate?.maxConcurrentWorkers);
 
   return {
     name: typeof value.name === "string" ? value.name : "",
@@ -160,6 +173,7 @@ function normalizeConfig(value: unknown): UserConfig {
         ? daemonCandidate.port
         : DEFAULT_DAEMON_PORT,
     },
+    tasks: maxConcurrentWorkers === undefined ? undefined : { maxConcurrentWorkers },
     setupComplete: value.setupComplete === true,
   };
 }
@@ -170,6 +184,9 @@ function mergeUserConfig(existing: UserConfig | null, updates: Partial<UserConfi
   const nextActiveProvider = updates.provider?.activeProvider ?? base.provider.activeProvider;
   const nextSearchProvider = normalizeSearchProviderPreference(
     updates.provider?.search?.provider ?? base.provider.search?.provider ?? "brave",
+  );
+  const nextMaxConcurrentWorkers = normalizeMaxConcurrentWorkers(
+    updates.tasks?.maxConcurrentWorkers ?? base.tasks?.maxConcurrentWorkers,
   );
 
   return {
@@ -186,6 +203,7 @@ function mergeUserConfig(existing: UserConfig | null, updates: Partial<UserConfi
       host: updates.daemon?.host ?? base.daemon.host,
       port: updates.daemon?.port ?? base.daemon.port,
     },
+    tasks: nextMaxConcurrentWorkers === undefined ? undefined : { maxConcurrentWorkers: nextMaxConcurrentWorkers },
     setupComplete: updates.setupComplete ?? base.setupComplete,
   };
 }

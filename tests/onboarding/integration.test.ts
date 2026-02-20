@@ -336,6 +336,7 @@ describe("Onboarding Integration", () => {
       expect(step1CompleteEvent).toBeDefined();
       if (step1CompleteEvent?.type === "stepComplete") {
         expect(step1CompleteEvent.data?.selectedMode).toBe("advanced");
+        expect(step1CompleteEvent.data?.channelSetupAvailable).toBe(true);
       }
 
       // Step 2: Daemon install — advanced mode exposes install path options

@@ -157,6 +157,7 @@ describe("WelcomeStep", () => {
       expect(result.status).toBe("completed");
       expect(result.data?.userName).toBe("User");
       expect(result.data?.selectedMode).toBe("advanced");
+      expect(result.data?.channelSetupAvailable).toBe(true);
     });
 
     it("captures real name from reader", async () => {
