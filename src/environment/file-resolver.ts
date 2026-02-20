@@ -36,6 +36,7 @@ const DOCUMENT_FILENAMES: Record<EnvironmentDocument, string> = {
   TOOLS: "TOOLS.md",
   BOUNDARIES: "BOUNDARIES.md",
   MEMORY: "MEMORY.md",
+  PERSONA: "PERSONA.yaml",
 };
 
 /**

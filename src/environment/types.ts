@@ -8,6 +8,7 @@ export const ENVIRONMENT_DOCUMENTS = [
   "TOOLS",
   "BOUNDARIES",
   "MEMORY",
+  "PERSONA",
 ] as const;
 
 /**
@@ -17,6 +18,7 @@ export const ENVIRONMENT_DOCUMENTS = [
  */
 export const OPTIONAL_ENVIRONMENT_DOCUMENTS: ReadonlySet<EnvironmentDocument> = new Set([
   "MEMORY",
+  "PERSONA",
 ]);
 
 export type EnvironmentDocument = (typeof ENVIRONMENT_DOCUMENTS)[number];

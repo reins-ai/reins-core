@@ -1,5 +1,11 @@
+import yaml from "js-yaml";
+
 import type { ToolDefinition } from "../types";
 import { parseBoundariesPolicy } from "../environment/boundaries-policy";
+import {
+  parsePersonaYaml,
+  type Persona as PersonaYamlConfig,
+} from "../environment/persona";
 import { parseToolsPolicy } from "../environment/tools-policy";
 import type { EnvironmentDocumentMap } from "../environment/types";
 import { formatSkillIndex } from "../skills/prompt-formatter";
@@ -35,8 +41,13 @@ export class SystemPromptBuilder {
       "BOUNDARIES",
     );
     const userDocument = this.readDocumentWithBudget(options.environmentDocuments, "USER");
+    const personaDocument = options.environmentDocuments.PERSONA;
 
-    const identitySection = this.buildIdentitySection(options.persona, personalityDocument);
+    const identitySection = this.buildIdentitySection(
+      options.persona,
+      personalityDocument,
+      personaDocument,
+    );
     if (identitySection) {
       sections.push(identitySection);
     }
@@ -136,12 +147,100 @@ export class SystemPromptBuilder {
     return sections.join("\n\n");
   }
 
-  private buildIdentitySection(persona: Persona, personalityDocument?: string): string {
+  private buildIdentitySection(
+    persona: Persona,
+    personalityDocument?: string,
+    personaYamlContent?: string,
+  ): string {
+    const identitySource = personalityDocument?.trim().length
+      ? personalityDocument
+      : persona.systemPrompt.trim();
+    const identityWithPersona = this.injectPersonaConfigIntoIdentity(identitySource, personaYamlContent);
+
     if (personalityDocument && personalityDocument.length > 0) {
-      return ["## Identity", personalityDocument].join("\n");
+      return ["## Identity", identityWithPersona].join("\n");
     }
 
-    return persona.systemPrompt.trim();
+    return identityWithPersona;
+  }
+
+  private injectPersonaConfigIntoIdentity(identity: string, personaYamlContent?: string): string {
+    const personaConfig = this.readPersonaConfig(personaYamlContent);
+    if (!personaConfig) {
+      return identity;
+    }
+
+    const lines: string[] = [];
+
+    if (personaConfig.hasExplicitName) {
+      lines.push(`Your name is ${personaConfig.parsed.name}.`);
+    }
+
+    lines.push(identity);
+
+    if (personaConfig.hasExplicitBackstory && personaConfig.parsed.backstory) {
+      lines.push(personaConfig.parsed.backstory);
+    }
+
+    return lines.join("\n");
+  }
+
+  private readPersonaConfig(personaYamlContent?: string):
+    | {
+        parsed: PersonaYamlConfig;
+        hasExplicitName: boolean;
+        hasExplicitBackstory: boolean;
+      }
+    | undefined {
+    const normalizedContent = personaYamlContent?.trim();
+    if (!normalizedContent || normalizedContent.length === 0) {
+      return undefined;
+    }
+
+    const parsedYaml = this.tryParseYamlObject(normalizedContent);
+    if (!parsedYaml) {
+      return undefined;
+    }
+
+    const parsed = parsePersonaYaml(normalizedContent);
+    if (!parsed.ok) {
+      return undefined;
+    }
+
+    const hasExplicitName = this.readNonEmptyString(parsedYaml["name"]) !== undefined;
+    const hasExplicitBackstory = this.readNonEmptyString(parsedYaml["backstory"]) !== undefined;
+
+    if (!hasExplicitName && !hasExplicitBackstory) {
+      return undefined;
+    }
+
+    return {
+      parsed: parsed.value,
+      hasExplicitName,
+      hasExplicitBackstory,
+    };
+  }
+
+  private tryParseYamlObject(content: string): Record<string, unknown> | undefined {
+    try {
+      const parsed = yaml.load(content);
+      if (typeof parsed !== "object" || parsed === null) {
+        return undefined;
+      }
+
+      return parsed as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private readNonEmptyString(value: unknown): string | undefined {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : undefined;
   }
 
   private buildEnvironmentDocumentSection(header: string, content?: string): string | undefined {

@@ -36,6 +36,7 @@ const DOCUMENT_FILENAMES: Record<string, string> = {
   TOOLS: "TOOLS.md",
   BOUNDARIES: "BOUNDARIES.md",
   MEMORY: "MEMORY.md",
+  PERSONA: "PERSONA.yaml",
 };
 
 const createdDirectories: string[] = [];
@@ -85,6 +86,10 @@ describe("MEMORY.md in environment types", () => {
 
   it("marks MEMORY as an optional document", () => {
     expect(OPTIONAL_ENVIRONMENT_DOCUMENTS.has("MEMORY")).toBe(true);
+  });
+
+  it("marks PERSONA as an optional document", () => {
+    expect(OPTIONAL_ENVIRONMENT_DOCUMENTS.has("PERSONA")).toBe(true);
   });
 
   it("does not mark required documents as optional", () => {
