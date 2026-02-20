@@ -3,6 +3,7 @@ export * from "./calendar";
 export * from "./calendar-watcher";
 export * from "./date-parser";
 export * from "./executor";
+export * from "./schedule-confirmation";
 export * from "./execution/policy";
 export * from "./memory-tool";
 export * from "./notes";

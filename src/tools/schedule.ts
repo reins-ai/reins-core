@@ -3,7 +3,9 @@ import { evaluateCronPolicy, type CronPolicyResult } from "../cron/policy";
 import type { CronJobDefinition, CronJobPayload } from "../cron/types";
 import { CronError } from "../cron/types";
 import { err, ok, type Result } from "../result";
+import type { NlTimeResult } from "./date-parser";
 import { parseNlTime } from "./date-parser";
+import { formatScheduleConfirmation } from "./schedule-confirmation";
 
 type ScheduleAction = "create" | "update" | "delete" | "list" | "get" | "pause" | "resume";
 
@@ -97,7 +99,9 @@ export class ScheduleTool {
     }
 
     let message = "Schedule created";
-    if (resolvedSchedule.value.note) {
+    if (resolvedSchedule.value.nlResult) {
+      message += `. ${formatScheduleConfirmation(resolvedSchedule.value.nlResult)}`;
+    } else if (resolvedSchedule.value.note) {
       message += `. ${resolvedSchedule.value.note}`;
     }
 
@@ -124,14 +128,14 @@ export class ScheduleTool {
     }
 
     let resolvedSchedule: string | undefined;
-    let scheduleNote: string | undefined;
+    let resolvedNlResult: NlTimeResult | undefined;
     if (action.schedule) {
       const resolved = this.resolveSchedule(action.schedule);
       if (!resolved.ok) {
         return resolved;
       }
       resolvedSchedule = resolved.value.cron;
-      scheduleNote = resolved.value.note;
+      resolvedNlResult = resolved.value.nlResult;
     }
 
     const hasPayloadUpdate = action.taskAction !== undefined || action.taskParameters !== undefined;
@@ -165,8 +169,8 @@ export class ScheduleTool {
     }
 
     let message = "Schedule updated";
-    if (scheduleNote) {
-      message += `. ${scheduleNote}`;
+    if (resolvedNlResult) {
+      message += `. ${formatScheduleConfirmation(resolvedNlResult)}`;
     }
 
     return ok({
@@ -272,7 +276,7 @@ export class ScheduleTool {
 
   private resolveSchedule(
     schedule: string,
-  ): Result<{ cron: string; note?: string }, CronError> {
+  ): Result<{ cron: string; note?: string; nlResult?: NlTimeResult }, CronError> {
     if (isCronExpression(schedule)) {
       return ok({ cron: schedule });
     }
@@ -292,7 +296,7 @@ export class ScheduleTool {
         ? `Note: schedule interpreted as '${parsed.humanReadable}' (low confidence)`
         : undefined;
 
-    return ok({ cron: parsed.cron, note });
+    return ok({ cron: parsed.cron, note, nlResult: parsed });
   }
 
   private async evaluateAndApprove(payload: CronJobPayload): Promise<Result<CronPolicyResult, CronError>> {

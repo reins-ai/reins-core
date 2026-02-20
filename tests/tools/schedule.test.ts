@@ -87,7 +87,9 @@ describe("ScheduleTool", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.success).toBe(true);
-        expect(result.value.message).toBe("Schedule created");
+        expect(result.value.message).toStartWith("Schedule created.");
+        expect(result.value.message).toContain("I'll do this every weekday morning");
+        expect(result.value.message).toContain("Say 'cancel task' to stop it.");
       }
       expect(scheduler.lastCreateInput?.schedule).toBe("0 8 * * 1-5");
     });
@@ -176,8 +178,8 @@ describe("ScheduleTool", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value.message).toContain("Note:");
-        expect(result.value.message).toContain("low confidence");
+        expect(result.value.message).toContain("Note: I interpreted this as");
+        expect(result.value.message).toContain("let me know if that's wrong.");
       }
     });
 
