@@ -1,9 +1,15 @@
+import type { Result } from "../result";
 import { generateId } from "../conversation/id";
 import type {
   CreateOptions,
   SendMessageResult,
 } from "../conversation/manager";
 import { ChannelError } from "./errors";
+import {
+  chunkTelegramMessage,
+  formatForDiscord,
+  formatForTelegram,
+} from "./formatting";
 import type {
   Channel,
   ChannelAttachment,
@@ -15,6 +21,22 @@ import type {
 
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5";
+
+/**
+ * Map a MIME type to a short file extension for transcription file names.
+ */
+function mimeExtensionFromMime(mimeType: string): string {
+  const map: Record<string, string> = {
+    "audio/ogg": "ogg",
+    "audio/webm": "webm",
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/opus": "opus",
+  };
+  return map[mimeType] ?? "bin";
+}
 
 export interface ChannelRouterConversationManager {
   create(options: CreateOptions): Promise<{ id: string }>;
@@ -42,6 +64,16 @@ export interface ChannelRouteContext {
   destinationChannelId: string;
 }
 
+/**
+ * Async function that transcribes an audio buffer and returns the text.
+ * Injected into the router to enable voice message transcription.
+ */
+export type TranscribeFn = (
+  buffer: ArrayBuffer,
+  fileName: string,
+  mimeType: string,
+) => Promise<Result<string, ChannelError>>;
+
 export interface ChannelRouterOptions {
   conversationManager: ChannelRouterConversationManager;
   channelRegistry?: ChannelRouterChannelRegistry;
@@ -49,6 +81,8 @@ export interface ChannelRouterOptions {
   defaultProvider?: string;
   defaultModel?: string;
   nowFn?: () => Date;
+  /** Optional transcription function for voice messages. */
+  transcribeFn?: TranscribeFn;
 }
 
 export interface RouteInboundResult extends SendMessageResult {
@@ -76,6 +110,7 @@ export class ChannelRouter {
   private readonly defaultProvider: string;
   private readonly defaultModel: string;
   private readonly nowFn: () => Date;
+  private readonly transcribeFn?: TranscribeFn;
 
   private readonly routeContextByConversationId = new Map<string, ChannelRouteContext>();
   private readonly destinationByChannelId = new Map<string, string>();
@@ -87,16 +122,34 @@ export class ChannelRouter {
     this.defaultProvider = options.defaultProvider ?? DEFAULT_PROVIDER;
     this.defaultModel = options.defaultModel ?? DEFAULT_MODEL;
     this.nowFn = options.nowFn ?? (() => new Date());
+    this.transcribeFn = options.transcribeFn;
   }
 
   /**
+   * Guidance message returned when voice transcription is unavailable.
+   */
+  static readonly VOICE_GUIDANCE_MESSAGE =
+    "Voice messages are not supported yet. " +
+    "Add a GROQ_API_KEY to enable voice transcription.";
+
+  /**
    * Routes an inbound channel message into the unified conversation context.
+   *
+   * When the message contains a voice payload without text or transcript,
+   * the router attempts transcription via the injected `transcribeFn`.
+   * If no transcription function is configured, a guidance reply is sent
+   * back to the source channel.
    */
   public async routeInbound(
     channelMessage: ChannelMessage,
     sourceChannel: Channel,
   ): Promise<RouteInboundResult> {
-    const content = this.toConversationContent(channelMessage);
+    const message = await this.resolveVoiceContent(
+      channelMessage,
+      sourceChannel,
+    );
+
+    const content = this.toConversationContent(message);
     if (content.length === 0) {
       throw new ChannelError("Cannot route inbound message without text content");
     }
@@ -168,8 +221,7 @@ export class ChannelRouter {
     }
 
     if (!this.broadcastResponses) {
-      const outbound = this.toOutboundChannelMessage(agentResponse, sourceChannel, sourceDestination);
-      await sourceChannel.send(outbound);
+      await this.sendToChannel(agentResponse, sourceChannel, sourceDestination);
       return;
     }
 
@@ -186,11 +238,111 @@ export class ChannelRouter {
         continue;
       }
 
-      const outbound = this.toOutboundChannelMessage(agentResponse, channel, destination);
-      sendTasks.push(channel.send(outbound));
+      sendTasks.push(this.sendToChannel(agentResponse, channel, destination));
     }
 
     await Promise.all(sendTasks);
+  }
+
+  /**
+   * Applies platform-specific formatting and sends the message to a channel.
+   * Telegram messages are formatted as MarkdownV2 and chunked at 4096 chars.
+   * Discord messages are formatted as Discord-compatible markdown.
+   */
+  private async sendToChannel(
+    agentResponse: AgentResponse,
+    channel: Channel,
+    destinationChannelId: string,
+  ): Promise<void> {
+    const text = agentResponse.text ?? "";
+    const platform = channel.config.platform;
+
+    if (platform === "telegram" && text.length > 0) {
+      const formatted = formatForTelegram(text);
+      const chunks = chunkTelegramMessage(formatted);
+
+      for (const chunk of chunks) {
+        const outbound = this.toOutboundChannelMessage(
+          { ...agentResponse, text: chunk },
+          channel,
+          destinationChannelId,
+        );
+        await channel.send(outbound);
+      }
+      return;
+    }
+
+    if (platform === "discord" && text.length > 0) {
+      const formatted = formatForDiscord(text);
+      const outbound = this.toOutboundChannelMessage(
+        { ...agentResponse, text: formatted },
+        channel,
+        destinationChannelId,
+      );
+      await channel.send(outbound);
+      return;
+    }
+
+    const outbound = this.toOutboundChannelMessage(
+      agentResponse,
+      channel,
+      destinationChannelId,
+    );
+    await channel.send(outbound);
+  }
+
+  /**
+   * If the message has a voice payload but no text or transcript,
+   * attempt transcription via the injected function. When transcription
+   * is unavailable or fails, throw a ChannelError with guidance text
+   * so the conversation bridge can relay it to the user.
+   */
+  private async resolveVoiceContent(
+    channelMessage: ChannelMessage,
+    _sourceChannel: Channel,
+  ): Promise<ChannelMessage> {
+    const hasText =
+      (channelMessage.text?.trim().length ?? 0) > 0;
+    const hasTranscript =
+      (channelMessage.voice?.transcript?.trim().length ?? 0) > 0;
+
+    if (!channelMessage.voice || hasText || hasTranscript) {
+      return channelMessage;
+    }
+
+    if (!this.transcribeFn) {
+      throw new ChannelError(ChannelRouter.VOICE_GUIDANCE_MESSAGE);
+    }
+
+    const voice = channelMessage.voice;
+    const mimeType = voice.mimeType ?? "audio/ogg";
+    const fileName = "voice." + mimeExtensionFromMime(mimeType);
+
+    // Build a minimal buffer from the voice URL placeholder.
+    // In production the caller (daemon service) downloads the file
+    // before invoking the router. The transcribeFn receives the raw
+    // audio buffer that was already downloaded by handleVoiceMessage.
+    // Here we pass through the buffer that the caller attached to
+    // platformData, or an empty buffer as a fallback.
+    const audioBuffer =
+      voice.platformData?.audioBuffer instanceof ArrayBuffer
+        ? voice.platformData.audioBuffer
+        : new ArrayBuffer(0);
+
+    const result = await this.transcribeFn(audioBuffer, fileName, mimeType);
+    if (!result.ok) {
+      throw new ChannelError(
+        `Voice transcription failed: ${result.error.message}`,
+      );
+    }
+
+    return {
+      ...channelMessage,
+      voice: {
+        ...voice,
+        transcript: result.value,
+      },
+    };
   }
 
   private toConversationContent(channelMessage: ChannelMessage): string {

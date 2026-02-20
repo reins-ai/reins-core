@@ -7,5 +7,6 @@ export * from "./registry";
 export * from "./router";
 export * from "./storage";
 export * from "./telegram";
+export * from "./transcription";
 export * from "./types";
 export * from "./voice";

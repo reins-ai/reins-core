@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import { formatForDiscord, formatForTelegram } from "../../src/channels/formatting";
 import { ChannelRouter, type ChannelRouterConversationManager } from "../../src/channels/router";
 import type {
   Channel,
@@ -203,7 +204,8 @@ describe("ChannelRouter", () => {
     expect(outbound?.platform).toBe("telegram");
     expect(outbound?.channelId).toBe("chat-456");
     expect(outbound?.conversationId).toBe("conv-thread-1");
-    expect(outbound?.text).toBe("I can help with that.");
+    // Text is now formatted as Telegram MarkdownV2 (period escaped)
+    expect(outbound?.text).toBe(formatForTelegram("I can help with that."));
     expect(outbound?.sender).toEqual({
       id: "reins-agent",
       displayName: "Reins",
@@ -307,5 +309,131 @@ describe("ChannelRouter", () => {
     expect(disconnected.sentMessages).toHaveLength(0);
     expect(telegram.sentMessages[0]?.channelId).toBe("tg-chat");
     expect(discord.sentMessages[0]?.channelId).toBe("dc-channel");
+  });
+
+  it("applies Telegram MarkdownV2 formatting to outbound messages", async () => {
+    const { manager } = createMockConversationManager();
+    const channel = createMockChannel({ id: "tg-1", platform: "telegram" });
+    const router = new ChannelRouter({ conversationManager: manager });
+
+    await router.routeInbound(
+      createInboundMessage({
+        conversationId: "conv-fmt-tg",
+        channelId: "chat-tg",
+        text: "hi",
+      }),
+      channel,
+    );
+
+    const rawText = "Hello. This is **bold** and *italic*!";
+    await router.routeOutbound(
+      { conversationId: "conv-fmt-tg", text: rawText },
+      channel,
+    );
+
+    expect(channel.sentMessages).toHaveLength(1);
+    const sent = channel.sentMessages[0]!;
+    expect(sent.text).toBe(formatForTelegram(rawText));
+    expect(sent.text).not.toBe(rawText);
+  });
+
+  it("applies Discord formatting to outbound messages", async () => {
+    const { manager } = createMockConversationManager();
+    const channel = createMockChannel({ id: "dc-1", platform: "discord" });
+    const router = new ChannelRouter({ conversationManager: manager });
+
+    await router.routeInbound(
+      createInboundMessage({
+        id: "dc-in-1",
+        conversationId: "conv-fmt-dc",
+        channelId: "dc-room",
+        platform: "discord",
+        text: "hi",
+      }),
+      channel,
+    );
+
+    const rawText = 'Check <a href="https://example.com">this link</a> out';
+    await router.routeOutbound(
+      { conversationId: "conv-fmt-dc", text: rawText },
+      channel,
+    );
+
+    expect(channel.sentMessages).toHaveLength(1);
+    const sent = channel.sentMessages[0]!;
+    expect(sent.text).toBe(formatForDiscord(rawText));
+    expect(sent.text).toContain("[this link](https://example.com)");
+  });
+
+  it("chunks long Telegram messages into multiple send calls", async () => {
+    const { manager } = createMockConversationManager();
+    const channel = createMockChannel({ id: "tg-chunk", platform: "telegram" });
+    const router = new ChannelRouter({ conversationManager: manager });
+
+    await router.routeInbound(
+      createInboundMessage({
+        conversationId: "conv-chunk",
+        channelId: "chat-chunk",
+        text: "start",
+      }),
+      channel,
+    );
+
+    // Create a message that will exceed 4096 chars after formatting
+    const longText = "x".repeat(5000);
+    await router.routeOutbound(
+      { conversationId: "conv-chunk", text: longText },
+      channel,
+    );
+
+    expect(channel.sentMessages.length).toBeGreaterThan(1);
+    for (const msg of channel.sentMessages) {
+      expect(msg.text!.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  it("sends single message for short Telegram text", async () => {
+    const { manager } = createMockConversationManager();
+    const channel = createMockChannel({ id: "tg-short", platform: "telegram" });
+    const router = new ChannelRouter({ conversationManager: manager });
+
+    await router.routeInbound(
+      createInboundMessage({
+        conversationId: "conv-short",
+        channelId: "chat-short",
+        text: "hi",
+      }),
+      channel,
+    );
+
+    await router.routeOutbound(
+      { conversationId: "conv-short", text: "Short reply" },
+      channel,
+    );
+
+    expect(channel.sentMessages).toHaveLength(1);
+  });
+
+  it("sends empty-text messages without formatting", async () => {
+    const { manager } = createMockConversationManager();
+    const channel = createMockChannel({ id: "tg-empty", platform: "telegram" });
+    const router = new ChannelRouter({ conversationManager: manager });
+
+    await router.routeInbound(
+      createInboundMessage({
+        conversationId: "conv-empty",
+        channelId: "chat-empty",
+        text: "hi",
+      }),
+      channel,
+    );
+
+    await router.routeOutbound(
+      { conversationId: "conv-empty", text: "" },
+      channel,
+    );
+
+    expect(channel.sentMessages).toHaveLength(1);
+    expect(channel.sentMessages[0]!.text).toBe("");
   });
 });

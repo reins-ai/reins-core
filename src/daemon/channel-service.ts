@@ -337,6 +337,14 @@ export class ChannelDaemonService {
   }
 
   /**
+   * Verify a channel is reachable and return its current health status.
+   * Serves as a lightweight connectivity check for the /channels/:id/test endpoint.
+   */
+  public testChannel(channelId: string): ChannelHealthStatus {
+    return this.buildChannelHealthStatus(this.requireChannel(channelId));
+  }
+
+  /**
    * Return aggregate channel health counters for daemon status views.
    */
   public getStatusSnapshot(): ChannelServiceStatusSnapshot {

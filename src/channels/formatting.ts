@@ -1,6 +1,11 @@
 import type { DiscordEmbed } from "./discord/types";
 
 /**
+ * Maximum character length for a single Telegram message.
+ */
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4_096;
+
+/**
  * Maximum character length for a single Discord message.
  */
 const DISCORD_MAX_MESSAGE_LENGTH = 2_000;
@@ -276,6 +281,44 @@ export function formatForTelegram(markdown: string): string {
   }
 
   return converted.join("");
+}
+
+/**
+ * Split a Telegram message into chunks that respect the 4096-character limit.
+ *
+ * Splits prefer line boundaries when possible to avoid breaking
+ * mid-sentence. Falls back to hard split at the limit.
+ */
+export function chunkTelegramMessage(
+  text: string,
+  maxLength: number = TELEGRAM_MAX_MESSAGE_LENGTH,
+): string[] {
+  if (text.length <= maxLength) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining);
+      break;
+    }
+
+    let splitIndex = remaining.lastIndexOf("\n", maxLength);
+    if (splitIndex <= 0 || splitIndex < maxLength * 0.5) {
+      splitIndex = remaining.lastIndexOf(" ", maxLength);
+    }
+    if (splitIndex <= 0 || splitIndex < maxLength * 0.5) {
+      splitIndex = maxLength;
+    }
+
+    chunks.push(remaining.slice(0, splitIndex));
+    remaining = remaining.slice(splitIndex).replace(/^\n/, "");
+  }
+
+  return chunks;
 }
 
 // ---------------------------------------------------------------------------
