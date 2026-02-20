@@ -37,7 +37,10 @@ export {
 } from "./document-indexer";
 export {
   DocumentSemanticSearch,
+  HybridDocumentSearch,
+  HybridDocumentSearchError,
   type DocumentSearchOptions,
+  type HybridDocumentSearchOptions,
   type RankedChunk,
 } from "./document-semantic-search";
 export {
