@@ -59,6 +59,8 @@ import type { BrowserDaemonService } from "../browser/browser-daemon-service";
 import { BrowserTool } from "../browser/tools/browser-tool";
 import { BrowserSnapshotTool } from "../browser/tools/browser-snapshot-tool";
 import { BrowserActTool } from "../browser/tools/browser-act-tool";
+import { BrowserDebugTool } from "../browser/tools/browser-debug-tool";
+import { DebugEventBuffer } from "../browser/debug-event-buffer";
 import { ElementRefRegistry } from "../browser/element-ref-registry";
 import { SnapshotEngine } from "../browser/snapshot";
 import { BROWSER_SYSTEM_PROMPT } from "../browser/system-prompt";
@@ -2176,8 +2178,15 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.ensureToolDefinition(actTool.definition);
     }
 
+    if (!toolRegistry.has("browser_debug")) {
+      const debugBuffer = new DebugEventBuffer();
+      const debugTool = new BrowserDebugTool(this.browserService, debugBuffer);
+      toolRegistry.register(debugTool);
+      this.ensureToolDefinition(debugTool.definition);
+    }
+
     log("info", "Browser tools registered", {
-      tools: ["browser", "browser_snapshot", "browser_act"],
+      tools: ["browser", "browser_snapshot", "browser_act", "browser_debug"],
     });
   }
 
