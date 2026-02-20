@@ -175,6 +175,150 @@ describe("RemindersTool", () => {
     expect(result.result).toEqual({ action: "complete_reminder", reminderId: "rem-9", success: true });
   });
 
+  it("creates reminder with 'tomorrow at 3pm' NL due date", async () => {
+    let capturedDueAt: string | undefined;
+    const tool = new RemindersTool(
+      createMockBackendClient({
+        async createReminder(params) {
+          capturedDueAt = params.dueAt;
+          return {
+            id: "rem-nl-1",
+            title: params.title,
+            dueAt: params.dueAt,
+          };
+        },
+      }),
+    );
+
+    const result = await tool.execute(
+      {
+        callId: "call-nl-tomorrow",
+        action: "create",
+        title: "Doctor appointment",
+        dueAt: "tomorrow at 3pm",
+      },
+      toolContext,
+    );
+
+    expect(result.error).toBeUndefined();
+    const payload = result.result as { action: string; reminder: ReminderData };
+    expect(payload.action).toBe("create_reminder");
+    expect(capturedDueAt).toBeDefined();
+
+    const parsed = new Date(capturedDueAt as string);
+    expect(parsed.getTime()).not.toBeNaN();
+
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(15, 0, 0, 0);
+    expect(parsed.getFullYear()).toBe(tomorrow.getFullYear());
+    expect(parsed.getMonth()).toBe(tomorrow.getMonth());
+    expect(parsed.getDate()).toBe(tomorrow.getDate());
+    expect(parsed.getHours()).toBe(15);
+  });
+
+  it("creates reminder with 'in 30 minutes' NL due date", async () => {
+    const before = Date.now();
+    let capturedDueAt: string | undefined;
+    const tool = new RemindersTool(
+      createMockBackendClient({
+        async createReminder(params) {
+          capturedDueAt = params.dueAt;
+          return {
+            id: "rem-nl-2",
+            title: params.title,
+            dueAt: params.dueAt,
+          };
+        },
+      }),
+    );
+
+    const result = await tool.execute(
+      {
+        callId: "call-nl-30min",
+        action: "create",
+        title: "Take medicine",
+        dueAt: "in 30 minutes",
+      },
+      toolContext,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(capturedDueAt).toBeDefined();
+
+    const parsed = new Date(capturedDueAt as string).getTime();
+    const thirtyMinMs = 30 * 60_000;
+    expect(parsed).toBeGreaterThanOrEqual(before + thirtyMinMs - 1_000);
+    expect(parsed).toBeLessThanOrEqual(Date.now() + thirtyMinMs + 1_000);
+  });
+
+  it("passes ISO date strings through unchanged", async () => {
+    let capturedDueAt: string | undefined;
+    const isoDate = "2026-03-15T14:30:00.000Z";
+    const tool = new RemindersTool(
+      createMockBackendClient({
+        async createReminder(params) {
+          capturedDueAt = params.dueAt;
+          return {
+            id: "rem-iso",
+            title: params.title,
+            dueAt: params.dueAt,
+          };
+        },
+      }),
+    );
+
+    const result = await tool.execute(
+      {
+        callId: "call-iso",
+        action: "create",
+        title: "Meeting",
+        dueAt: isoDate,
+      },
+      toolContext,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(capturedDueAt).toBe(isoDate);
+  });
+
+  it("returns clear error for unrecognized NL due date", async () => {
+    const tool = new RemindersTool(createMockBackendClient());
+
+    const result = await tool.execute(
+      {
+        callId: "call-bad-nl",
+        action: "create",
+        title: "Something",
+        dueAt: "when pigs fly",
+      },
+      toolContext,
+    );
+
+    expect(result.error).toBe(
+      "Could not parse due date: 'when pigs fly'. Please use an ISO date string or a recognized time phrase.",
+    );
+  });
+
+  it("returns clear error for recurring NL phrase used as due date", async () => {
+    const tool = new RemindersTool(createMockBackendClient());
+
+    const result = await tool.execute(
+      {
+        callId: "call-recurring",
+        action: "create",
+        title: "Standup",
+        dueAt: "every morning",
+      },
+      toolContext,
+    );
+
+    expect(result.error).toBe(
+      "Recurring reminders aren't supported. Use the schedule tool instead (e.g. 'every Monday at 9:00 AM').",
+    );
+  });
+
   it("returns validation errors for invalid arguments", async () => {
     const tool = new RemindersTool(createMockBackendClient());
 
@@ -198,7 +342,9 @@ describe("RemindersTool", () => {
       },
       toolContext,
     );
-    expect(invalidDueAt.error).toBe("Unable to parse due date/time from 'sometime soon'.");
+    expect(invalidDueAt.error).toBe(
+      "Could not parse due date: 'sometime soon'. Please use an ISO date string or a recognized time phrase.",
+    );
   });
 });
 

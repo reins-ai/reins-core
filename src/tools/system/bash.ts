@@ -217,26 +217,6 @@ export function buildExecutionEnv(baseEnv: NodeJS.ProcessEnv = process.env): Nod
   return env;
 }
 
-function toOutputString(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (value instanceof Buffer) {
-    return value.toString("utf8");
-  }
-
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value).toString("utf8");
-  }
-
-  if (ArrayBuffer.isView(value)) {
-    const view = value as ArrayBufferView;
-    return Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString("utf8");
-  }
-
-  return "";
-}
 
 async function runCommand(options: {
   command: string;
@@ -251,10 +231,10 @@ async function runCommand(options: {
   aborted: boolean;
   timedOut: boolean;
 }> {
-  const child = spawn(options.command, {
+  // Use setsid to make the shell a new process group leader so that
+  // process.kill(-pid, signal) terminates the entire group (background children included).
+  const child = spawn("setsid", ["/bin/sh", "-c", options.command], {
     cwd: options.cwd,
-    shell: true,
-    detached: true,
     env: buildExecutionEnv(),
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -267,52 +247,33 @@ async function runCommand(options: {
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const appendChunk = (current: string, chunk: unknown): string => {
+  const appendChunk = (current: string, chunk: Buffer): string => {
     if (current.length >= MAX_BUFFER_BYTES) {
       return current;
     }
-
     const remaining = MAX_BUFFER_BYTES - current.length;
-    const chunkString = toOutputString(chunk);
-    if (chunkString.length <= remaining) {
-      return `${current}${chunkString}`;
-    }
-
-    return `${current}${chunkString.slice(0, remaining)}`;
+    const s = chunk.toString("utf8");
+    return current + (s.length <= remaining ? s : s.slice(0, remaining));
   };
 
-  const drainStream = (stream: { read: () => unknown } | null, current: string): string => {
-    if (!stream) {
-      return current;
-    }
-
-    let next = current;
-    let chunk: unknown;
-    while ((chunk = stream.read()) !== null) {
-      next = appendChunk(next, chunk);
-    }
-
-    return next;
-  };
-
-  child.stdout.on("readable", () => {
-    stdout = drainStream(child.stdout, stdout);
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout = appendChunk(stdout, chunk);
   });
-  child.stderr.on("readable", () => {
-    stderr = drainStream(child.stderr, stderr);
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = appendChunk(stderr, chunk);
   });
 
-  const killProcessGroup = (signal: NodeJS.Signals): void => {
+  const killProcessGroup = (sig: NodeJS.Signals): void => {
     if (child.pid) {
       try {
-        process.kill(-child.pid, signal);
+        process.kill(-child.pid, sig);
         return;
       } catch {
-        // Process group kill failed (e.g. already exited); fall through
+        // Process group not found or already exited; fall through to direct kill
       }
     }
     try {
-      child.kill(signal);
+      child.kill(sig);
     } catch {
       // Child already exited
     }
@@ -355,31 +316,21 @@ async function runCommand(options: {
   return await new Promise((resolve, reject) => {
     child.once("error", (error) => {
       settled = true;
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-      }
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
       options.abortSignal?.removeEventListener("abort", abortListener);
       reject(error);
     });
 
     child.once("close", (code, signal) => {
       settled = true;
-      stdout = drainStream(child.stdout, stdout);
-      stderr = drainStream(child.stderr, stderr);
 
       if (options.abortSignal?.aborted && !timedOut) {
         aborted = true;
       }
 
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-      }
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
       options.abortSignal?.removeEventListener("abort", abortListener);
 
       resolve({

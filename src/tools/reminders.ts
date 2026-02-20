@@ -1,5 +1,9 @@
-import { parseRelativeTime } from "./date-parser";
+import type { NlTimeResult } from "./date-parser";
+import { parseNlTime } from "./date-parser";
+import { formatScheduleConfirmation } from "./schedule-confirmation";
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
+
+const ISO_DATE_PREFIX_PATTERN = /^\d{4}-/;
 
 type ReminderPriority = "low" | "medium" | "high" | "urgent";
 type ReminderAction =
@@ -160,15 +164,15 @@ export class RemindersTool implements Tool {
     const priority = this.optionalPriority(args.priority);
     const recurrence = this.optionalObject(args.recurrence, "'recurrence' must be an object.");
 
-    const dueAtTimestamp = parseRelativeTime(dueAtInput);
-    if (dueAtTimestamp === null) {
-      return this.errorResult(callId, `Unable to parse due date/time from '${dueAtInput}'.`);
+    const resolved = this.resolveDueAt(dueAtInput);
+    if ("error" in resolved) {
+      return this.errorResult(callId, resolved.error);
     }
 
     const reminder = await this.backendClient.createReminder({
       title,
       description,
-      dueAt: new Date(dueAtTimestamp).toISOString(),
+      dueAt: resolved.iso,
       priority,
       recurrence,
       conversationId: context.conversationId,
@@ -176,10 +180,16 @@ export class RemindersTool implements Tool {
       workspaceId: context.workspaceId,
     });
 
-    return this.successResult(callId, {
+    const result: Record<string, unknown> = {
       action: "create_reminder",
       reminder,
-    });
+    };
+
+    if (resolved.nlResult) {
+      result.confirmation = formatScheduleConfirmation(resolved.nlResult);
+    }
+
+    return this.successResult(callId, result);
   }
 
   private async listReminders(
@@ -252,6 +262,28 @@ export class RemindersTool implements Tool {
       reminderId,
       success: true,
     });
+  }
+
+  private resolveDueAt(input: string): { iso: string; nlResult?: NlTimeResult } | { error: string } {
+    if (ISO_DATE_PREFIX_PATTERN.test(input)) {
+      return { iso: input };
+    }
+
+    const parsed = parseNlTime(input);
+    if (parsed?.type === "recurring") {
+      return {
+        error:
+          "Recurring reminders aren't supported. Use the schedule tool instead (e.g. 'every Monday at 9:00 AM').",
+      };
+    }
+
+    if (!parsed || !parsed.runAt) {
+      return {
+        error: `Could not parse due date: '${input}'. Please use an ISO date string or a recognized time phrase.`,
+      };
+    }
+
+    return { iso: parsed.runAt.toISOString(), nlResult: parsed };
   }
 
   private normalizeAction(value: unknown): "create" | "list" | "snooze" | "dismiss" | "complete" | null {

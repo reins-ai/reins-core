@@ -230,6 +230,7 @@ async function main() {
     memoryCapabilitiesResolver,
     skillService,
     browserService,
+    cronScheduler: browserCronScheduler,
     conversation: {
       sqliteStorePath: conversationDbPath,
     },

@@ -59,9 +59,13 @@ import type { BrowserDaemonService } from "../browser/browser-daemon-service";
 import { BrowserTool } from "../browser/tools/browser-tool";
 import { BrowserSnapshotTool } from "../browser/tools/browser-snapshot-tool";
 import { BrowserActTool } from "../browser/tools/browser-act-tool";
+import { BrowserDebugTool } from "../browser/tools/browser-debug-tool";
+import { DebugEventBuffer } from "../browser/debug-event-buffer";
 import { ElementRefRegistry } from "../browser/element-ref-registry";
 import { SnapshotEngine } from "../browser/snapshot";
 import { BROWSER_SYSTEM_PROMPT } from "../browser/system-prompt";
+import type { CronScheduler } from "../cron/scheduler";
+import type { CronJobDefinition } from "../cron/types";
 
 import {
   parseListMemoryQueryParams,
@@ -82,9 +86,11 @@ import {
 } from "./environment-api";
 import { getTextContent, serializeContent, type Conversation, type Message } from "../types";
 import { AgentLoop } from "../harness/agent-loop";
+import type { SubAgentPool } from "../harness/sub-agent-pool";
 import { ToolExecutor, ToolRegistry } from "../tools";
 import { EDIT_DEFINITION, GLOB_DEFINITION, GREP_DEFINITION, READ_DEFINITION, WRITE_DEFINITION } from "../tools/builtins";
 import { MemoryTool } from "../tools/memory-tool";
+import { DelegateTool } from "../tools/delegate-tool";
 import { BashTool } from "../tools/system/bash";
 import { executeEdit } from "../tools/system/edit";
 import { GlobTool } from "../tools/system/glob";
@@ -124,6 +130,40 @@ interface ActiveExecution {
   conversationId: string;
   assistantMessageId: string;
   controller: AbortController;
+}
+
+type BrowserSnapshotMode = "full" | "smart" | "lean";
+
+interface BrowserSnapshotRequestOptions {
+  mode: BrowserSnapshotMode;
+  diffMode: boolean;
+  maxTokens?: number;
+}
+
+const SMART_SNAPSHOT_MAX_TOKENS = 8_000;
+const LEAN_SNAPSHOT_MAX_TOKENS = 3_000;
+
+function resolveBrowserSnapshotOptions(modeParam: string | null): BrowserSnapshotRequestOptions {
+  if (modeParam === "full") {
+    return {
+      mode: "full",
+      diffMode: false,
+    };
+  }
+
+  if (modeParam === "lean") {
+    return {
+      mode: "lean",
+      diffMode: true,
+      maxTokens: LEAN_SNAPSHOT_MAX_TOKENS,
+    };
+  }
+
+  return {
+    mode: "smart",
+    diffMode: true,
+    maxTokens: SMART_SNAPSHOT_MAX_TOKENS,
+  };
 }
 
 /**
@@ -412,6 +452,7 @@ export interface DaemonHttpServerOptions {
   channelService?: ChannelDaemonService;
   skillService?: SkillDaemonService;
   browserService?: BrowserDaemonService;
+  cronScheduler?: CronScheduler;
   convexAuthToken?: string;
 }
 
@@ -902,6 +943,10 @@ function createDefaultToolExecutor(
     toolRegistry.register(createWebSearchToolFromCredentials({ credentialStore }));
   }
 
+  if (!toolRegistry.has("delegate")) {
+    toolRegistry.register(new DelegateTool());
+  }
+
   return new ToolExecutor(toolRegistry);
 }
 
@@ -1062,6 +1107,8 @@ export class DaemonHttpServer implements DaemonManagedService {
   private convexClient: ConvexDaemonClient | null = null;
   private readonly skillService: SkillDaemonService | null;
   private readonly browserService: BrowserDaemonService | null;
+  private readonly cronScheduler: CronScheduler | null;
+  private activeSubAgentPool: SubAgentPool | null = null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
     registeredCount: 0,
@@ -1080,6 +1127,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.providedChannelService = options.channelService ?? null;
     this.skillService = options.skillService ?? null;
     this.browserService = options.browserService ?? null;
+    this.cronScheduler = options.cronScheduler ?? null;
     this.configuredConvexAuthToken = normalizeOptionalToken(options.convexAuthToken);
 
     // Create auth services first so credential store is available for tool registration
@@ -1125,6 +1173,21 @@ export class DaemonHttpServer implements DaemonManagedService {
    */
   getConversationManager(): ConversationManager | null {
     return this.conversationManager;
+  }
+
+  /**
+   * Sets the active sub-agent pool for status reporting via /api/agents/status.
+   * Pass null to clear when no pool is active.
+   */
+  setActiveSubAgentPool(pool: SubAgentPool | null): void {
+    this.activeSubAgentPool = pool;
+  }
+
+  /**
+   * Returns the active sub-agent pool, if any.
+   */
+  getActiveSubAgentPool(): SubAgentPool | null {
+    return this.activeSubAgentPool;
   }
 
   /**
@@ -1414,6 +1477,26 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Browser screenshot endpoint
       if (url.pathname === "/api/browser/screenshot" && method === "POST") {
         return this.handleBrowserTakeScreenshot(request, corsHeaders);
+      }
+
+      // Browser snapshot endpoint
+      if (url.pathname === "/api/browser/snapshot" && method === "GET") {
+        return this.handleBrowserSnapshot(url, corsHeaders);
+      }
+
+      // Agent status endpoint
+      if (url.pathname === "/api/agents/status" && method === "GET") {
+        return this.handleAgentsStatus(corsHeaders);
+      }
+
+      // Schedule list endpoint
+      if (url.pathname === "/api/schedule/list" && method === "GET") {
+        return this.handleScheduleList(corsHeaders);
+      }
+
+      // Schedule cancel endpoint
+      if (url.pathname === "/api/schedule/cancel" && method === "POST") {
+        return this.handleScheduleCancel(request, corsHeaders);
       }
 
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
@@ -1842,6 +1925,182 @@ export class DaemonHttpServer implements DaemonManagedService {
     );
   }
 
+  private async handleBrowserSnapshot(
+    url: URL,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.browserService) {
+      return Response.json(
+        { error: "Browser service not available" },
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const options = resolveBrowserSnapshotOptions(url.searchParams.get("mode"));
+    const result = await this.toolExecutor.execute(
+      {
+        id: crypto.randomUUID(),
+        name: "browser_snapshot",
+        arguments: {
+          diff: options.diffMode,
+          ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+        },
+      },
+      {
+        conversationId: "browser-http-snapshot",
+        userId: "daemon",
+      },
+    );
+
+    if (typeof result.error === "string") {
+      const status = result.error.toLowerCase().includes("not running") ? 409 : 500;
+      return Response.json(
+        { error: result.error },
+        { status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const payload = result.result;
+    const content =
+      payload !== null
+      && typeof payload === "object"
+      && typeof (payload as { content?: unknown }).content === "string"
+        ? (payload as { content: string }).content
+        : null;
+
+    if (content === null) {
+      return Response.json(
+        { error: "Snapshot response missing content" },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      {
+        snapshot: content,
+        mode: options.mode,
+        diffMode: options.diffMode,
+        maxTokens: options.maxTokens ?? null,
+      },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private handleAgentsStatus(corsHeaders: Record<string, string>): Response {
+    if (!this.activeSubAgentPool) {
+      return Response.json(
+        { agents: [] },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const states = this.activeSubAgentPool.getAgentStates();
+    const agents = states.map((state) => ({
+      id: state.id,
+      status: state.status,
+      stepsUsed: state.stepsUsed,
+      prompt: state.prompt,
+    }));
+
+    return Response.json(
+      { agents },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleScheduleList(corsHeaders: Record<string, string>): Promise<Response> {
+    if (!this.cronScheduler) {
+      return Response.json(
+        { items: [] },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const result = await this.cronScheduler.listJobs();
+    if (!result.ok) {
+      return Response.json(
+        { items: [], error: result.error.message },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const activeJobs = result.value.filter(
+      (job: CronJobDefinition) => job.status === "active" && job.nextRunAt !== null,
+    );
+
+    const items = activeJobs
+      .map((job: CronJobDefinition) => ({
+        id: job.id,
+        type: "cron" as const,
+        title: job.name,
+        schedule: job.schedule,
+        nextRunAt: job.nextRunAt,
+        humanReadable: job.description || job.schedule,
+      }))
+      .sort((a, b) => {
+        const aTime = a.nextRunAt ? Date.parse(a.nextRunAt) : Infinity;
+        const bTime = b.nextRunAt ? Date.parse(b.nextRunAt) : Infinity;
+        return aTime - bTime;
+      });
+
+    return Response.json(
+      { items },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleScheduleCancel(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    let body: { id?: unknown; type?: unknown };
+    try {
+      body = (await request.json()) as { id?: unknown; type?: unknown };
+    } catch {
+      return Response.json(
+        { success: false, error: "Invalid JSON body" },
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    const itemType = typeof body.type === "string" ? body.type : "";
+
+    if (id.length === 0) {
+      return Response.json(
+        { success: false, error: "Missing required field: id" },
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (itemType === "cron") {
+      if (!this.cronScheduler) {
+        return Response.json(
+          { success: false, error: "Scheduler not available" },
+          { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      const result = await this.cronScheduler.remove(id);
+      if (!result.ok) {
+        return Response.json(
+          { success: false, error: result.error.message },
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      return Response.json(
+        { success: true },
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return Response.json(
+      { success: false, error: `Unsupported item type: ${itemType}` },
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
   private async initializeByokProviders(): Promise<void> {
     if (!this.providerRegistry || !this.credentialStore) {
       return;
@@ -2019,8 +2278,15 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.ensureToolDefinition(actTool.definition);
     }
 
+    if (!toolRegistry.has("browser_debug")) {
+      const debugBuffer = new DebugEventBuffer();
+      const debugTool = new BrowserDebugTool(this.browserService, debugBuffer);
+      toolRegistry.register(debugTool);
+      this.ensureToolDefinition(debugTool.definition);
+    }
+
     log("info", "Browser tools registered", {
-      tools: ["browser", "browser_snapshot", "browser_act"],
+      tools: ["browser", "browser_snapshot", "browser_act", "browser_debug"],
     });
   }
 
