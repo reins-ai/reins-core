@@ -5,6 +5,7 @@ import {
   type OnboardingCheckpointService,
 } from "./checkpoint-service";
 import {
+  ONBOARDING_CHECKPOINT_VERSION,
   ONBOARDING_STEPS,
   type PersonalityConfig,
   type CompletedStepRecord,
@@ -381,6 +382,7 @@ export class OnboardingEngine {
     const collectedPersonality = this.readPersonalityConfig(this.collectedData);
 
     return {
+      version: this.config?.version ?? ONBOARDING_CHECKPOINT_VERSION,
       setupComplete: isComplete,
       mode: this.mode,
       currentStep,

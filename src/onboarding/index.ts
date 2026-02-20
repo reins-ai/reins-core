@@ -58,6 +58,7 @@ export {
 export { detectProviderFromKey } from "./key-detect";
 
 export {
+  ONBOARDING_CHECKPOINT_VERSION,
   ONBOARDING_STEPS,
   type CompletedStepRecord,
   type OnboardingConfig,
