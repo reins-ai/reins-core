@@ -54,3 +54,9 @@ export {
   type NudgeSettings,
   type PatternSettings,
 } from "./proactive-memory-settings";
+export {
+  deliverBriefing,
+  type ChannelDeliveryResult,
+  type DeliveryReport,
+  type DeliverBriefingOptions,
+} from "./briefing-delivery";
