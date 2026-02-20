@@ -1,3 +1,4 @@
+import type { PersonalityPreset } from "../types";
 import type { ServiceInstaller } from "../../daemon/service-installer";
 import type { ServiceDefinition } from "../../daemon/types";
 import type {
@@ -6,9 +7,11 @@ import type {
   StepExecutionContext,
   StepResult,
 } from "./types";
+import { getDaemonInstallCopy, type DaemonInstallCopy } from "./copy";
 
 const DEFAULT_HEALTH_URL = "http://localhost:7433/health";
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
+const DEFAULT_INSTALL_PATH = "/usr/local/bin";
 
 export interface DaemonInstallStepOptions {
   serviceInstaller?: ServiceInstaller;
@@ -18,6 +21,8 @@ export interface DaemonInstallStepOptions {
   checkHealth?: () => Promise<boolean>;
   /** Override fetch for testing. */
   fetchFn?: typeof globalThis.fetch;
+  /** Personality preset to select copy tone. Defaults to "balanced". */
+  personalityPreset?: PersonalityPreset;
 }
 
 /**
@@ -40,9 +45,14 @@ function getDefaultServiceDefinition(): ServiceDefinition {
 /**
  * Second onboarding step: installs and verifies the Reins daemon service.
  *
- * Checks if the daemon is already running via health check. If running,
- * completes immediately. If not, delegates to ServiceInstaller to install
- * and start the service, then verifies health.
+ * Presents friendly, non-technical copy explaining what the daemon does
+ * (background service for scheduled tasks, briefings, and async work).
+ *
+ * In quickstart mode: uses the default install path and auto-installs.
+ * In advanced mode: returns install path options for user customization.
+ *
+ * Copy is personality-aware — the tone adjusts based on the selected
+ * personality preset (balanced, concise, technical, warm).
  */
 export class DaemonInstallStep implements OnboardingStepHandler {
   readonly step = "daemon-install" as const;
@@ -51,10 +61,12 @@ export class DaemonInstallStep implements OnboardingStepHandler {
   private readonly serviceInstaller?: ServiceInstaller;
   private readonly serviceDefinition: ServiceDefinition;
   private readonly checkHealth: () => Promise<boolean>;
+  private readonly personalityPreset: PersonalityPreset;
 
   constructor(options?: DaemonInstallStepOptions) {
     this.serviceInstaller = options?.serviceInstaller;
     this.serviceDefinition = options?.serviceDefinition ?? getDefaultServiceDefinition();
+    this.personalityPreset = options?.personalityPreset ?? "balanced";
 
     if (options?.checkHealth) {
       this.checkHealth = options.checkHealth;
@@ -64,8 +76,39 @@ export class DaemonInstallStep implements OnboardingStepHandler {
     }
   }
 
-  async execute(_context: StepExecutionContext): Promise<StepResult> {
-    // 1. Check if daemon is already running
+  async execute(context: StepExecutionContext): Promise<StepResult> {
+    const copy = this.getCopy(context);
+
+    if (context.mode === "quickstart") {
+      return this.executeQuickstart(copy);
+    }
+
+    return this.executeAdvanced(copy);
+  }
+
+  getDefaults(): StepDefaults {
+    return {
+      installMethod: "auto",
+      installPath: DEFAULT_INSTALL_PATH,
+    };
+  }
+
+  /**
+   * Get the personality-aware copy for this step.
+   *
+   * Checks the execution context's collected data for a personality
+   * preset first (in case a previous step set it), then falls back
+   * to the preset provided at construction time.
+   */
+  getCopy(context?: StepExecutionContext): DaemonInstallCopy {
+    const contextPreset = context?.collectedData?.personalityPreset;
+    const preset = isPersonalityPreset(contextPreset)
+      ? contextPreset
+      : this.personalityPreset;
+    return getDaemonInstallCopy(preset);
+  }
+
+  private async executeQuickstart(copy: DaemonInstallCopy): Promise<StepResult> {
     const alreadyRunning = await this.checkHealth();
     if (alreadyRunning) {
       return {
@@ -73,23 +116,34 @@ export class DaemonInstallStep implements OnboardingStepHandler {
         data: {
           alreadyRunning: true,
           installMethod: "none",
+          installPath: DEFAULT_INSTALL_PATH,
+          copy: {
+            headline: copy.headline,
+            description: copy.description,
+            benefit: copy.benefit,
+            statusMessage: copy.alreadyRunningMessage,
+          },
         },
       };
     }
 
-    // 2. If no installer provided, report that manual install is needed
     if (!this.serviceInstaller) {
       return {
         status: "completed",
         data: {
           alreadyRunning: false,
           installMethod: "manual",
-          error: "No service installer available — daemon must be started manually",
+          installPath: DEFAULT_INSTALL_PATH,
+          copy: {
+            headline: copy.headline,
+            description: copy.description,
+            benefit: copy.benefit,
+            statusMessage: copy.manualInstallMessage,
+          },
         },
       };
     }
 
-    // 3. Install via ServiceInstaller
     const installResult = await this.serviceInstaller.install(this.serviceDefinition);
     if (!installResult.ok) {
       return {
@@ -98,12 +152,18 @@ export class DaemonInstallStep implements OnboardingStepHandler {
           alreadyRunning: false,
           installMethod: "auto",
           installed: false,
+          installPath: DEFAULT_INSTALL_PATH,
           error: installResult.error.message,
+          copy: {
+            headline: copy.headline,
+            description: copy.description,
+            benefit: copy.benefit,
+            statusMessage: copy.manualInstallMessage,
+          },
         },
       };
     }
 
-    // 4. Verify health after install
     const healthyAfterInstall = await this.checkHealth();
     return {
       status: "completed",
@@ -112,16 +172,42 @@ export class DaemonInstallStep implements OnboardingStepHandler {
         installMethod: "auto",
         installed: true,
         healthy: healthyAfterInstall,
+        installPath: DEFAULT_INSTALL_PATH,
         error: healthyAfterInstall
           ? undefined
           : "Daemon installed but health check failed — it may still be starting",
+        copy: {
+          headline: copy.headline,
+          description: copy.description,
+          benefit: copy.benefit,
+          statusMessage: healthyAfterInstall
+            ? copy.installedMessage
+            : copy.installingMessage,
+        },
       },
     };
   }
 
-  getDefaults(): StepDefaults {
+  private async executeAdvanced(copy: DaemonInstallCopy): Promise<StepResult> {
+    const alreadyRunning = await this.checkHealth();
+
     return {
-      installMethod: "auto",
+      status: "completed",
+      data: {
+        alreadyRunning,
+        installMethod: alreadyRunning ? "none" : "auto",
+        installPath: DEFAULT_INSTALL_PATH,
+        copy: {
+          headline: copy.headline,
+          description: copy.description,
+          benefit: copy.benefit,
+          statusMessage: alreadyRunning
+            ? copy.alreadyRunningMessage
+            : copy.installingMessage,
+          defaultPathLabel: copy.defaultPathLabel,
+          customPathPrompt: copy.customPathPrompt,
+        },
+      },
     };
   }
 
@@ -142,4 +228,14 @@ export class DaemonInstallStep implements OnboardingStepHandler {
       return false;
     }
   }
+}
+
+function isPersonalityPreset(value: unknown): value is PersonalityPreset {
+  return (
+    value === "balanced"
+    || value === "concise"
+    || value === "technical"
+    || value === "warm"
+    || value === "custom"
+  );
 }
