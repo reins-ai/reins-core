@@ -82,3 +82,6 @@ export {
   parsePersonaYaml,
 } from "./persona";
 export type { Persona } from "./persona";
+
+export { PersonalityWatcher } from "./personality-watcher";
+export type { PersonalityWatcherOptions } from "./personality-watcher";
