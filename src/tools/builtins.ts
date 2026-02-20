@@ -279,6 +279,30 @@ export const MEMORY_DEFINITION: ToolDefinition = {
   },
 };
 
+export const INDEX_DOCUMENT_DEFINITION: ToolDefinition = {
+  name: "index_document",
+  description:
+    "Index a document file for semantic search. " +
+    "Registers the file's directory as a source if needed, " +
+    "then indexes the file into searchable chunks.",
+  parameters: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Absolute path to the document file to index.",
+      },
+      source_name: {
+        type: "string",
+        description:
+          "Optional human-readable name for the document source. " +
+          "Defaults to the filename.",
+      },
+    },
+    required: ["path"],
+  },
+};
+
 export const WEB_SEARCH_DEFINITION: ToolDefinition = {
   name: "web_search",
   description:
@@ -493,6 +517,7 @@ export function getBuiltinToolDefinitions(): ToolDefinition[] {
     REMINDERS_DEFINITION,
     VOICE_DEFINITION,
     MEMORY_DEFINITION,
+    INDEX_DOCUMENT_DEFINITION,
     WEB_SEARCH_DEFINITION,
     ...SYSTEM_TOOL_DEFINITIONS.map(toToolDefinition),
   ];
