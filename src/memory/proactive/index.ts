@@ -25,7 +25,15 @@ export {
   type NudgeType,
 } from "./nudge-engine";
 export {
+  NudgeInjector,
+  type NudgeInjectorConfig,
+  type NudgeInjectorLogger,
+  type NudgeEvaluator,
+  type NudgeInjectorOptions,
+} from "./nudge-injector";
+export {
   NudgeFeedbackStore,
+  FileNudgeFeedbackStore,
   type NudgeFeedback,
   type NudgeFeedbackAction,
 } from "./nudge-feedback-store";
