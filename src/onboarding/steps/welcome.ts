@@ -6,28 +6,21 @@ import type {
   StepResult,
 } from "./types";
 import { getWelcomeCopy, type WelcomeCopy } from "./copy";
+import {
+  DEFAULT_PERSONA as _DEFAULT_PERSONA,
+  type Persona as _Persona,
+} from "../../environment/persona";
 
 /**
- * Minimal persona identity used for greeting personalization.
- *
- * This is a local stub — the full `Persona` type and YAML schema
- * live in `environment/persona.ts` once that module is created.
- * Import from there when available and remove this definition.
+ * Persona identity used for greeting personalization.
+ * Re-exported from `environment/persona` for barrel access via onboarding.
  */
-export interface Persona {
-  /** Display name for the assistant (e.g. "Alex", "Reins"). */
-  name: string;
-  /** Optional emoji avatar (e.g. "🤖", "🧠"). */
-  avatar?: string;
-}
+export type Persona = _Persona;
 
 /**
  * Default persona used when no custom persona is configured.
  */
-export const DEFAULT_PERSONA: Persona = {
-  name: "Reins",
-  avatar: "🤖",
-};
+export const DEFAULT_PERSONA: Persona = _DEFAULT_PERSONA;
 
 export interface WelcomeStepOptions {
   /** Override for testing — provides a user name without interactive input. */
