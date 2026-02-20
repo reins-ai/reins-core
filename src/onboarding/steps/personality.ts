@@ -1,7 +1,7 @@
 import type { PersonalityPreset } from "../types";
 import {
-  PERSONALITY_PRESETS,
-  type PersonalityPromptDefinition,
+  PERSONALITY_CARDS,
+  type PersonalityCardData,
 } from "../personality-prompts";
 import type {
   OnboardingStepHandler,
@@ -11,8 +11,8 @@ import type {
 } from "./types";
 
 export interface PersonalityStepOptions {
-  /** Override presets for testing. */
-  presets?: ReadonlyArray<PersonalityPromptDefinition>;
+  /** Override cards for testing. */
+  cards?: ReadonlyArray<PersonalityCardData>;
 }
 
 /**
@@ -20,36 +20,38 @@ export interface PersonalityStepOptions {
  *
  * Offers preset personalities (Balanced, Concise, Technical, Warm) and a
  * Custom option with free-text input. In QuickStart mode, auto-selects
- * "balanced". In Advanced mode, returns the available presets for the TUI
- * to render as a selection UI.
+ * "balanced". In Advanced mode, returns rich card data for each preset
+ * so the TUI can render visual personality cards with emoji, description,
+ * and example responses.
  */
 export class PersonalityStep implements OnboardingStepHandler {
   readonly step = "personality" as const;
   readonly skippable = true;
 
-  private readonly presets: ReadonlyArray<PersonalityPromptDefinition>;
+  private readonly cards: ReadonlyArray<PersonalityCardData>;
 
   constructor(options?: PersonalityStepOptions) {
-    this.presets = options?.presets ?? PERSONALITY_PRESETS;
+    this.cards = options?.cards ?? PERSONALITY_CARDS;
   }
 
   async execute(context: StepExecutionContext): Promise<StepResult> {
     if (context.mode === "quickstart") {
-      const defaults = this.getDefaults();
       return {
         status: "completed",
-        data: defaults,
+        data: this.getDefaults(),
       };
     }
 
-    // Advanced mode: provide preset options for TUI to display
+    // Advanced mode: provide rich card data for TUI to render as selectable cards
     return {
       status: "completed",
       data: {
-        availablePresets: this.presets.map((p) => ({
-          preset: p.preset,
-          label: p.label,
-          description: p.description,
+        cards: this.cards.map((c) => ({
+          preset: c.preset,
+          label: c.label,
+          emoji: c.emoji,
+          description: c.description,
+          exampleResponse: c.exampleResponse,
         })),
         supportsCustom: true,
       },

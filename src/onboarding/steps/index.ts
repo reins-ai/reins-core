@@ -1,4 +1,16 @@
 export {
+  getProviderSetupCopy,
+  getWelcomeCopy,
+  getWorkspaceCopy,
+  PROVIDER_COPY_VARIANTS,
+  WELCOME_COPY_VARIANTS,
+  WORKSPACE_COPY_VARIANTS,
+  type ProviderSetupCopy,
+  type WelcomeCopy,
+  type WorkspaceCopy,
+} from "./copy";
+
+export {
   DaemonInstallStep,
   type DaemonInstallStepOptions,
 } from "./daemon-install";
@@ -16,6 +28,8 @@ export {
 
 export {
   ProviderSetupStep,
+  type ProviderDetectionResult,
+  type ProviderDisplayInfo,
   type ProviderSetupStepOptions,
 } from "./provider-setup";
 
