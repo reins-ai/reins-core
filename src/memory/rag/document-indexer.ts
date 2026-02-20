@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
+import { extname } from "node:path";
+
 import type { EmbeddingProvider } from "../embeddings/embedding-provider";
 import { MemoryError } from "../services/memory-error";
 import { err, ok, type Result } from "../../result";
 import type { DocumentChunk, MarkdownChunker } from "./markdown-chunker";
+import type { DocumentExtractor } from "./document-extractor";
 import type { DocumentSource } from "./document-source-registry";
 import { DocumentSourceRegistry } from "./document-source-registry";
 import { matchesPolicy } from "./document-source-policy";
@@ -56,6 +59,7 @@ export interface DocumentIndexerDependencies {
   chunker: MarkdownChunker;
   embeddingProvider: EmbeddingProvider;
   registry: DocumentSourceRegistry;
+  extractor?: DocumentExtractor;
   config?: Partial<IndexBatchConfig>;
   fileSystem?: DocumentIndexerFileSystem;
   onJobUpdate?: (job: IndexJob) => void;
@@ -135,6 +139,7 @@ export class DocumentIndexer {
   private readonly chunker: MarkdownChunker;
   private readonly embeddingProvider: EmbeddingProvider;
   private readonly registry: DocumentSourceRegistry;
+  private readonly extractor?: DocumentExtractor;
   private readonly config: IndexBatchConfig;
   private readonly fileSystem: DocumentIndexerFileSystem;
   private readonly onJobUpdate?: (job: IndexJob) => void;
@@ -144,6 +149,7 @@ export class DocumentIndexer {
     this.chunker = dependencies.chunker;
     this.embeddingProvider = dependencies.embeddingProvider;
     this.registry = dependencies.registry;
+    this.extractor = dependencies.extractor;
     this.config = { ...DEFAULT_BATCH_CONFIG, ...dependencies.config };
     this.fileSystem = dependencies.fileSystem ?? new NodeDocumentIndexerFileSystem();
     this.onJobUpdate = dependencies.onJobUpdate;
@@ -259,12 +265,30 @@ export class DocumentIndexer {
       }
     }
 
-    const contentResult = await this.retry(async () => this.fileSystem.readFile(filePath));
-    if (!contentResult.ok) {
-      return err(contentResult.error);
+    const isMarkdown = extname(filePath).toLowerCase() === ".md";
+    let content: string;
+
+    if (!isMarkdown && this.extractor) {
+      const extractResult = await this.extractor.extract(filePath);
+      if (!extractResult.ok) {
+        return err(
+          new MemoryError(
+            `Extraction failed for ${filePath}: ${extractResult.error.message}`,
+            "MEMORY_DB_ERROR",
+            extractResult.error,
+          ),
+        );
+      }
+      content = extractResult.value.content;
+    } else {
+      const contentResult = await this.retry(async () => this.fileSystem.readFile(filePath));
+      if (!contentResult.ok) {
+        return err(contentResult.error);
+      }
+      content = contentResult.value;
     }
 
-    const chunkResult = this.chunker.chunk(contentResult.value, filePath, sourceId);
+    const chunkResult = this.chunker.chunk(content, filePath, sourceId);
     if (!chunkResult.ok) {
       return err(new MemoryError(chunkResult.error.message, "MEMORY_DB_ERROR", chunkResult.error));
     }
