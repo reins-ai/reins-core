@@ -4,6 +4,11 @@ import type {
   SendMessageResult,
 } from "../conversation/manager";
 import { ChannelError } from "./errors";
+import {
+  chunkTelegramMessage,
+  formatForDiscord,
+  formatForTelegram,
+} from "./formatting";
 import type {
   Channel,
   ChannelAttachment,
@@ -168,8 +173,7 @@ export class ChannelRouter {
     }
 
     if (!this.broadcastResponses) {
-      const outbound = this.toOutboundChannelMessage(agentResponse, sourceChannel, sourceDestination);
-      await sourceChannel.send(outbound);
+      await this.sendToChannel(agentResponse, sourceChannel, sourceDestination);
       return;
     }
 
@@ -186,11 +190,57 @@ export class ChannelRouter {
         continue;
       }
 
-      const outbound = this.toOutboundChannelMessage(agentResponse, channel, destination);
-      sendTasks.push(channel.send(outbound));
+      sendTasks.push(this.sendToChannel(agentResponse, channel, destination));
     }
 
     await Promise.all(sendTasks);
+  }
+
+  /**
+   * Applies platform-specific formatting and sends the message to a channel.
+   * Telegram messages are formatted as MarkdownV2 and chunked at 4096 chars.
+   * Discord messages are formatted as Discord-compatible markdown.
+   */
+  private async sendToChannel(
+    agentResponse: AgentResponse,
+    channel: Channel,
+    destinationChannelId: string,
+  ): Promise<void> {
+    const text = agentResponse.text ?? "";
+    const platform = channel.config.platform;
+
+    if (platform === "telegram" && text.length > 0) {
+      const formatted = formatForTelegram(text);
+      const chunks = chunkTelegramMessage(formatted);
+
+      for (const chunk of chunks) {
+        const outbound = this.toOutboundChannelMessage(
+          { ...agentResponse, text: chunk },
+          channel,
+          destinationChannelId,
+        );
+        await channel.send(outbound);
+      }
+      return;
+    }
+
+    if (platform === "discord" && text.length > 0) {
+      const formatted = formatForDiscord(text);
+      const outbound = this.toOutboundChannelMessage(
+        { ...agentResponse, text: formatted },
+        channel,
+        destinationChannelId,
+      );
+      await channel.send(outbound);
+      return;
+    }
+
+    const outbound = this.toOutboundChannelMessage(
+      agentResponse,
+      channel,
+      destinationChannelId,
+    );
+    await channel.send(outbound);
   }
 
   private toConversationContent(channelMessage: ChannelMessage): string {

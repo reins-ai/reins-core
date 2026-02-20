@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { TelegramChannel } from "../../../src/channels/telegram/channel";
 import type { TelegramChannelClient } from "../../../src/channels/telegram/channel";
+import { formatForTelegram } from "../../../src/channels/formatting";
 import { ChannelRouter, type AgentResponse } from "../../../src/channels/router";
 import type { ChannelRouterConversationManager } from "../../../src/channels/router";
 import type { ChannelMessage } from "../../../src/channels/types";
@@ -263,10 +264,10 @@ describe("Telegram E2E Flow", () => {
       expect(addedMessages[0]!.message.content).toBe("Hello bot");
       expect(addedMessages[1]!.message.role).toBe("assistant");
 
-      // Verify agent response was sent back to Telegram
+      // Verify agent response was sent back to Telegram (formatted as MarkdownV2)
       expect(client.sendMessageCalls).toHaveLength(1);
       expect(client.sendMessageCalls[0]!.chatId).toBe(12345);
-      expect(client.sendMessageCalls[0]!.text).toBe("Hello from Reins!");
+      expect(client.sendMessageCalls[0]!.text).toBe(formatForTelegram("Hello from Reins!"));
 
       await channel.disconnect();
       expect(channel.status.state).toBe("disconnected");

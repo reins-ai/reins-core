@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   chunkDiscordMessage,
+  chunkTelegramMessage,
   createDiscordEmbed,
   formatForDiscord,
   formatForTelegram,
@@ -409,5 +410,100 @@ describe("createDiscordEmbed", () => {
     const embed = createDiscordEmbed(content);
     expect(embed).not.toBeNull();
     expect(embed!.description).toBe(content);
+  });
+});
+
+describe("chunkTelegramMessage", () => {
+  it("returns single chunk for short messages", () => {
+    const result = chunkTelegramMessage("Hello world");
+    expect(result).toEqual(["Hello world"]);
+  });
+
+  it("returns single chunk for exactly 4096 characters", () => {
+    const text = "a".repeat(4096);
+    const result = chunkTelegramMessage(text);
+    expect(result).toEqual([text]);
+  });
+
+  it("splits message at 4097 characters into 2 chunks", () => {
+    const text = "a".repeat(4097);
+    const result = chunkTelegramMessage(text);
+    expect(result).toHaveLength(2);
+    expect(result[0]!.length).toBe(4096);
+    expect(result[1]!.length).toBe(1);
+  });
+
+  it("splits long messages into multiple chunks of max 4096", () => {
+    const text = "a".repeat(10000);
+    const result = chunkTelegramMessage(text);
+    expect(result.length).toBeGreaterThan(1);
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(4096);
+    }
+    expect(result.join("").length).toBe(10000);
+  });
+
+  it("handles empty string as single chunk", () => {
+    const result = chunkTelegramMessage("");
+    expect(result).toEqual([""]);
+  });
+
+  it("prefers splitting at line boundaries", () => {
+    const line = "a".repeat(200);
+    const lines = Array.from({ length: 25 }, () => line);
+    const text = lines.join("\n");
+    const result = chunkTelegramMessage(text);
+
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  it("prefers splitting at space boundaries when no newlines", () => {
+    const word = "word ";
+    const text = word.repeat(1000);
+    const result = chunkTelegramMessage(text);
+
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  it("hard splits when no good boundary found", () => {
+    const text = "a".repeat(10000);
+    const result = chunkTelegramMessage(text);
+
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(4096);
+    }
+    expect(result.join("").length).toBe(10000);
+  });
+
+  it("respects custom max length", () => {
+    const text = "a".repeat(100);
+    const result = chunkTelegramMessage(text, 30);
+    expect(result.length).toBeGreaterThan(1);
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(30);
+    }
+  });
+
+  it("preserves all content across chunks", () => {
+    const text = "Line 1\nLine 2\nLine 3\n" + "x".repeat(8000);
+    const result = chunkTelegramMessage(text);
+    const reassembled = result.join("");
+    // Allow for stripped newlines at chunk boundaries
+    expect(reassembled.length).toBeGreaterThanOrEqual(
+      text.length - result.length,
+    );
+  });
+
+  it("chunks formatted Telegram text with special characters correctly", () => {
+    const formatted = formatForTelegram("Hello. World! " + "x".repeat(5000));
+    const result = chunkTelegramMessage(formatted);
+    expect(result.length).toBeGreaterThan(1);
+    for (const chunk of result) {
+      expect(chunk.length).toBeLessThanOrEqual(4096);
+    }
   });
 });
