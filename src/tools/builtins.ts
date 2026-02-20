@@ -246,22 +246,22 @@ export const VOICE_DEFINITION: ToolDefinition = {
 export const MEMORY_DEFINITION: ToolDefinition = {
   name: "memory",
   description:
-    "Remember user details and recall relevant memories for better continuity across conversations.",
+    "Remember, recall, update, delete, and list user memories for full transparency and continuity across conversations.",
   parameters: {
     type: "object",
     properties: {
       action: {
         type: "string",
         description: "The action to perform.",
-        enum: ["remember", "recall"],
+        enum: ["remember", "recall", "update", "delete", "list"],
       },
       content: {
         type: "string",
-        description: "Memory content to persist when action is remember.",
+        description: "Memory content to persist when action is remember, or updated content for update action.",
       },
       tags: {
         type: "array",
-        description: "Optional tags to attach to remembered content.",
+        description: "Optional tags to attach to remembered content or updated tags for update action.",
         items: {
           type: "string",
         },
@@ -272,7 +272,28 @@ export const MEMORY_DEFINITION: ToolDefinition = {
       },
       limit: {
         type: "number",
-        description: "Maximum number of recall results to return.",
+        description: "Maximum number of results to return for recall or list actions.",
+      },
+      id: {
+        type: "string",
+        description: "Memory ID for update and delete actions.",
+      },
+      importance: {
+        type: "number",
+        description: "Updated importance score (0-1) for update action.",
+      },
+      type: {
+        type: "string",
+        description: "Memory type filter for list action.",
+        enum: [
+          "fact",
+          "preference",
+          "decision",
+          "episode",
+          "skill",
+          "entity",
+          "document_chunk",
+        ],
       },
     },
     required: ["action"],

@@ -25,3 +25,13 @@ export {
   type WritePolicyWarning,
 } from "./memory-write-policies";
 export { RagContextInjector } from "./rag-context-injector";
+export {
+  getStaleMemories,
+  isStale,
+  type StaleDetectionConfig,
+} from "./stale-detection";
+export {
+  MemorySummaryGenerator,
+  formatRelativeDate,
+  type MemorySummaryOptions,
+} from "./memory-summary-generator";

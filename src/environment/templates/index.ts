@@ -4,7 +4,7 @@ import { HEARTBEAT_TEMPLATE } from "./heartbeat.md";
 import { ROUTINES_TEMPLATE } from "./routines.md";
 import { GOALS_TEMPLATE } from "./goals.md";
 import { KNOWLEDGE_TEMPLATE } from "./knowledge.md";
-import { TOOLS_TEMPLATE } from "./tools.md";
+import { TOOLS_TEMPLATE, STRUCTURED_EXTRACTION_EXAMPLES } from "./tools.md";
 import { BOUNDARIES_TEMPLATE } from "./boundaries.md";
 
 /**
@@ -76,5 +76,6 @@ export {
   GOALS_TEMPLATE,
   KNOWLEDGE_TEMPLATE,
   TOOLS_TEMPLATE,
+  STRUCTURED_EXTRACTION_EXAMPLES,
   BOUNDARIES_TEMPLATE,
 };

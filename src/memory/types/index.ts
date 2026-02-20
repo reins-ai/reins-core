@@ -30,3 +30,9 @@ export {
   type ProvenanceFilter,
   type ProvenanceRecord,
 } from "./provenance";
+export {
+  MEMORY_EVENT_TYPES,
+  type MemoryEvent,
+  type MemoryEventType,
+  type OnMemoryEvent,
+} from "./memory-events";
