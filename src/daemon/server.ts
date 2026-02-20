@@ -45,6 +45,7 @@ import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
 import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
+import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
 import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
 import {
@@ -403,6 +404,7 @@ export interface DaemonHttpServerOptions {
   channelService?: ChannelDaemonService;
   skillService?: SkillDaemonService;
   browserService?: BrowserDaemonService;
+  convexAuthToken?: string;
 }
 
 interface ProviderExecutionContext {
@@ -1036,6 +1038,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
   private readonly credentialStore: EncryptedCredentialStore | null;
   private readonly providerRegistry: ProviderRegistry | null;
+  private readonly configuredConvexAuthToken: string | null;
   private readonly providedChannelService: ChannelDaemonService | null;
   private readonly environmentOptions: {
     daemonPathOptions?: DaemonPathOptions;
@@ -1048,6 +1051,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private environmentContextProvider: EnvironmentContextProvider | null = null;
   private personaRegistry: PersonaRegistry | null = null;
   private integrationService: IntegrationService | null = null;
+  private convexClient: ConvexDaemonClient | null = null;
   private readonly skillService: SkillDaemonService | null;
   private readonly browserService: BrowserDaemonService | null;
   private integrationHealth: HealthResponse["integrations"] = {
@@ -1068,6 +1072,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.providedChannelService = options.channelService ?? null;
     this.skillService = options.skillService ?? null;
     this.browserService = options.browserService ?? null;
+    this.configuredConvexAuthToken = normalizeOptionalToken(options.convexAuthToken);
 
     // Create auth services first so credential store is available for tool registration
     const legacyService = options.authService;
@@ -1128,6 +1133,25 @@ export class DaemonHttpServer implements DaemonManagedService {
     return this.streamRegistry;
   }
 
+  /**
+   * Returns the daemon Convex client when configured.
+   */
+  getConvexClient(): ConvexDaemonClient | null {
+    return this.convexClient;
+  }
+
+  /**
+   * Updates daemon Convex auth token for authenticated mutations.
+   */
+  setConvexAuthToken(token: string): void {
+    const normalized = normalizeOptionalToken(token);
+    if (!normalized || !this.convexClient) {
+      return;
+    }
+
+    this.convexClient.setAuthToken(normalized);
+  }
+
   async start(): Promise<Result<void, DaemonError>> {
     if (this.server) {
       return err({
@@ -1149,6 +1173,8 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.environmentContextProvider = null;
       this.personaRegistry = null;
     }
+
+    await this.initializeConvexClient();
 
     await this.initializeByokProviders();
 
@@ -1272,6 +1298,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.server.stop();
       this.server = null;
       this.cleanupConversationServices();
+      this.convexClient = null;
       log("info", "Daemon HTTP server stopped");
       return ok(undefined);
     } catch (error) {
@@ -3794,6 +3821,30 @@ export class DaemonHttpServer implements DaemonManagedService {
     await this.channelService.start();
   }
 
+  private async initializeConvexClient(): Promise<void> {
+    const authToken = this.configuredConvexAuthToken
+      ?? normalizeOptionalToken(process.env.CONVEX_AUTH_TOKEN ?? Bun.env.CONVEX_AUTH_TOKEN);
+    this.convexClient = createConvexDaemonClientFromEnv(authToken ?? undefined);
+
+    if (!this.convexClient) {
+      log("warn", "CONVEX_URL is not configured; daemon will continue without Convex conversation sync");
+      return;
+    }
+
+    const initialized = await this.convexClient.initialize();
+    if (!initialized) {
+      log("warn", "Convex client failed to initialize; daemon will continue without Convex conversation sync", {
+        error: this.convexClient.getLoadError()?.message,
+      });
+      return;
+    }
+
+    log("info", "Convex client initialized", {
+      convexUrl: this.convexClient.getConvexUrl(),
+      authenticated: this.convexClient.getAuthToken() !== null,
+    });
+  }
+
   private buildCompactionOptions(
     sqliteStorePath: string,
   ): {
@@ -4469,4 +4520,13 @@ export class DaemonHttpServer implements DaemonManagedService {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function normalizeOptionalToken(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }

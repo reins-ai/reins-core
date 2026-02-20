@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./config": "./src/config/index.ts",
     "./conversation": "./src/conversation/index.ts",
+    "./convex": "./src/convex/index.ts",
     "./context": "./src/context/index.ts",
     "./errors": "./src/errors.ts",
     "./memory": "./src/memory/index.ts",

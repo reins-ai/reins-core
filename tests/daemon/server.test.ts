@@ -10,6 +10,7 @@ import { InMemoryConversationStore } from "../../src/conversation/memory-store";
 import { SQLiteConversationStore } from "../../src/conversation/sqlite-store";
 import { DaemonHttpServer, StreamRegistry, type StreamLifecycleEvent } from "../../src/daemon/server";
 import { DaemonRuntime } from "../../src/daemon/runtime";
+import { createConvexDaemonClientFromEnv } from "../../src/convex/daemon-client";
 import { ProviderAuthService } from "../../src/providers/auth-service";
 import { MockProvider } from "../../src/providers/mock";
 import { ProviderRegistry } from "../../src/providers/registry";
@@ -731,6 +732,74 @@ describe("DaemonHttpServer health endpoint with conversation services", () => {
 
     const body = await response.json();
     expect(body).toHaveProperty("models");
+  });
+});
+
+describe("DaemonHttpServer Convex wiring", () => {
+  const servers: DaemonHttpServer[] = [];
+
+  afterEach(async () => {
+    for (const server of servers) {
+      await server.stop();
+    }
+    servers.length = 0;
+  });
+
+  it("returns null Convex client from env when CONVEX_URL is missing", () => {
+    const previousConvexUrl = process.env.CONVEX_URL;
+
+    try {
+      delete process.env.CONVEX_URL;
+
+      const client = createConvexDaemonClientFromEnv();
+      expect(client).toBeNull();
+    } finally {
+      if (typeof previousConvexUrl === "string") {
+        process.env.CONVEX_URL = previousConvexUrl;
+      } else {
+        delete process.env.CONVEX_URL;
+      }
+    }
+  });
+
+  it("boots optional Convex client from env and stores auth token", async () => {
+    const previousConvexUrl = process.env.CONVEX_URL;
+    const previousConvexAuthToken = process.env.CONVEX_AUTH_TOKEN;
+
+    try {
+      process.env.CONVEX_URL = "https://example.convex.cloud";
+      process.env.CONVEX_AUTH_TOKEN = "test-auth-token";
+
+      const server = new DaemonHttpServer({
+        port: 0,
+        authService: createStubAuthService(),
+        modelRouter: new ModelRouter(new ProviderRegistry()),
+        conversation: {
+          conversationManager: new ConversationManager(new InMemoryConversationStore()),
+        },
+      });
+      servers.push(server);
+
+      const startResult = await server.start();
+      expect(startResult.ok).toBe(true);
+
+      const convexClient = server.getConvexClient();
+      expect(convexClient).not.toBeNull();
+      expect(convexClient?.getConvexUrl()).toBe("https://example.convex.cloud");
+      expect(convexClient?.getAuthToken()).toBe("test-auth-token");
+    } finally {
+      if (typeof previousConvexUrl === "string") {
+        process.env.CONVEX_URL = previousConvexUrl;
+      } else {
+        delete process.env.CONVEX_URL;
+      }
+
+      if (typeof previousConvexAuthToken === "string") {
+        process.env.CONVEX_AUTH_TOKEN = previousConvexAuthToken;
+      } else {
+        delete process.env.CONVEX_AUTH_TOKEN;
+      }
+    }
   });
 });
 

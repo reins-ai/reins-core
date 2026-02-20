@@ -1,6 +1,7 @@
 export * from "./context";
 export * from "./config";
 export * from "./conversation";
+export * from "./convex";
 export * from "./cron/scheduler";
 export * from "./cron/store";
 export * from "./cron/policy";
