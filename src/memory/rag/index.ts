@@ -64,3 +64,8 @@ export {
   type WatchServiceConfig,
   type WatchServiceFileSystem,
 } from "./document-watch-service";
+export {
+  DocumentSearchAdapter,
+  DocumentSearchAdapterError,
+  type DocumentSearchAdapterDependencies,
+} from "./document-search-adapter";
