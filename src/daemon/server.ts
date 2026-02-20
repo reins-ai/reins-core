@@ -3,6 +3,7 @@
  * Listens on localhost:7433
  */
 
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
 
 import { ConversationManager, type ConversationManagerCompactionOptions } from "../conversation/manager";
@@ -35,7 +36,10 @@ import {
   bootstrapInstallRoot,
   buildInstallPaths,
   resolveInstallRoot,
+  parsePersonaYaml,
+  DEFAULT_PERSONA,
 } from "../environment";
+import { generatePersonalityMarkdown } from "../environment/templates/personality.md";
 import { err, ok, type Result } from "../result";
 import type { MemoryService, ExplicitMemoryInput, MemoryListOptions, UpdateMemoryInput } from "../memory/services/memory-service";
 import type { MemoryRecord } from "../memory/types/memory-record";
@@ -47,6 +51,7 @@ import { PersonaRegistry } from "../persona/registry";
 import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
 import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
+import yaml from "js-yaml";
 import { generateDeviceCode, pollDeviceCode } from "./device-code-auth";
 import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
 import {
@@ -1497,6 +1502,15 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Schedule cancel endpoint
       if (url.pathname === "/api/schedule/cancel" && method === "POST") {
         return this.handleScheduleCancel(request, corsHeaders);
+      }
+
+      // Persona endpoints
+      if (url.pathname === "/api/persona" && method === "GET") {
+        return this.handleGetPersona(corsHeaders);
+      }
+
+      if (url.pathname === "/api/persona" && method === "PUT") {
+        return this.handlePutPersona(request, corsHeaders);
       }
 
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
@@ -4193,6 +4207,162 @@ export class DaemonHttpServer implements DaemonManagedService {
       { error: message },
       { status: 500, headers: corsHeaders },
     );
+  }
+
+  /**
+   * Resolve the active environment directory path.
+   * Returns null if environment services are not initialized.
+   */
+  private async resolveActiveEnvironmentDir(): Promise<string | null> {
+    if (!this.environmentSwitchService) {
+      return null;
+    }
+
+    const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
+    const currentEnvResult = await this.environmentSwitchService.getCurrentEnvironment();
+    if (!currentEnvResult.ok) {
+      return null;
+    }
+
+    return join(paths.environmentsDir, currentEnvResult.value);
+  }
+
+  private async handleGetPersona(
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          {
+            name: DEFAULT_PERSONA.name,
+            avatar: DEFAULT_PERSONA.avatar,
+            language: DEFAULT_PERSONA.language,
+          },
+          { headers: corsHeaders },
+        );
+      }
+
+      const personaPath = join(envDir, "PERSONA.yaml");
+      let content: string;
+      try {
+        content = await readFile(personaPath, "utf-8");
+      } catch {
+        return Response.json(
+          {
+            name: DEFAULT_PERSONA.name,
+            avatar: DEFAULT_PERSONA.avatar,
+            language: DEFAULT_PERSONA.language,
+          },
+          { headers: corsHeaders },
+        );
+      }
+
+      const parseResult = parsePersonaYaml(content);
+      const persona = parseResult.ok ? parseResult.value : DEFAULT_PERSONA;
+
+      return Response.json(
+        {
+          name: persona.name,
+          avatar: persona.avatar,
+          language: persona.language,
+          backstory: persona.backstory,
+        },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to read persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        {
+          name: DEFAULT_PERSONA.name,
+          avatar: DEFAULT_PERSONA.avatar,
+          language: DEFAULT_PERSONA.language,
+        },
+        { headers: corsHeaders },
+      );
+    }
+  }
+
+  private async handlePutPersona(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          { success: false, error: "Environment services not initialized" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      let body: {
+        name?: string;
+        avatar?: string;
+        preset?: string;
+        customInstructions?: string;
+        language?: string;
+      };
+
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return Response.json(
+          { success: false, error: "Invalid JSON in request body" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const personaData: Record<string, string> = {
+        name: typeof body.name === "string" && body.name.trim().length > 0
+          ? body.name.trim()
+          : DEFAULT_PERSONA.name,
+      };
+
+      if (typeof body.avatar === "string" && body.avatar.trim().length > 0) {
+        personaData.avatar = body.avatar.trim();
+      } else {
+        personaData.avatar = DEFAULT_PERSONA.avatar ?? "🤖";
+      }
+
+      if (typeof body.language === "string" && body.language.trim().length > 0) {
+        personaData.language = body.language.trim();
+      } else {
+        personaData.language = DEFAULT_PERSONA.language ?? "en";
+      }
+
+      const personaYaml = yaml.dump(personaData, { lineWidth: -1 });
+      const personaPath = join(envDir, "PERSONA.yaml");
+      await writeFile(personaPath, personaYaml, "utf-8");
+
+      if (typeof body.preset === "string" && body.preset.trim().length > 0) {
+        const preset = body.preset.trim();
+        const validPresets = ["balanced", "concise", "technical", "warm", "custom"];
+        if (validPresets.includes(preset)) {
+          const personalityContent = generatePersonalityMarkdown(
+            preset as "balanced" | "concise" | "technical" | "warm" | "custom",
+            typeof body.customInstructions === "string" ? body.customInstructions : undefined,
+          );
+          const personalityPath = join(envDir, "PERSONALITY.md");
+          await writeFile(personalityPath, personalityContent, "utf-8");
+        }
+      }
+
+      return Response.json(
+        { success: true },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to save persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        { success: false, error: error instanceof Error ? error.message : "Internal server error" },
+        { status: 500, headers: corsHeaders },
+      );
+    }
   }
 
   /**
