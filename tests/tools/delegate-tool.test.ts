@@ -36,7 +36,7 @@ function createStubAuthService(): ProviderAuthService {
 
 function createRecordingMerger(recorded: RecordedCall): SubAgentResultMerger {
   return {
-    async merge(results: SubAgentResult[], strategy: DelegateMergeStrategy): Promise<string> {
+    async merge(strategy: DelegateMergeStrategy, results: SubAgentResult[]): Promise<string> {
       recorded.strategy = strategy;
       return results
         .map((result) => result.output ?? result.error?.message ?? "")

@@ -1,10 +1,19 @@
 import { SubAgentPool, type AgentLoopFactory, type SubAgentPoolOptions, type SubAgentResult, type SubAgentTask } from "../harness/sub-agent-pool";
+import { SubAgentResultMerger as DefaultSubAgentResultMerger, type MergeOptions } from "../harness/merger";
+import type { Provider } from "../types/provider";
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
 
 export type DelegateMergeStrategy = "concat" | "synthesize" | "first";
 
+export interface DelegateMergeOptions {
+  separator?: string;
+  synthesizePrompt?: string;
+  provider?: Provider;
+  model?: string;
+}
+
 export interface SubAgentResultMerger {
-  merge(results: SubAgentResult[], strategy: DelegateMergeStrategy): Promise<string>;
+  merge(strategy: DelegateMergeStrategy, results: SubAgentResult[], options?: DelegateMergeOptions): Promise<string>;
 }
 
 interface SubAgentPoolLike {
@@ -15,52 +24,11 @@ export interface DelegateToolOptions {
   merger?: SubAgentResultMerger;
   poolFactory?: (options: SubAgentPoolOptions) => SubAgentPoolLike;
   agentLoopFactory?: AgentLoopFactory;
+  mergeOptions?: DelegateMergeOptions;
 }
 
 const DEFAULT_CALL_ID = "delegate-call";
 const DEFAULT_TASK_ID_PREFIX = "delegate-task";
-
-class FallbackSubAgentResultMerger implements SubAgentResultMerger {
-  async merge(results: SubAgentResult[], strategy: DelegateMergeStrategy): Promise<string> {
-    if (strategy === "first") {
-      return this.mergeFirst(results);
-    }
-
-    return this.mergeConcatenated(results);
-  }
-
-  private mergeFirst(results: SubAgentResult[]): string {
-    for (const result of results) {
-      if (typeof result.output === "string" && result.output.trim().length > 0) {
-        return result.output;
-      }
-    }
-
-    for (const result of results) {
-      if (result.error?.message) {
-        return result.error.message;
-      }
-    }
-
-    return "";
-  }
-
-  private mergeConcatenated(results: SubAgentResult[]): string {
-    const outputs = results
-      .map((result) => result.output?.trim() ?? "")
-      .filter((output) => output.length > 0);
-
-    if (outputs.length > 0) {
-      return outputs.join("\n\n");
-    }
-
-    const errors = results
-      .map((result) => result.error?.message?.trim() ?? "")
-      .filter((errorMessage) => errorMessage.length > 0);
-
-    return errors.join("\n");
-  }
-}
 
 export class DelegateTool implements Tool {
   readonly definition: ToolDefinition = {
@@ -93,11 +61,13 @@ export class DelegateTool implements Tool {
   private readonly merger: SubAgentResultMerger;
   private readonly poolFactory: (options: SubAgentPoolOptions) => SubAgentPoolLike;
   private readonly agentLoopFactory?: AgentLoopFactory;
+  private readonly mergeOptions: MergeOptions;
 
   constructor(options: DelegateToolOptions = {}) {
-    this.merger = options.merger ?? new FallbackSubAgentResultMerger();
+    this.merger = options.merger ?? new DefaultSubAgentResultMerger();
     this.poolFactory = options.poolFactory ?? ((poolOptions) => new SubAgentPool(poolOptions));
     this.agentLoopFactory = options.agentLoopFactory;
+    this.mergeOptions = options.mergeOptions ?? {};
   }
 
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -120,7 +90,7 @@ export class DelegateTool implements Tool {
       }));
 
       const results = await pool.runAll(subAgentTasks);
-      const merged = await this.merger.merge(results, mergeStrategy);
+      const merged = await this.merger.merge(mergeStrategy, results, this.mergeOptions);
 
       return {
         callId,
