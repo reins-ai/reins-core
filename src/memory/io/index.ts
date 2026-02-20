@@ -27,3 +27,15 @@ export {
   type ExportedMemoryRecord,
   type MemoryExportFile,
 } from "./memory-export";
+export {
+  importMemoriesFromJson,
+  type ImportResult,
+} from "./memory-import";
+export {
+  validateExportedMemoryRecord,
+  validateMemoryExportFile,
+  type SchemaError,
+  type SchemaResult,
+  type ValidatedExportedMemoryRecord,
+  type ValidatedMemoryExportFile,
+} from "./memory-schemas";

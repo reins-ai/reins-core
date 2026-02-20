@@ -6,6 +6,7 @@ export const MEMORY_ERROR_CODES = [
   "MEMORY_SHUTDOWN_FAILED",
   "MEMORY_DB_ERROR",
   "MEMORY_EXPORT_FAILED",
+  "MEMORY_IMPORT_FAILED",
 ] as const;
 
 export type MemoryErrorCode = (typeof MEMORY_ERROR_CODES)[number];
