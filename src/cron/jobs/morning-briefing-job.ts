@@ -2,6 +2,8 @@ import { ReinsError } from "../../errors";
 import { err, ok, type Result } from "../../result";
 import type {
   Briefing,
+  BriefingItem,
+  BriefingSection,
   MorningBriefingService,
 } from "../../memory/proactive/morning-briefing-service";
 
@@ -131,6 +133,20 @@ export class MorningBriefingJob {
     return { ...this.schedule };
   }
 
+  /**
+   * Generates a briefing and returns formatted messages ready for delivery.
+   * Each section becomes a separate message per D-W3-2 decision.
+   */
+  async generateFormattedBriefing(): Promise<Result<FormattedBriefing, BriefingJobError>> {
+    const result = await this.triggerNow();
+
+    if (!result.ok) {
+      return result;
+    }
+
+    return ok(formatBriefing(result.value));
+  }
+
   private async executeInternal(): Promise<Result<Briefing, BriefingJobError>> {
     if (this.executing) {
       return err(
@@ -175,4 +191,96 @@ export class MorningBriefingJob {
       this.executing = false;
     }
   }
+}
+
+// --- Briefing Formatting ---
+
+export const NOTHING_TO_REPORT_MESSAGE = "Good morning! Nothing to report today.";
+
+const SECTION_EMOJI: Record<string, string> = {
+  open_threads: "\u{1F4CB}",
+  high_importance: "\u{26A0}\u{FE0F}",
+  recent_decisions: "\u{2705}",
+  upcoming: "\u{1F4C5}",
+};
+
+export interface FormattedBriefingMessage {
+  sectionType: string;
+  text: string;
+}
+
+export interface FormattedBriefing {
+  messages: FormattedBriefingMessage[];
+  totalItems: number;
+  timestamp: Date;
+  isEmpty: boolean;
+}
+
+/**
+ * Formats a Briefing object into an array of human-readable messages,
+ * one per section. Empty briefings produce a single "Nothing to report" message.
+ */
+export function formatBriefing(briefing: Briefing): FormattedBriefing {
+  if (briefing.totalItems === 0 || briefing.sections.length === 0) {
+    return {
+      messages: [{
+        sectionType: "empty",
+        text: NOTHING_TO_REPORT_MESSAGE,
+      }],
+      totalItems: 0,
+      timestamp: briefing.timestamp,
+      isEmpty: true,
+    };
+  }
+
+  const messages: FormattedBriefingMessage[] = [];
+
+  for (const section of briefing.sections) {
+    const text = formatSection(section);
+    if (text.length > 0) {
+      messages.push({
+        sectionType: section.type,
+        text,
+      });
+    }
+  }
+
+  if (messages.length === 0) {
+    return {
+      messages: [{
+        sectionType: "empty",
+        text: NOTHING_TO_REPORT_MESSAGE,
+      }],
+      totalItems: 0,
+      timestamp: briefing.timestamp,
+      isEmpty: true,
+    };
+  }
+
+  return {
+    messages,
+    totalItems: briefing.totalItems,
+    timestamp: briefing.timestamp,
+    isEmpty: false,
+  };
+}
+
+function formatSection(section: BriefingSection): string {
+  if (section.items.length === 0) {
+    return "";
+  }
+
+  const emoji = SECTION_EMOJI[section.type] ?? "\u{1F4CC}";
+  const header = `${emoji} ${section.title}`;
+  const items = section.items.map((item) => formatItem(item));
+
+  return [header, "", ...items].join("\n");
+}
+
+function formatItem(item: BriefingItem): string {
+  const bullet = `\u{2022} ${item.content}`;
+  if (item.source) {
+    return `${bullet} (${item.source})`;
+  }
+  return bullet;
 }
