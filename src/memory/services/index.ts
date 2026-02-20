@@ -35,3 +35,8 @@ export {
   formatRelativeDate,
   type MemorySummaryOptions,
 } from "./memory-summary-generator";
+export {
+  MemoryFileSyncService,
+  type MemoryFileSyncLogger,
+  type MemoryFileSyncOptions,
+} from "./memory-file-sync";
