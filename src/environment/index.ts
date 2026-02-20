@@ -1,4 +1,5 @@
 export {
+  bootstrapEnvironmentDocuments,
   bootstrapInstallRoot,
   buildInstallPaths,
   generateDefaultConfigContent,

@@ -198,20 +198,31 @@ async function ensureDefaultConfig(configPath: string, platform: NodeJS.Platform
   return true;
 }
 
-async function ensureDefaultEnvironmentDocuments(
-  defaultEnvironmentDir: string,
-  platform: NodeJS.Platform,
-  personalityPreset?: PersonalityPreset,
-  customInstructions?: string,
+/**
+ * Ensure all required environment documents exist in the given directory.
+ *
+ * This is safe to call on any environment directory (default or named).
+ * Existing files are never overwritten — only missing documents are created.
+ * When a `personalityPreset` is provided, PERSONALITY.md is generated
+ * using that preset instead of the static template.
+ *
+ * This operation is idempotent: calling it twice produces the same result.
+ */
+export async function bootstrapEnvironmentDocuments(
+  envDir: string,
+  options?: BootstrapOptions,
 ): Promise<void> {
+  const platform = options?.platform ?? process.platform;
   const templates = getAllTemplates(
-    personalityPreset
-      ? { personalityPreset, customInstructions }
+    options?.personalityPreset
+      ? { personalityPreset: options.personalityPreset, customInstructions: options.customInstructions }
       : undefined,
   );
 
+  await mkdir(envDir, { recursive: true });
+
   for (const [name, content] of templates) {
-    const documentPath = platformJoin(platform, defaultEnvironmentDir, name);
+    const documentPath = platformJoin(platform, envDir, name);
     if (await fileExists(documentPath)) {
       continue;
     }
@@ -221,6 +232,19 @@ async function ensureDefaultEnvironmentDocuments(
       await chmod(documentPath, FILE_MODE);
     }
   }
+}
+
+async function ensureDefaultEnvironmentDocuments(
+  defaultEnvironmentDir: string,
+  platform: NodeJS.Platform,
+  personalityPreset?: PersonalityPreset,
+  customInstructions?: string,
+): Promise<void> {
+  await bootstrapEnvironmentDocuments(defaultEnvironmentDir, {
+    platform,
+    personalityPreset,
+    customInstructions,
+  });
 }
 
 async function directoryExists(path: string): Promise<boolean> {

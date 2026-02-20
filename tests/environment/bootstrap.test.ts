@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  bootstrapEnvironmentDocuments,
   bootstrapInstallRoot,
   buildInstallPaths,
   generateDefaultConfigContent,
@@ -359,5 +360,83 @@ describe("bootstrapInstallRoot", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("BOOTSTRAP_FAILED");
     }
+  });
+});
+
+describe("bootstrapEnvironmentDocuments", () => {
+  afterEach(async () => {
+    while (createdDirectories.length > 0) {
+      const directory = createdDirectories.pop();
+      if (!directory) {
+        continue;
+      }
+
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("creates all required documents in a new environment directory", async () => {
+    const tempRoot = await createTempDirectory();
+    const envDir = join(tempRoot, "environments", "work");
+
+    await bootstrapEnvironmentDocuments(envDir, { platform: "linux" });
+
+    for (const [name, content] of getAllTemplates()) {
+      const filePath = join(envDir, name);
+      const fileContent = await readFile(filePath, "utf8");
+      expect(fileContent).toBe(content);
+    }
+  });
+
+  it("creates PERSONA.yaml in the environment directory", async () => {
+    const tempRoot = await createTempDirectory();
+    const envDir = join(tempRoot, "environments", "personal");
+
+    await bootstrapEnvironmentDocuments(envDir, { platform: "linux" });
+
+    const personaPath = join(envDir, "PERSONA.yaml");
+    const content = await readFile(personaPath, "utf8");
+    expect(content).toContain("name: Reins");
+    expect(content).toContain("avatar:");
+  });
+
+  it("is idempotent — does not overwrite existing documents", async () => {
+    const tempRoot = await createTempDirectory();
+    const envDir = join(tempRoot, "environments", "work");
+
+    await bootstrapEnvironmentDocuments(envDir, { platform: "linux" });
+
+    const personaPath = join(envDir, "PERSONA.yaml");
+    const customContent = "name: WorkBot\navatar: 💼\nlanguage: en\n";
+    await writeFile(personaPath, customContent, "utf8");
+
+    await bootstrapEnvironmentDocuments(envDir, { platform: "linux" });
+
+    const afterContent = await readFile(personaPath, "utf8");
+    expect(afterContent).toBe(customContent);
+  });
+
+  it("applies personality preset when provided", async () => {
+    const tempRoot = await createTempDirectory();
+    const envDir = join(tempRoot, "environments", "concise");
+
+    await bootstrapEnvironmentDocuments(envDir, {
+      platform: "linux",
+      personalityPreset: "concise",
+    });
+
+    const personalityPath = join(envDir, "PERSONALITY.md");
+    const content = await readFile(personalityPath, "utf8");
+    expect(content.length).toBeGreaterThan(0);
+  });
+
+  it("creates the directory if it does not exist", async () => {
+    const tempRoot = await createTempDirectory();
+    const envDir = join(tempRoot, "deep", "nested", "env");
+
+    await bootstrapEnvironmentDocuments(envDir, { platform: "linux" });
+
+    const dirStat = await stat(envDir);
+    expect(dirStat.isDirectory()).toBe(true);
   });
 });

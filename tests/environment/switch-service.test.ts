@@ -7,6 +7,7 @@ import { ConfigStore } from "../../src/config/store";
 import { FileEnvironmentResolver } from "../../src/environment/file-resolver";
 import { EnvironmentSwitchService } from "../../src/environment/switch-service";
 import { ENVIRONMENT_DOCUMENTS, type EnvironmentDocument } from "../../src/environment/types";
+import { parsePersonaYaml } from "../../src/environment/persona";
 
 const createdDirectories: string[] = [];
 
@@ -225,5 +226,171 @@ describe("EnvironmentSwitchService", () => {
     expect(resolvedResult.value.documents.USER.document.content).toBe("Work USER");
     expect(resolvedResult.value.documents.PERSONALITY.source).toBe("default");
     expect(resolvedResult.value.documents.PERSONALITY.document.content).toBe("Default PERSONALITY");
+  });
+
+  it("resolves PERSONA document for active environment", async () => {
+    const root = await createTempDirectory("reins-switch-persona-");
+    const environmentsRoot = join(root, "environments");
+    const configPath = join(root, "config", "reins.config.json5");
+
+    const personalPersonaYaml = "name: PersonalBot\navatar: 🏠\nlanguage: en\n";
+    const workPersonaYaml = "name: WorkBot\navatar: 💼\nlanguage: en\n";
+
+    await setupEnvironment(environmentsRoot, "default", buildDocumentSet("Default"));
+    await writeFile(
+      join(environmentsRoot, "default", "PERSONA.yaml"),
+      personalPersonaYaml,
+      "utf8",
+    );
+
+    await setupEnvironment(environmentsRoot, "personal", buildDocumentSet("Personal"));
+    await writeFile(
+      join(environmentsRoot, "personal", "PERSONA.yaml"),
+      personalPersonaYaml,
+      "utf8",
+    );
+
+    await setupEnvironment(environmentsRoot, "work", buildDocumentSet("Work"));
+    await writeFile(
+      join(environmentsRoot, "work", "PERSONA.yaml"),
+      workPersonaYaml,
+      "utf8",
+    );
+
+    const service = new EnvironmentSwitchService(
+      new ConfigStore(configPath),
+      new FileEnvironmentResolver(environmentsRoot),
+    );
+
+    // Switch to work — should resolve work persona
+    const workResult = await service.switchEnvironment("work");
+    expect(workResult.ok).toBe(true);
+    if (!workResult.ok) return;
+
+    const workPersonaDoc = workResult.value.resolvedDocuments.documents.PERSONA;
+    expect(workPersonaDoc).toBeDefined();
+    expect(workPersonaDoc.source).toBe("active");
+
+    const workPersona = parsePersonaYaml(workPersonaDoc.document.content);
+    expect(workPersona.ok).toBe(true);
+    if (!workPersona.ok) return;
+    expect(workPersona.value.name).toBe("WorkBot");
+    expect(workPersona.value.avatar).toBe("💼");
+
+    // Switch to personal — should resolve personal persona
+    const personalResult = await service.switchEnvironment("personal");
+    expect(personalResult.ok).toBe(true);
+    if (!personalResult.ok) return;
+
+    const personalPersonaDoc = personalResult.value.resolvedDocuments.documents.PERSONA;
+    expect(personalPersonaDoc).toBeDefined();
+    expect(personalPersonaDoc.source).toBe("active");
+
+    const personalPersona = parsePersonaYaml(personalPersonaDoc.document.content);
+    expect(personalPersona.ok).toBe(true);
+    if (!personalPersona.ok) return;
+    expect(personalPersona.value.name).toBe("PersonalBot");
+    expect(personalPersona.value.avatar).toBe("🏠");
+  });
+
+  it("handles missing PERSONA.yaml gracefully", async () => {
+    const root = await createTempDirectory("reins-switch-no-persona-");
+    const environmentsRoot = join(root, "environments");
+    const configPath = join(root, "config", "reins.config.json5");
+
+    await setupEnvironment(environmentsRoot, "default", buildDocumentSet("Default"));
+    await setupEnvironment(environmentsRoot, "work", buildDocumentSet("Work"));
+
+    // Neither environment has PERSONA.yaml — PERSONA is optional
+
+    const service = new EnvironmentSwitchService(
+      new ConfigStore(configPath),
+      new FileEnvironmentResolver(environmentsRoot),
+    );
+
+    const result = await service.switchEnvironment("work");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // PERSONA key should be absent from documents since it's optional
+    const personaDoc = result.value.resolvedDocuments.documents.PERSONA;
+    expect(personaDoc).toBeUndefined();
+  });
+
+  it("falls back to default PERSONA.yaml when active environment lacks one", async () => {
+    const root = await createTempDirectory("reins-switch-persona-fallback-");
+    const environmentsRoot = join(root, "environments");
+    const configPath = join(root, "config", "reins.config.json5");
+
+    const defaultPersonaYaml = "name: DefaultBot\navatar: 🤖\nlanguage: en\n";
+
+    await setupEnvironment(environmentsRoot, "default", buildDocumentSet("Default"));
+    await writeFile(
+      join(environmentsRoot, "default", "PERSONA.yaml"),
+      defaultPersonaYaml,
+      "utf8",
+    );
+
+    // work environment has no PERSONA.yaml
+    await setupEnvironment(environmentsRoot, "work", buildDocumentSet("Work"));
+
+    const service = new EnvironmentSwitchService(
+      new ConfigStore(configPath),
+      new FileEnvironmentResolver(environmentsRoot),
+    );
+
+    const result = await service.switchEnvironment("work");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Should fall back to default's PERSONA.yaml
+    const personaDoc = result.value.resolvedDocuments.documents.PERSONA;
+    expect(personaDoc).toBeDefined();
+    expect(personaDoc.source).toBe("default");
+
+    const persona = parsePersonaYaml(personaDoc.document.content);
+    expect(persona.ok).toBe(true);
+    if (!persona.ok) return;
+    expect(persona.value.name).toBe("DefaultBot");
+  });
+
+  it("switches environment without PERSONA change when neither env has PERSONA.yaml", async () => {
+    const root = await createTempDirectory("reins-switch-no-persona-change-");
+    const environmentsRoot = join(root, "environments");
+    const configPath = join(root, "config", "reins.config.json5");
+
+    await setupEnvironment(environmentsRoot, "default", buildDocumentSet("Default"));
+    await setupEnvironment(environmentsRoot, "work", buildDocumentSet("Work"));
+    await setupEnvironment(environmentsRoot, "personal", buildDocumentSet("Personal"));
+
+    const switchEvents: Array<{ previous: string; active: string }> = [];
+
+    const service = new EnvironmentSwitchService(
+      new ConfigStore(configPath),
+      new FileEnvironmentResolver(environmentsRoot),
+      (event) => {
+        switchEvents.push({
+          previous: event.previousEnvironment,
+          active: event.activeEnvironment,
+        });
+      },
+    );
+
+    // Switch between environments — no PERSONA.yaml in any
+    const workResult = await service.switchEnvironment("work");
+    expect(workResult.ok).toBe(true);
+    if (!workResult.ok) return;
+    expect(workResult.value.resolvedDocuments.documents.PERSONA).toBeUndefined();
+
+    const personalResult = await service.switchEnvironment("personal");
+    expect(personalResult.ok).toBe(true);
+    if (!personalResult.ok) return;
+    expect(personalResult.value.resolvedDocuments.documents.PERSONA).toBeUndefined();
+
+    // Both switches succeeded without errors
+    expect(switchEvents).toEqual([
+      { previous: "default", active: "work" },
+      { previous: "work", active: "personal" },
+    ]);
   });
 });
