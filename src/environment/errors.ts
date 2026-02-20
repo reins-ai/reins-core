@@ -7,6 +7,7 @@ export const ENVIRONMENT_ERROR_CODES = [
   "BOOTSTRAP_FAILED",
   "SCOPE_VIOLATION",
   "SWITCH_FAILED",
+  "EXPORT_FAILED",
 ] as const;
 
 export type EnvironmentErrorCode = (typeof ENVIRONMENT_ERROR_CODES)[number];

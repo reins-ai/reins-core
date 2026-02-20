@@ -38,6 +38,7 @@ import {
   resolveInstallRoot,
   parsePersonaYaml,
   DEFAULT_PERSONA,
+  exportPersona,
 } from "../environment";
 import { generatePersonalityMarkdown } from "../environment/templates/personality.md";
 import { err, ok, type Result } from "../result";
@@ -1511,6 +1512,10 @@ export class DaemonHttpServer implements DaemonManagedService {
 
       if (url.pathname === "/api/persona" && method === "PUT") {
         return this.handlePutPersona(request, corsHeaders);
+      }
+
+      if (url.pathname === "/api/persona/export" && method === "POST") {
+        return this.handleExportPersona(request, corsHeaders);
       }
 
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
@@ -4356,6 +4361,54 @@ export class DaemonHttpServer implements DaemonManagedService {
       );
     } catch (error) {
       log("error", "Failed to save persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        { success: false, error: error instanceof Error ? error.message : "Internal server error" },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+  }
+
+  private async handleExportPersona(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          { success: false, error: "Environment services not initialized" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      let body: { outputDir?: string } = {};
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        // Empty body is fine — use default output directory
+      }
+
+      const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
+      const outputDir = typeof body.outputDir === "string" && body.outputDir.trim().length > 0
+        ? body.outputDir.trim()
+        : paths.environmentsDir;
+
+      const result = await exportPersona(envDir, outputDir);
+      if (!result.ok) {
+        return Response.json(
+          { success: false, error: result.error.message },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      return Response.json(
+        { success: true, path: result.value.path, exportedAt: result.value.exportedAt },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to export persona", {
         error: error instanceof Error ? error.message : String(error),
       });
       return Response.json(
