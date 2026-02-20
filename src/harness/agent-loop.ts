@@ -9,6 +9,7 @@ import { DoomLoopGuard } from "./doom-loop-guard";
 import { PermissionChecker } from "./permissions";
 import type { ToolPipeline, ToolPipelineResult } from "./tool-pipeline";
 import type { ToolExecutor } from "../tools";
+import type { AgentLoopFactory } from "./sub-agent-pool";
 
 const DEFAULT_MAX_STEPS = 25;
 const STEP_LIMIT_MESSAGE = "Step limit reached. Tools are now disabled. Please provide a final response.";
@@ -29,6 +30,7 @@ export interface AgentLoopOptions {
   doomLoopGuard?: DoomLoopGuard;
   signal?: AbortSignal;
   nudgeInjector?: NudgeInjector;
+  agentLoopFactory?: AgentLoopFactory;
 }
 
 export interface StepResult {
@@ -53,7 +55,36 @@ export interface AgentMessage {
 
 export interface DelegationContract {
   canDelegate: boolean;
-  delegate?: (task: string, context: unknown) => Promise<StepResult>;
+  delegate?: (task: string, context: DelegationContext) => Promise<StepResult>;
+}
+
+export interface DelegationContext {
+  toolCall: ToolCall;
+  messages: AgentMessage[];
+  context: ToolContext;
+}
+
+export function createSubAgentPoolDelegationContract(options: {
+  canDelegate?: boolean;
+  signal?: AbortSignal;
+  agentLoopFactory?: AgentLoopFactory;
+} = {}): DelegationContract {
+  return {
+    canDelegate: options.canDelegate ?? true,
+    delegate: async (task, _context): Promise<StepResult> => {
+      const { SubAgentPool } = await import("./sub-agent-pool");
+      const pool = new SubAgentPool({
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.agentLoopFactory ? { agentLoopFactory: options.agentLoopFactory } : {}),
+      });
+      const [result] = await pool.runAll([{ id: "delegated", prompt: task }]);
+
+      return {
+        type: "text",
+        content: result?.output ?? result?.error?.message ?? "",
+      };
+    },
+  };
 }
 
 export interface AgentLoopResult {

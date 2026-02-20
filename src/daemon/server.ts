@@ -87,6 +87,7 @@ import { AgentLoop } from "../harness/agent-loop";
 import { ToolExecutor, ToolRegistry } from "../tools";
 import { EDIT_DEFINITION, GLOB_DEFINITION, GREP_DEFINITION, READ_DEFINITION, WRITE_DEFINITION } from "../tools/builtins";
 import { MemoryTool } from "../tools/memory-tool";
+import { DelegateTool } from "../tools/delegate-tool";
 import { BashTool } from "../tools/system/bash";
 import { executeEdit } from "../tools/system/edit";
 import { GlobTool } from "../tools/system/glob";
@@ -903,6 +904,10 @@ function createDefaultToolExecutor(
 
   if (credentialStore) {
     toolRegistry.register(createWebSearchToolFromCredentials({ credentialStore }));
+  }
+
+  if (!toolRegistry.has("delegate")) {
+    toolRegistry.register(new DelegateTool());
   }
 
   return new ToolExecutor(toolRegistry);

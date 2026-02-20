@@ -2,6 +2,7 @@ export * from "./builtins";
 export * from "./calendar";
 export * from "./calendar-watcher";
 export * from "./date-parser";
+export * from "./delegate-tool";
 export * from "./executor";
 export * from "./schedule-confirmation";
 export * from "./execution/policy";
