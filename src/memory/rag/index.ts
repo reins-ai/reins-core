@@ -44,6 +44,16 @@ export {
   type RankedChunk,
 } from "./document-semantic-search";
 export {
+  DOCUMENT_FORMATS,
+  DocumentExtractor,
+  MAX_DOCUMENT_SIZE_BYTES,
+  type DocumentExtractorAdapters,
+  type DocumentExtractorFileSystem,
+  type DocumentExtractorOptions,
+  type DocumentFormat,
+  type ExtractedDocument,
+} from "./document-extractor";
+export {
   DEFAULT_WATCH_CONFIG,
   DocumentWatchService,
   FILE_CHANGE_TYPES,
