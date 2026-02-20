@@ -7,11 +7,15 @@ import { GOALS_TEMPLATE } from "./goals.md";
 import { KNOWLEDGE_TEMPLATE } from "./knowledge.md";
 import { TOOLS_TEMPLATE, STRUCTURED_EXTRACTION_EXAMPLES } from "./tools.md";
 import { BOUNDARIES_TEMPLATE } from "./boundaries.md";
+import { generateDefaultPersonaYaml } from "../persona";
+
+export const PERSONA_YAML_DEFAULT = generateDefaultPersonaYaml();
 
 /**
  * Document types that must exist in every environment.
  */
 export const REQUIRED_DOCUMENTS = [
+  "PERSONA.yaml",
   "PERSONALITY.md",
   "USER.md",
   "HEARTBEAT.md",
@@ -28,6 +32,7 @@ export type DocumentName = (typeof REQUIRED_DOCUMENTS)[number];
  * Mapping of document names to their template content.
  */
 export const TEMPLATES: Record<DocumentName, string> = {
+  "PERSONA.yaml": PERSONA_YAML_DEFAULT,
   "PERSONALITY.md": PERSONALITY_TEMPLATE,
   "USER.md": USER_TEMPLATE,
   "HEARTBEAT.md": HEARTBEAT_TEMPLATE,

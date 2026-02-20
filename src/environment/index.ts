@@ -74,3 +74,10 @@ export type {
   EnvironmentDocumentMap,
   OverlayResolution,
 } from "./types";
+
+export {
+  DEFAULT_PERSONA,
+  generateDefaultPersonaYaml,
+  parsePersonaYaml,
+} from "./persona";
+export type { Persona } from "./persona";
