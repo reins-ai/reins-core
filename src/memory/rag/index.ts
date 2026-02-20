@@ -36,6 +36,11 @@ export {
   type IndexedChunk,
 } from "./document-indexer";
 export {
+  DocumentSemanticSearch,
+  type DocumentSearchOptions,
+  type RankedChunk,
+} from "./document-semantic-search";
+export {
   DEFAULT_WATCH_CONFIG,
   DocumentWatchService,
   FILE_CHANGE_TYPES,
