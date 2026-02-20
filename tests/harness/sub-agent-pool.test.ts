@@ -56,6 +56,41 @@ function createFactory(
   });
 }
 
+async function runPoolAndCaptureMaxActive(
+  tasks: SubAgentTask[],
+  poolOptions: ConstructorParameters<typeof SubAgentPool>[0],
+): Promise<{ maxActive: number }> {
+  let active = 0;
+  let maxActive = 0;
+
+  const pool = new SubAgentPool({
+    ...poolOptions,
+    agentLoopFactory: () => ({
+      async runTask(task, signal) {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await sleep(40);
+        active -= 1;
+
+        if (signal.aborted) {
+          throw new Error("Aborted");
+        }
+
+        return {
+          output: `done-${task.id}`,
+          stepsUsed: 1,
+          terminationReason: "text_only_response",
+        };
+      },
+    }),
+  });
+
+  const results = await pool.runAll(tasks);
+  expect(results.every((result) => result.error === undefined)).toBe(true);
+
+  return { maxActive };
+}
+
 describe("SubAgentPool", () => {
   it("completes tasks in parallel and returns all successful results", async () => {
     const tasks = createTasks(5);
@@ -245,6 +280,81 @@ describe("SubAgentPool", () => {
 
     const results = await pool.runAll(tasks);
     expect(results.every((result) => result.error === undefined)).toBe(true);
+  });
+
+  it("tier: Free workspace limits to 2 concurrent", async () => {
+    const tasks = createTasks(6);
+    const { maxActive } = await runPoolAndCaptureMaxActive(tasks, {
+      tier: "free",
+    });
+
+    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(maxActive).toBe(2);
+  });
+
+  it("tier: Pro workspace limits to 5 concurrent", async () => {
+    const tasks = createTasks(8);
+    const { maxActive } = await runPoolAndCaptureMaxActive(tasks, {
+      tier: "pro",
+    });
+
+    expect(maxActive).toBeLessThanOrEqual(5);
+    expect(maxActive).toBe(5);
+  });
+
+  it("tier: Team workspace limits to 15 concurrent", async () => {
+    const tasks = createTasks(20);
+    const { maxActive } = await runPoolAndCaptureMaxActive(tasks, {
+      tier: "team",
+    });
+
+    expect(maxActive).toBeLessThanOrEqual(15);
+    expect(maxActive).toBe(15);
+  });
+
+  it("tier: explicit maxConcurrent overrides tier", async () => {
+    const tasks = createTasks(12);
+    const { maxActive } = await runPoolAndCaptureMaxActive(tasks, {
+      tier: "free",
+      maxConcurrent: 10,
+    });
+
+    expect(maxActive).toBeLessThanOrEqual(10);
+    expect(maxActive).toBe(10);
+  });
+
+  it("tier: tasks beyond limit are queued, not rejected", async () => {
+    const tasks = createTasks(5);
+    let active = 0;
+    let maxActive = 0;
+
+    const pool = new SubAgentPool({
+      tier: "free",
+      agentLoopFactory: () => ({
+        async runTask(task, signal) {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await sleep(50);
+          active -= 1;
+
+          if (signal.aborted) {
+            throw new Error("Aborted");
+          }
+
+          return {
+            output: `queued-${task.id}`,
+            stepsUsed: 1,
+            terminationReason: "text_only_response",
+          };
+        },
+      }),
+    });
+
+    const results = await pool.runAll(tasks);
+
+    expect(results).toHaveLength(5);
+    expect(results.every((result) => result.error === undefined)).toBe(true);
+    expect(maxActive).toBeLessThanOrEqual(2);
   });
 
   it("uses default AgentLoop factory when no factory is supplied", async () => {

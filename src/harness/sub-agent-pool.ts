@@ -7,6 +7,14 @@ const DEFAULT_USER_ID = "sub-agent-pool";
 const DEFAULT_WORKSPACE_ID = "sub-agent-pool";
 const ABORT_ERROR_MESSAGE = "Sub-agent task aborted";
 
+export type WorkspaceTier = "free" | "pro" | "team";
+
+export const TIER_CONCURRENCY_LIMITS: Record<WorkspaceTier, number> = {
+  free: 2,
+  pro: 5,
+  team: 15,
+} as const;
+
 export interface SubAgentTask {
   id: string;
   prompt: string;
@@ -36,6 +44,7 @@ export type AgentLoopFactory = (options: AgentLoopOptions) => AgentLoopRunner;
 
 export interface SubAgentPoolOptions {
   maxConcurrent?: number;
+  tier?: WorkspaceTier;
   signal?: AbortSignal;
   agentLoopFactory?: AgentLoopFactory;
 }
@@ -77,7 +86,7 @@ export class SubAgentPool {
   private readonly agentLoopFactory: AgentLoopFactory;
 
   constructor(options: SubAgentPoolOptions = {}) {
-    this.maxConcurrent = this.resolveMaxConcurrent(options.maxConcurrent);
+    this.maxConcurrent = this.resolveMaxConcurrent(options.maxConcurrent, options.tier);
     this.signal = options.signal;
     this.agentLoopFactory = options.agentLoopFactory ?? createDefaultAgentLoopFactory();
   }
@@ -169,12 +178,16 @@ export class SubAgentPool {
     };
   }
 
-  private resolveMaxConcurrent(value: number | undefined): number {
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      return DEFAULT_MAX_CONCURRENT;
+  private resolveMaxConcurrent(value: number | undefined, tier: WorkspaceTier | undefined): number {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(1, Math.floor(value));
     }
 
-    return Math.max(1, Math.floor(value));
+    if (tier) {
+      return TIER_CONCURRENCY_LIMITS[tier];
+    }
+
+    return DEFAULT_MAX_CONCURRENT;
   }
 }
 
