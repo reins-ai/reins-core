@@ -303,6 +303,34 @@ export const INDEX_DOCUMENT_DEFINITION: ToolDefinition = {
   },
 };
 
+export const SEARCH_DOCUMENTS_DEFINITION: ToolDefinition = {
+  name: "search_documents",
+  description:
+    "Search indexed documents using semantic and keyword matching. " +
+    "Returns ranked results with content previews, relevance scores, " +
+    "and source metadata.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "The search query to find relevant document chunks.",
+      },
+      top_k: {
+        type: "number",
+        description:
+          "Maximum number of results to return. Defaults to 5.",
+      },
+      source: {
+        type: "string",
+        description:
+          "Optional source path filter to restrict search to a specific document or directory.",
+      },
+    },
+    required: ["query"],
+  },
+};
+
 export const WEB_SEARCH_DEFINITION: ToolDefinition = {
   name: "web_search",
   description:
@@ -518,6 +546,7 @@ export function getBuiltinToolDefinitions(): ToolDefinition[] {
     VOICE_DEFINITION,
     MEMORY_DEFINITION,
     INDEX_DOCUMENT_DEFINITION,
+    SEARCH_DOCUMENTS_DEFINITION,
     WEB_SEARCH_DEFINITION,
     ...SYSTEM_TOOL_DEFINITIONS.map(toToolDefinition),
   ];
