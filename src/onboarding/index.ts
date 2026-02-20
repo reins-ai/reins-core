@@ -30,12 +30,18 @@ export {
 } from "./first-run-detector";
 
 export {
+  PERSONALITY_CARDS,
   PERSONALITY_PRESETS,
+  getPresetCard,
   getPresetPromptModifier,
+  type PersonalityCardData,
   type PersonalityPromptDefinition,
 } from "./personality-prompts";
 
 export {
+  getWelcomeCopy,
+  WELCOME_COPY_VARIANTS,
+  type WelcomeCopy,
   DaemonInstallStep,
   type DaemonInstallStepOptions,
   ModelSelectionStep,
@@ -49,7 +55,10 @@ export {
   WorkspaceStep,
 } from "./steps";
 
+export { detectProviderFromKey } from "./key-detect";
+
 export {
+  ONBOARDING_CHECKPOINT_VERSION,
   ONBOARDING_STEPS,
   type CompletedStepRecord,
   type OnboardingConfig,

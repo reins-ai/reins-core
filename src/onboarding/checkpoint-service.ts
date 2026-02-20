@@ -5,6 +5,7 @@ import { getDataRoot } from "../daemon/paths";
 import { err, ok, type Result } from "../result";
 
 import {
+  ONBOARDING_CHECKPOINT_VERSION,
   ONBOARDING_STEPS,
   type CompletedStepRecord,
   type OnboardingConfig,
@@ -179,6 +180,7 @@ export class OnboardingCheckpointService {
 
 function createFreshCheckpoint(mode: OnboardingMode): OnboardingConfig {
   return {
+    version: ONBOARDING_CHECKPOINT_VERSION,
     setupComplete: false,
     mode,
     currentStep: ONBOARDING_STEPS[0],
@@ -224,7 +226,10 @@ function normalizeCheckpoint(value: unknown): OnboardingConfig {
     ? (value.currentStep as OnboardingStep)
     : null;
 
+  const version = typeof value.version === "number" ? value.version : ONBOARDING_CHECKPOINT_VERSION;
+
   return {
+    version,
     setupComplete: value.setupComplete === true,
     mode,
     currentStep,

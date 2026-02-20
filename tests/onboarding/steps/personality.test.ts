@@ -1,12 +1,15 @@
 import { describe, expect, it } from "bun:test";
 
 import { PersonalityStep } from "../../../src/onboarding/steps/personality";
-import { PERSONALITY_PRESETS } from "../../../src/onboarding/personality-prompts";
+import {
+  PERSONALITY_CARDS,
+  type PersonalityCardData,
+} from "../../../src/onboarding/personality-prompts";
 import type { StepExecutionContext } from "../../../src/onboarding/steps/types";
-import type { OnboardingConfig } from "../../../src/onboarding/types";
+import type { OnboardingConfig, OnboardingMode } from "../../../src/onboarding/types";
 
 function createContext(
-  mode: "quickstart" | "advanced",
+  mode: OnboardingMode,
   overrides?: Partial<StepExecutionContext>,
 ): StepExecutionContext {
   const config: OnboardingConfig = {
@@ -37,7 +40,7 @@ describe("PersonalityStep", () => {
     expect(step.skippable).toBe(true);
   });
 
-  describe("execute in quickstart mode", () => {
+  describe("quickstart mode", () => {
     it("returns completed status with balanced preset", async () => {
       const step = new PersonalityStep();
       const context = createContext("quickstart");
@@ -49,6 +52,16 @@ describe("PersonalityStep", () => {
       expect(result.data!.preset).toBe("balanced");
     });
 
+    it("auto-selects balanced without requiring user interaction", async () => {
+      const step = new PersonalityStep();
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.data!.preset).toBe("balanced");
+      expect(result.data!.cards).toBeUndefined();
+    });
+
     it("does not include customPrompt in quickstart defaults", async () => {
       const step = new PersonalityStep();
       const context = createContext("quickstart");
@@ -57,10 +70,20 @@ describe("PersonalityStep", () => {
 
       expect(result.data!.customPrompt).toBeUndefined();
     });
+
+    it("does not include card data in quickstart mode", async () => {
+      const step = new PersonalityStep();
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.data!.cards).toBeUndefined();
+      expect(result.data!.supportsCustom).toBeUndefined();
+    });
   });
 
-  describe("execute in advanced mode", () => {
-    it("returns completed status with available presets", async () => {
+  describe("advanced mode", () => {
+    it("returns completed status with card data", async () => {
       const step = new PersonalityStep();
       const context = createContext("advanced");
 
@@ -68,26 +91,50 @@ describe("PersonalityStep", () => {
 
       expect(result.status).toBe("completed");
       expect(result.data).toBeDefined();
-      expect(result.data!.availablePresets).toBeDefined();
+      expect(result.data!.cards).toBeDefined();
     });
 
-    it("provides all built-in presets for TUI selection", async () => {
+    it("returns all 4 preset cards", async () => {
       const step = new PersonalityStep();
       const context = createContext("advanced");
 
       const result = await step.execute(context);
-      const presets = result.data!.availablePresets as Array<{
-        preset: string;
-        label: string;
-        description: string;
-      }>;
+      const cards = result.data!.cards as PersonalityCardData[];
 
-      expect(presets).toHaveLength(PERSONALITY_PRESETS.length);
-      for (const preset of presets) {
-        expect(preset.preset).toBeTypeOf("string");
-        expect(preset.label).toBeTypeOf("string");
-        expect(preset.description).toBeTypeOf("string");
+      expect(cards).toHaveLength(4);
+    });
+
+    it("each card includes preset, label, emoji, description, and exampleResponse", async () => {
+      const step = new PersonalityStep();
+      const context = createContext("advanced");
+
+      const result = await step.execute(context);
+      const cards = result.data!.cards as PersonalityCardData[];
+
+      for (const card of cards) {
+        expect(card.preset).toBeTypeOf("string");
+        expect(card.label).toBeTypeOf("string");
+        expect(card.emoji).toBeTypeOf("string");
+        expect(card.description).toBeTypeOf("string");
+        expect(card.exampleResponse).toBeTypeOf("string");
+        expect(card.emoji.length).toBeGreaterThan(0);
+        expect(card.description.length).toBeGreaterThan(0);
+        expect(card.exampleResponse.length).toBeGreaterThan(0);
       }
+    });
+
+    it("includes balanced, concise, technical, and warm presets", async () => {
+      const step = new PersonalityStep();
+      const context = createContext("advanced");
+
+      const result = await step.execute(context);
+      const cards = result.data!.cards as PersonalityCardData[];
+      const presetIds = cards.map((c) => c.preset);
+
+      expect(presetIds).toContain("balanced");
+      expect(presetIds).toContain("concise");
+      expect(presetIds).toContain("technical");
+      expect(presetIds).toContain("warm");
     });
 
     it("indicates custom input is supported", async () => {
@@ -97,6 +144,15 @@ describe("PersonalityStep", () => {
       const result = await step.execute(context);
 
       expect(result.data!.supportsCustom).toBe(true);
+    });
+
+    it("does not include preset field at top level in advanced mode", async () => {
+      const step = new PersonalityStep();
+      const context = createContext("advanced");
+
+      const result = await step.execute(context);
+
+      expect(result.data!.preset).toBeUndefined();
     });
   });
 
@@ -116,36 +172,80 @@ describe("PersonalityStep", () => {
     });
   });
 
-  describe("custom presets override", () => {
-    it("uses injected presets instead of built-in ones", async () => {
-      const customPresets = [
+  describe("custom cards override", () => {
+    it("uses injected cards instead of built-in ones", async () => {
+      const customCards: PersonalityCardData[] = [
         {
-          preset: "balanced" as const,
+          preset: "balanced",
           label: "Test Balanced",
+          emoji: "\uD83E\uDDEA",
           description: "Test description",
-          systemPromptModifier: "Test modifier",
+          exampleResponse: "Test example response",
         },
       ];
 
-      const step = new PersonalityStep({ presets: customPresets });
+      const step = new PersonalityStep({ cards: customCards });
       const context = createContext("advanced");
 
       const result = await step.execute(context);
-      const presets = result.data!.availablePresets as Array<{
-        preset: string;
-        label: string;
-      }>;
+      const cards = result.data!.cards as PersonalityCardData[];
 
-      expect(presets).toHaveLength(1);
-      expect(presets[0].label).toBe("Test Balanced");
+      expect(cards).toHaveLength(1);
+      expect(cards[0].label).toBe("Test Balanced");
+      expect(cards[0].emoji).toBe("\uD83E\uDDEA");
+      expect(cards[0].exampleResponse).toBe("Test example response");
+    });
+
+    it("custom cards do not affect quickstart mode", async () => {
+      const customCards: PersonalityCardData[] = [
+        {
+          preset: "technical",
+          label: "Only Technical",
+          emoji: "\uD83D\uDD27",
+          description: "Only option",
+          exampleResponse: "Only example",
+        },
+      ];
+
+      const step = new PersonalityStep({ cards: customCards });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.data!.preset).toBe("balanced");
+      expect(result.data!.cards).toBeUndefined();
     });
   });
 
-  describe("all presets produce distinct modifiers", () => {
-    it("each built-in preset has a unique system prompt modifier", () => {
-      const modifiers = PERSONALITY_PRESETS.map((p) => p.systemPromptModifier);
-      const uniqueModifiers = new Set(modifiers);
-      expect(uniqueModifiers.size).toBe(PERSONALITY_PRESETS.length);
+  describe("card data quality", () => {
+    it("all built-in cards have unique preset identifiers", () => {
+      const presetIds = PERSONALITY_CARDS.map((c) => c.preset);
+      const uniqueIds = new Set(presetIds);
+      expect(uniqueIds.size).toBe(PERSONALITY_CARDS.length);
+    });
+
+    it("all built-in cards have unique emoji", () => {
+      const emojis = PERSONALITY_CARDS.map((c) => c.emoji);
+      const uniqueEmojis = new Set(emojis);
+      expect(uniqueEmojis.size).toBe(PERSONALITY_CARDS.length);
+    });
+
+    it("all built-in cards have non-empty descriptions", () => {
+      for (const card of PERSONALITY_CARDS) {
+        expect(card.description.trim().length).toBeGreaterThan(0);
+      }
+    });
+
+    it("all built-in cards have non-empty example responses", () => {
+      for (const card of PERSONALITY_CARDS) {
+        expect(card.exampleResponse.trim().length).toBeGreaterThan(0);
+      }
+    });
+
+    it("example responses demonstrate distinct tones", () => {
+      const examples = PERSONALITY_CARDS.map((c) => c.exampleResponse);
+      const uniqueExamples = new Set(examples);
+      expect(uniqueExamples.size).toBe(PERSONALITY_CARDS.length);
     });
   });
 });

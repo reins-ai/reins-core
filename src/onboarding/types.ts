@@ -88,11 +88,22 @@ export interface CompletedStepRecord {
 }
 
 /**
+ * Current onboarding checkpoint schema version.
+ * Increment when the checkpoint format changes to enable migration detection.
+ */
+export const ONBOARDING_CHECKPOINT_VERSION = 1;
+
+/**
  * Onboarding configuration schema.
  *
  * Persisted to `~/.reins/onboarding.json` for checkpoint/resume support.
  */
 export interface OnboardingConfig {
+  /**
+   * Schema version for future migration detection.
+   */
+  version: number;
+
   /**
    * Whether the full onboarding flow has been completed.
    */

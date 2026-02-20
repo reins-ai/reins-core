@@ -16,6 +16,26 @@ export interface PersonalityPromptDefinition {
 }
 
 /**
+ * Rich card data for presenting personality presets in the onboarding UI.
+ *
+ * Each card includes visual metadata (emoji, description, example response)
+ * so the TUI can render selectable personality cards without hardcoding
+ * display logic.
+ */
+export interface PersonalityCardData {
+  /** Preset identifier matching PersonalityPreset type. */
+  preset: PersonalityPreset;
+  /** Human-readable label for display. */
+  label: string;
+  /** Emoji icon representing the personality style. */
+  emoji: string;
+  /** Short description of the personality style. */
+  description: string;
+  /** Example response demonstrating the personality tone. */
+  exampleResponse: string;
+}
+
+/**
  * Built-in personality presets with their system prompt modifiers.
  *
  * Each preset produces a distinct modifier string that can be passed
@@ -54,6 +74,52 @@ export const PERSONALITY_PRESETS: ReadonlyArray<PersonalityPromptDefinition> = [
 ];
 
 /**
+ * Rich card data for each personality preset.
+ *
+ * Used by the onboarding personality step to present presets as
+ * visual cards with emoji, description, and an example response
+ * that demonstrates the tone.
+ */
+export const PERSONALITY_CARDS: ReadonlyArray<PersonalityCardData> = [
+  {
+    preset: "balanced",
+    label: "Balanced",
+    emoji: "\u2696\uFE0F",
+    description:
+      "Clear, professional, and helpful. A good fit for most people.",
+    exampleResponse:
+      "Here\u2019s a summary of your schedule for today. You have 3 meetings and a deadline at 5 PM.",
+  },
+  {
+    preset: "concise",
+    label: "Concise",
+    emoji: "\u26A1",
+    description:
+      "Short and to the point. No fluff, just answers.",
+    exampleResponse:
+      "3 meetings today. Deadline at 5 PM.",
+  },
+  {
+    preset: "technical",
+    label: "Technical",
+    emoji: "\uD83D\uDD27",
+    description:
+      "Detailed and precise. Assumes you know your stuff.",
+    exampleResponse:
+      "Today\u2019s schedule: 3 calendar events (2 syncs, 1 standup). Task queue has 1 item due at 17:00 UTC.",
+  },
+  {
+    preset: "warm",
+    label: "Warm",
+    emoji: "\u2615",
+    description:
+      "Friendly and encouraging. Like chatting with a helpful friend.",
+    exampleResponse:
+      "Good morning! You\u2019ve got a pretty manageable day ahead \u2014 3 meetings and one deadline this evening. You\u2019ve got this!",
+  },
+];
+
+/**
  * Look up the system prompt modifier for a given personality preset.
  *
  * Returns `null` for the "custom" preset (which uses user-provided text)
@@ -63,4 +129,14 @@ export function getPresetPromptModifier(preset: PersonalityPreset): string | nul
   if (preset === "custom") return null;
   const definition = PERSONALITY_PRESETS.find((p) => p.preset === preset);
   return definition?.systemPromptModifier ?? null;
+}
+
+/**
+ * Look up the card data for a given personality preset.
+ *
+ * Returns `undefined` if the preset is not found or is "custom".
+ */
+export function getPresetCard(preset: PersonalityPreset): PersonalityCardData | undefined {
+  if (preset === "custom") return undefined;
+  return PERSONALITY_CARDS.find((c) => c.preset === preset);
 }

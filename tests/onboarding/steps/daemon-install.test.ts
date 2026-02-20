@@ -6,9 +6,14 @@ import type { ServiceInstaller } from "../../../src/daemon/service-installer";
 import type { OnboardingConfig, OnboardingMode } from "../../../src/onboarding/types";
 import type { StepExecutionContext } from "../../../src/onboarding/steps/types";
 import { DaemonInstallStep } from "../../../src/onboarding/steps/daemon-install";
+import {
+  getDaemonInstallCopy,
+  DAEMON_INSTALL_COPY_VARIANTS,
+} from "../../../src/onboarding/steps/copy";
 
 function createContext(
   mode: OnboardingMode = "quickstart",
+  collectedData: Record<string, unknown> = {},
 ): StepExecutionContext {
   const config: OnboardingConfig = {
     setupComplete: false,
@@ -22,7 +27,7 @@ function createContext(
   return {
     mode,
     config,
-    collectedData: {},
+    collectedData,
   };
 }
 
@@ -80,161 +85,339 @@ describe("DaemonInstallStep", () => {
     expect(step.step).toBe("daemon-install");
   });
 
-  it("returns defaults with installMethod", () => {
+  it("returns defaults with installMethod and installPath", () => {
     const step = new DaemonInstallStep();
     const defaults = step.getDefaults();
 
-    expect(defaults).toEqual({
-      installMethod: "auto",
+    expect(defaults.installMethod).toBe("auto");
+    expect(defaults.installPath).toBe("/usr/local/bin");
+  });
+
+  describe("quickstart mode", () => {
+    it("completes immediately when daemon is already running", async () => {
+      const step = new DaemonInstallStep({
+        checkHealth: async () => true,
+      });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.status).toBe("completed");
+      expect(result.data?.alreadyRunning).toBe(true);
+      expect(result.data?.installMethod).toBe("none");
+      expect(result.data?.installPath).toBe("/usr/local/bin");
+    });
+
+    it("includes friendly copy when daemon is already running", async () => {
+      const step = new DaemonInstallStep({
+        checkHealth: async () => true,
+      });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+      const copy = result.data?.copy as Record<string, string>;
+
+      expect(copy.headline).toBeDefined();
+      expect(copy.description).toBeDefined();
+      expect(copy.benefit).toBeDefined();
+      expect(copy.statusMessage).toBeDefined();
+      // Should not contain raw config keys or technical jargon in balanced mode
+      expect(copy.headline).not.toContain("localhost");
+      expect(copy.description).not.toContain("7433");
+    });
+
+    it("installs via ServiceInstaller when daemon is not running", async () => {
+      let installCalled = false;
+      const mockInstaller = createMockServiceInstaller();
+      const originalInstall = mockInstaller.install.bind(mockInstaller);
+      (mockInstaller as Record<string, unknown>).install = async (...args: unknown[]) => {
+        installCalled = true;
+        return originalInstall(...(args as Parameters<typeof mockInstaller.install>));
+      };
+
+      let healthCheckCount = 0;
+      const step = new DaemonInstallStep({
+        serviceInstaller: mockInstaller,
+        checkHealth: async () => {
+          healthCheckCount++;
+          return healthCheckCount > 1;
+        },
+      });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(installCalled).toBe(true);
+      expect(result.status).toBe("completed");
+      expect(result.data?.alreadyRunning).toBe(false);
+      expect(result.data?.installMethod).toBe("auto");
+      expect(result.data?.installed).toBe(true);
+      expect(result.data?.healthy).toBe(true);
+    });
+
+    it("reports error when install fails", async () => {
+      const mockInstaller = createMockServiceInstaller({ installOk: false });
+
+      const step = new DaemonInstallStep({
+        serviceInstaller: mockInstaller,
+        checkHealth: async () => false,
+      });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.status).toBe("completed");
+      expect(result.data?.installed).toBe(false);
+      expect(result.data?.error).toBe("Install failed");
+    });
+
+    it("reports health check failure after successful install", async () => {
+      const mockInstaller = createMockServiceInstaller();
+
+      const step = new DaemonInstallStep({
+        serviceInstaller: mockInstaller,
+        checkHealth: async () => false,
+      });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.status).toBe("completed");
+      expect(result.data?.installed).toBe(true);
+      expect(result.data?.healthy).toBe(false);
+      expect(result.data?.error).toContain("health check failed");
+    });
+
+    it("reports manual install needed when no installer provided", async () => {
+      const step = new DaemonInstallStep({
+        checkHealth: async () => false,
+      });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.status).toBe("completed");
+      expect(result.data?.installMethod).toBe("manual");
+      expect(result.data?.installPath).toBe("/usr/local/bin");
+    });
+
+    it("uses default install path without exposing it to user", async () => {
+      const step = new DaemonInstallStep({
+        checkHealth: async () => true,
+      });
+      const context = createContext("quickstart");
+
+      const result = await step.execute(context);
+
+      expect(result.data?.installPath).toBe("/usr/local/bin");
+      // Quickstart copy should not include path customization prompts
+      const copy = result.data?.copy as Record<string, string>;
+      expect(copy.customPathPrompt).toBeUndefined();
     });
   });
 
-  it("completes immediately when daemon is already running", async () => {
-    const step = new DaemonInstallStep({
-      checkHealth: async () => true,
+  describe("advanced mode", () => {
+    it("returns install path options for customization", async () => {
+      const step = new DaemonInstallStep({
+        checkHealth: async () => false,
+      });
+      const context = createContext("advanced");
+
+      const result = await step.execute(context);
+
+      expect(result.status).toBe("completed");
+      expect(result.data?.installPath).toBe("/usr/local/bin");
+      const copy = result.data?.copy as Record<string, string>;
+      expect(copy.defaultPathLabel).toBeDefined();
+      expect(copy.customPathPrompt).toBeDefined();
     });
-    const context = createContext();
 
-    const result = await step.execute(context);
+    it("shows daemon already running status in advanced mode", async () => {
+      const step = new DaemonInstallStep({
+        checkHealth: async () => true,
+      });
+      const context = createContext("advanced");
 
-    expect(result.status).toBe("completed");
-    expect(result.data?.alreadyRunning).toBe(true);
-    expect(result.data?.installMethod).toBe("none");
+      const result = await step.execute(context);
+
+      expect(result.status).toBe("completed");
+      expect(result.data?.alreadyRunning).toBe(true);
+      expect(result.data?.installMethod).toBe("none");
+    });
+
+    it("includes full copy with path customization options", async () => {
+      const step = new DaemonInstallStep({
+        checkHealth: async () => false,
+      });
+      const context = createContext("advanced");
+
+      const result = await step.execute(context);
+      const copy = result.data?.copy as Record<string, string>;
+
+      expect(copy.headline).toBeDefined();
+      expect(copy.description).toBeDefined();
+      expect(copy.benefit).toBeDefined();
+      expect(copy.statusMessage).toBeDefined();
+      expect(copy.defaultPathLabel).toBeDefined();
+      expect(copy.customPathPrompt).toBeDefined();
+    });
   });
 
-  it("installs via ServiceInstaller when daemon is not running", async () => {
-    let installCalled = false;
-    const mockInstaller = createMockServiceInstaller();
-    const originalInstall = mockInstaller.install.bind(mockInstaller);
-    (mockInstaller as Record<string, unknown>).install = async (...args: unknown[]) => {
-      installCalled = true;
-      return originalInstall(...(args as Parameters<typeof mockInstaller.install>));
-    };
+  describe("personality-aware copy", () => {
+    it("uses balanced copy by default", () => {
+      const step = new DaemonInstallStep();
+      const copy = step.getCopy();
+      const expected = getDaemonInstallCopy("balanced");
 
-    let healthCheckCount = 0;
-    const step = new DaemonInstallStep({
-      serviceInstaller: mockInstaller,
-      checkHealth: async () => {
-        healthCheckCount++;
-        // First call: not running. Second call (post-install): running.
-        return healthCheckCount > 1;
-      },
+      expect(copy.headline).toBe(expected.headline);
+      expect(copy.description).toBe(expected.description);
     });
-    const context = createContext();
 
-    const result = await step.execute(context);
+    it("uses personality preset from constructor", () => {
+      const step = new DaemonInstallStep({
+        personalityPreset: "warm",
+        checkHealth: async () => true,
+      });
+      const copy = step.getCopy();
+      const expected = getDaemonInstallCopy("warm");
 
-    expect(installCalled).toBe(true);
-    expect(result.status).toBe("completed");
-    expect(result.data?.alreadyRunning).toBe(false);
-    expect(result.data?.installMethod).toBe("auto");
-    expect(result.data?.installed).toBe(true);
-    expect(result.data?.healthy).toBe(true);
+      expect(copy.headline).toBe(expected.headline);
+    });
+
+    it("uses personality preset from context collectedData", () => {
+      const step = new DaemonInstallStep({
+        personalityPreset: "balanced",
+        checkHealth: async () => true,
+      });
+      const context = createContext("quickstart", { personalityPreset: "technical" });
+      const copy = step.getCopy(context);
+      const expected = getDaemonInstallCopy("technical");
+
+      expect(copy.headline).toBe(expected.headline);
+    });
+
+    it("context preset overrides constructor preset", () => {
+      const step = new DaemonInstallStep({
+        personalityPreset: "warm",
+        checkHealth: async () => true,
+      });
+      const context = createContext("quickstart", { personalityPreset: "concise" });
+      const copy = step.getCopy(context);
+      const expected = getDaemonInstallCopy("concise");
+
+      expect(copy.headline).toBe(expected.headline);
+    });
+
+    it("falls back to constructor preset when context has no personality", () => {
+      const step = new DaemonInstallStep({
+        personalityPreset: "technical",
+        checkHealth: async () => true,
+      });
+      const context = createContext("quickstart");
+      const copy = step.getCopy(context);
+      const expected = getDaemonInstallCopy("technical");
+
+      expect(copy.headline).toBe(expected.headline);
+    });
   });
 
-  it("reports error when install fails", async () => {
-    const mockInstaller = createMockServiceInstaller({ installOk: false });
+  describe("copy content quality", () => {
+    it("all personality presets have complete copy", () => {
+      const presets = ["balanced", "concise", "technical", "warm", "custom"] as const;
 
-    const step = new DaemonInstallStep({
-      serviceInstaller: mockInstaller,
-      checkHealth: async () => false,
+      for (const preset of presets) {
+        const copy = DAEMON_INSTALL_COPY_VARIANTS[preset];
+        expect(copy.headline).toBeTruthy();
+        expect(copy.description).toBeTruthy();
+        expect(copy.benefit).toBeTruthy();
+        expect(copy.alreadyRunningMessage).toBeTruthy();
+        expect(copy.installingMessage).toBeTruthy();
+        expect(copy.installedMessage).toBeTruthy();
+        expect(copy.manualInstallMessage).toBeTruthy();
+        expect(copy.defaultPathLabel).toBeTruthy();
+        expect(copy.customPathPrompt).toBeTruthy();
+      }
     });
-    const context = createContext();
 
-    const result = await step.execute(context);
+    it("balanced copy explains daemon purpose in plain language", () => {
+      const copy = getDaemonInstallCopy("balanced");
 
-    expect(result.status).toBe("completed");
-    expect(result.data?.installed).toBe(false);
-    expect(result.data?.error).toBe("Install failed");
+      // Should explain what the daemon does without technical jargon
+      expect(copy.description).toContain("background");
+      expect(copy.description).toContain("scheduled tasks");
+      expect(copy.description).toContain("briefings");
+      // Should not contain raw technical terms
+      expect(copy.description).not.toContain("localhost");
+      expect(copy.description).not.toContain("WebSocket");
+      expect(copy.description).not.toContain("AgentLoop");
+    });
+
+    it("warm copy is friendly and approachable", () => {
+      const copy = getDaemonInstallCopy("warm");
+
+      expect(copy.headline.length).toBeGreaterThan(10);
+      expect(copy.description).toContain("quietly");
+    });
+
+    it("technical copy includes implementation details", () => {
+      const copy = getDaemonInstallCopy("technical");
+
+      expect(copy.description).toContain("cron");
+      expect(copy.description).toContain("WebSocket");
+    });
+
+    it("concise copy is shorter than balanced", () => {
+      const balanced = getDaemonInstallCopy("balanced");
+      const concise = getDaemonInstallCopy("concise");
+
+      expect(concise.description.length).toBeLessThan(balanced.description.length);
+      expect(concise.headline.length).toBeLessThanOrEqual(balanced.headline.length);
+    });
   });
 
-  it("reports health check failure after successful install", async () => {
-    const mockInstaller = createMockServiceInstaller();
+  describe("health check", () => {
+    it("uses default health check with custom fetch", async () => {
+      const mockFetch = async () => new Response("ok", { status: 200 });
 
-    const step = new DaemonInstallStep({
-      serviceInstaller: mockInstaller,
-      checkHealth: async () => false,
-    });
-    const context = createContext();
+      const step = new DaemonInstallStep({
+        fetchFn: mockFetch as typeof globalThis.fetch,
+      });
+      const context = createContext();
 
-    const result = await step.execute(context);
+      const result = await step.execute(context);
 
-    expect(result.status).toBe("completed");
-    expect(result.data?.installed).toBe(true);
-    expect(result.data?.healthy).toBe(false);
-    expect(result.data?.error).toContain("health check failed");
-  });
-
-  it("reports manual install needed when no installer provided", async () => {
-    const step = new DaemonInstallStep({
-      checkHealth: async () => false,
-    });
-    const context = createContext();
-
-    const result = await step.execute(context);
-
-    expect(result.status).toBe("completed");
-    expect(result.data?.installMethod).toBe("manual");
-    expect(result.data?.error).toContain("manually");
-  });
-
-  it("runs in both quickstart and advanced modes", async () => {
-    const step = new DaemonInstallStep({
-      checkHealth: async () => true,
+      expect(result.status).toBe("completed");
+      expect(result.data?.alreadyRunning).toBe(true);
     });
 
-    const quickstartResult = await step.execute(createContext("quickstart"));
-    const advancedResult = await step.execute(createContext("advanced"));
+    it("default health check returns false on fetch error", async () => {
+      const mockFetch = async () => {
+        throw new Error("Connection refused");
+      };
 
-    // Daemon install always runs regardless of mode
-    expect(quickstartResult.status).toBe("completed");
-    expect(advancedResult.status).toBe("completed");
-    expect(quickstartResult.data?.alreadyRunning).toBe(true);
-    expect(advancedResult.data?.alreadyRunning).toBe(true);
-  });
+      const step = new DaemonInstallStep({
+        fetchFn: mockFetch as typeof globalThis.fetch,
+      });
+      const context = createContext();
 
-  it("uses default health check with custom fetch", async () => {
-    const mockFetch = async () => new Response("ok", { status: 200 });
+      const result = await step.execute(context);
 
-    const step = new DaemonInstallStep({
-      fetchFn: mockFetch as typeof globalThis.fetch,
+      expect(result.status).toBe("completed");
+      expect(result.data?.alreadyRunning).toBe(false);
     });
-    const context = createContext();
 
-    const result = await step.execute(context);
+    it("default health check returns false on non-ok response", async () => {
+      const mockFetch = async () => new Response("error", { status: 503 });
 
-    expect(result.status).toBe("completed");
-    expect(result.data?.alreadyRunning).toBe(true);
-  });
+      const step = new DaemonInstallStep({
+        fetchFn: mockFetch as typeof globalThis.fetch,
+      });
+      const context = createContext();
 
-  it("default health check returns false on fetch error", async () => {
-    const mockFetch = async () => {
-      throw new Error("Connection refused");
-    };
+      const result = await step.execute(context);
 
-    const step = new DaemonInstallStep({
-      fetchFn: mockFetch as typeof globalThis.fetch,
+      expect(result.status).toBe("completed");
+      expect(result.data?.alreadyRunning).toBe(false);
     });
-    const context = createContext();
-
-    const result = await step.execute(context);
-
-    // No installer provided, so it falls through to manual
-    expect(result.status).toBe("completed");
-    expect(result.data?.alreadyRunning).toBe(false);
-  });
-
-  it("default health check returns false on non-ok response", async () => {
-    const mockFetch = async () => new Response("error", { status: 503 });
-
-    const step = new DaemonInstallStep({
-      fetchFn: mockFetch as typeof globalThis.fetch,
-    });
-    const context = createContext();
-
-    const result = await step.execute(context);
-
-    expect(result.status).toBe("completed");
-    expect(result.data?.alreadyRunning).toBe(false);
   });
 });

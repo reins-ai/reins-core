@@ -1,6 +1,8 @@
 import type { ContentBlock, Message, Provider, ToolCall, ToolContext, ToolResult, TokenUsage } from "../types";
 import type { ToolDefinition } from "../types";
 import type { ThinkingLevel } from "../types/provider";
+import type { ConversationContext } from "../memory/proactive/nudge-engine";
+import type { NudgeInjector } from "../memory/proactive/nudge-injector";
 import type { TypedEventBus } from "./event-bus";
 import type { HarnessEventMap } from "./events";
 import { DoomLoopGuard } from "./doom-loop-guard";
@@ -26,6 +28,7 @@ export interface AgentLoopOptions {
   permissionChecker?: PermissionChecker;
   doomLoopGuard?: DoomLoopGuard;
   signal?: AbortSignal;
+  nudgeInjector?: NudgeInjector;
 }
 
 export interface StepResult {
@@ -239,7 +242,7 @@ export class AgentLoop {
         model: options.model,
         messages,
         tools: options.tools,
-        systemPrompt: options.systemPrompt,
+        systemPrompt: await this.resolveSystemPrompt(options.systemPrompt, messages),
         thinkingLevel: options.thinkingLevel,
         signal: loopSignal,
       };
@@ -666,6 +669,39 @@ export class AgentLoop {
     return Boolean(signal?.aborted);
   }
 
+  private async resolveSystemPrompt(
+    baseSystemPrompt: string | undefined,
+    messages: Message[],
+  ): Promise<string | undefined> {
+    const nudgeInjector = this.options.nudgeInjector;
+    if (!nudgeInjector) {
+      return baseSystemPrompt;
+    }
+
+    const conversationContext = this.buildConversationContext(messages);
+    try {
+      return await nudgeInjector.injectNudges(conversationContext, baseSystemPrompt ?? "");
+    } catch {
+      return baseSystemPrompt;
+    }
+  }
+
+  private buildConversationContext(messages: Message[]): ConversationContext {
+    const userMessages = messages
+      .filter((message) => message.role === "user")
+      .map((message) => extractMessageText(message.content).trim())
+      .filter((content) => content.length > 0);
+
+    const latestUserQuery = userMessages[userMessages.length - 1] ?? "";
+    const recentTopics = userMessages.slice(-3);
+
+    return {
+      query: latestUserQuery,
+      conversationId: "agent-loop",
+      recentTopics,
+    };
+  }
+
   private resolveMaxSteps(value: number | undefined): number {
     if (typeof value !== "number" || !Number.isFinite(value)) {
       return DEFAULT_MAX_STEPS;
@@ -742,4 +778,25 @@ function cloneContentBlocks(content: Message["content"]): Message["content"] {
   }
 
   return content.map((block) => ({ ...block }));
+}
+
+function extractMessageText(content: Message["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content
+    .map((block) => {
+      if (block.type === "text") {
+        return block.text;
+      }
+
+      if (block.type === "tool_result") {
+        return block.content;
+      }
+
+      return "";
+    })
+    .join("\n")
+    .trim();
 }

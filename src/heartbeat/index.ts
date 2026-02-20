@@ -22,3 +22,13 @@ export type { Routine, RoutineFrequency, DueRoutine } from "./routines";
 
 export { HeartbeatSkipEvaluator } from "./skip-evaluator";
 export type { SkipEvaluationContext, SkipDecision } from "./skip-evaluator";
+
+export { HeartbeatWatcherService, HEARTBEAT_WATCHER_MIN_DEBOUNCE_MS } from "./watcher-service";
+
+export { deliverHeartbeatResult } from "./delivery";
+export type {
+  HeartbeatChannelDeliveryResult,
+  HeartbeatDeliveryReport,
+  HeartbeatResultForDelivery,
+  DeliverHeartbeatOptions,
+} from "./delivery";
