@@ -270,6 +270,13 @@ export class RemindersTool implements Tool {
     }
 
     const parsed = parseNlTime(input);
+    if (parsed?.type === "recurring") {
+      return {
+        error:
+          "Recurring reminders aren't supported. Use the schedule tool instead (e.g. 'every Monday at 9:00 AM').",
+      };
+    }
+
     if (!parsed || !parsed.runAt) {
       return {
         error: `Could not parse due date: '${input}'. Please use an ISO date string or a recognized time phrase.`,

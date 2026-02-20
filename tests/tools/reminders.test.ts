@@ -315,7 +315,7 @@ describe("RemindersTool", () => {
     );
 
     expect(result.error).toBe(
-      "Could not parse due date: 'every morning'. Please use an ISO date string or a recognized time phrase.",
+      "Recurring reminders aren't supported. Use the schedule tool instead (e.g. 'every Monday at 9:00 AM').",
     );
   });
 
