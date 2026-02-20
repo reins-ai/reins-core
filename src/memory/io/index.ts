@@ -29,6 +29,7 @@ export {
 } from "./memory-export";
 export {
   importMemoriesFromJson,
+  importMemoriesFromDirectory,
   type ImportResult,
 } from "./memory-import";
 export {

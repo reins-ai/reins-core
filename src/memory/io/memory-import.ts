@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import type { MemoryRepository } from "../storage/memory-repository";
 import type { CreateMemoryInput } from "../storage/memory-repository";
 import { MemoryError } from "../services/memory-error";
@@ -6,6 +7,7 @@ import {
   validateExportedMemoryRecord,
   type ValidatedExportedMemoryRecord,
 } from "./memory-schemas";
+import type { MemoryFileIngestor } from "./memory-file-ingestor";
 
 export interface ImportResult {
   imported: number;
@@ -177,6 +179,54 @@ export async function importMemoriesFromJson(
       result.errors.push(`Record ${i} (id: ${validated.id}): ${message}`);
     }
   }
+
+  return ok(result);
+}
+
+export async function importMemoriesFromDirectory(
+  ingestor: MemoryFileIngestor,
+  dirPath: string,
+): Promise<Result<ImportResult, MemoryError>> {
+  try {
+    await access(dirPath);
+  } catch {
+    return err(
+      new MemoryError(
+        `Import directory not found: ${dirPath}`,
+        "MEMORY_IMPORT_FAILED",
+      ),
+    );
+  }
+
+  let scanResult: Awaited<ReturnType<MemoryFileIngestor["scanDirectory"]>>;
+  try {
+    scanResult = await ingestor.scanDirectory(dirPath);
+  } catch (cause) {
+    return err(
+      new MemoryError(
+        `Failed to scan directory: ${dirPath}`,
+        "MEMORY_IMPORT_FAILED",
+        cause instanceof Error ? cause : undefined,
+      ),
+    );
+  }
+
+  if (!scanResult.ok) {
+    return err(
+      new MemoryError(
+        `Failed to scan directory: ${scanResult.error.message}`,
+        "MEMORY_IMPORT_FAILED",
+        scanResult.error instanceof Error ? scanResult.error : undefined,
+      ),
+    );
+  }
+
+  const report = scanResult.value;
+  const result: ImportResult = {
+    imported: report.ingested + report.updated,
+    skipped: report.skipped + report.quarantined,
+    errors: report.errors.map((e) => `${e.file}: ${e.error}`),
+  };
 
   return ok(result);
 }

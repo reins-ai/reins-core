@@ -8,8 +8,10 @@ import type { MemoryRepository } from "../../../src/memory/storage/memory-reposi
 import type { CreateMemoryInput } from "../../../src/memory/storage/memory-repository";
 import { ok, err } from "../../../src/result";
 import { MemoryError } from "../../../src/memory/services/memory-error";
+import { MemoryIngestError, type ScanReport } from "../../../src/memory/io/memory-file-ingestor";
 import {
   importMemoriesFromJson,
+  importMemoriesFromDirectory,
   type ImportResult,
 } from "../../../src/memory/io/memory-import";
 import {
@@ -468,5 +470,155 @@ describe("importMemoriesFromJson", () => {
     expect(result.value.imported).toBe(1);
     expect(result.value.skipped).toBe(1);
     expect(repo.created[0]!.content).toBe("hello world");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mock MemoryFileIngestor helpers
+// ---------------------------------------------------------------------------
+
+type ScanDirectoryFn = (dirPath: string) => Promise<ReturnType<import("../../../src/memory/io/memory-file-ingestor").MemoryFileIngestor["scanDirectory"]>>;
+
+function makeMockIngestor(scanFn: ScanDirectoryFn): import("../../../src/memory/io/memory-file-ingestor").MemoryFileIngestor {
+  return {
+    scanDirectory: scanFn,
+    ingestFile: async () => ok({ action: "skipped" as const }),
+    handleDeletion: async () => ok(undefined),
+  } as unknown as import("../../../src/memory/io/memory-file-ingestor").MemoryFileIngestor;
+}
+
+function makeScanReport(overrides: Partial<ScanReport> = {}): ScanReport {
+  return {
+    totalFiles: 0,
+    ingested: 0,
+    updated: 0,
+    skipped: 0,
+    quarantined: 0,
+    errors: [],
+    ...overrides,
+  };
+}
+
+describe("importMemoriesFromDirectory", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "memory-dir-import-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("calls scanDirectory and returns ok(ImportResult) for a valid directory", async () => {
+    let capturedPath: string | undefined;
+    const ingestor = makeMockIngestor(async (dirPath) => {
+      capturedPath = dirPath;
+      return ok(makeScanReport({ ingested: 3, updated: 1, skipped: 2, quarantined: 0, errors: [] }));
+    });
+
+    const result = await importMemoriesFromDirectory(ingestor, tempDir);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(capturedPath).toBe(tempDir);
+    expect(result.value.imported).toBe(4); // ingested + updated
+    expect(result.value.skipped).toBe(2);  // skipped + quarantined
+    expect(result.value.errors).toEqual([]);
+  });
+
+  it("maps quarantined files into skipped count", async () => {
+    const ingestor = makeMockIngestor(async () =>
+      ok(makeScanReport({ ingested: 1, updated: 0, skipped: 1, quarantined: 2, errors: [] })),
+    );
+
+    const result = await importMemoriesFromDirectory(ingestor, tempDir);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.imported).toBe(1);
+    expect(result.value.skipped).toBe(3); // 1 skipped + 2 quarantined
+  });
+
+  it("maps scan errors into ImportResult.errors strings", async () => {
+    const ingestor = makeMockIngestor(async () =>
+      ok(makeScanReport({
+        ingested: 1,
+        errors: [
+          { file: "bad.md", error: "Parse failed" },
+          { file: "other.md", error: "Read error" },
+        ],
+      })),
+    );
+
+    const result = await importMemoriesFromDirectory(ingestor, tempDir);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.errors).toHaveLength(2);
+    expect(result.value.errors[0]).toContain("bad.md");
+    expect(result.value.errors[0]).toContain("Parse failed");
+    expect(result.value.errors[1]).toContain("other.md");
+    expect(result.value.errors[1]).toContain("Read error");
+  });
+
+  it("returns err(MemoryError) when directory does not exist", async () => {
+    const ingestor = makeMockIngestor(async () => ok(makeScanReport()));
+    const nonExistent = join(tempDir, "does-not-exist");
+
+    const result = await importMemoriesFromDirectory(ingestor, nonExistent);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error).toBeInstanceOf(MemoryError);
+    expect(result.error.code).toBe("MEMORY_IMPORT_FAILED");
+    expect(result.error.message).toContain("not found");
+  });
+
+  it("returns err(MemoryError) when scanDirectory throws", async () => {
+    const ingestor = makeMockIngestor(async () => {
+      throw new Error("Unexpected scan failure");
+    });
+
+    const result = await importMemoriesFromDirectory(ingestor, tempDir);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error).toBeInstanceOf(MemoryError);
+    expect(result.error.code).toBe("MEMORY_IMPORT_FAILED");
+    expect(result.error.message).toContain("Failed to scan directory");
+  });
+
+  it("returns err(MemoryError) when scanDirectory returns err", async () => {
+    const ingestor = makeMockIngestor(async () =>
+      err(new MemoryIngestError("Disk read error")),
+    );
+
+    const result = await importMemoriesFromDirectory(ingestor, tempDir);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.error).toBeInstanceOf(MemoryError);
+    expect(result.error.code).toBe("MEMORY_IMPORT_FAILED");
+    expect(result.error.message).toContain("Disk read error");
+  });
+
+  it("returns ok with zero counts for an empty directory", async () => {
+    const ingestor = makeMockIngestor(async () => ok(makeScanReport()));
+
+    const result = await importMemoriesFromDirectory(ingestor, tempDir);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.imported).toBe(0);
+    expect(result.value.skipped).toBe(0);
+    expect(result.value.errors).toEqual([]);
   });
 });
