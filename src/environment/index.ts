@@ -63,6 +63,7 @@ export type { SettingScope } from "./scope";
 
 export {
   ENVIRONMENT_DOCUMENTS,
+  OPTIONAL_ENVIRONMENT_DOCUMENTS,
 } from "./types";
 export type {
   DocumentResolutionResult,

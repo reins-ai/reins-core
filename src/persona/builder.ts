@@ -73,6 +73,18 @@ export class SystemPromptBuilder {
       sections.push(skillIndexSection);
     }
 
+    const memoryDocument = this.readDocumentWithBudget(
+      options.environmentDocuments,
+      "MEMORY",
+    );
+    const memorySection = this.buildEnvironmentDocumentSection(
+      "## Current Memories",
+      memoryDocument,
+    );
+    if (memorySection) {
+      sections.push(memorySection);
+    }
+
     const dynamicContextSection = this.buildDynamicContextSection(
       options.environmentDocuments,
       boundariesDocument,

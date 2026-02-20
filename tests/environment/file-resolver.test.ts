@@ -42,6 +42,7 @@ async function setupEnvironment(
     KNOWLEDGE: "KNOWLEDGE.md",
     TOOLS: "TOOLS.md",
     BOUNDARIES: "BOUNDARIES.md",
+    MEMORY: "MEMORY.md",
   };
 
   for (const [docType, content] of Object.entries(documents)) {

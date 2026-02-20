@@ -11,6 +11,7 @@ import {
 import type { EnvironmentResolver } from "./resolver";
 import {
   ENVIRONMENT_DOCUMENTS,
+  OPTIONAL_ENVIRONMENT_DOCUMENTS,
   type DocumentResolutionResult,
   type DocumentSource,
   type Environment,
@@ -34,6 +35,7 @@ const DOCUMENT_FILENAMES: Record<EnvironmentDocument, string> = {
   KNOWLEDGE: "KNOWLEDGE.md",
   TOOLS: "TOOLS.md",
   BOUNDARIES: "BOUNDARIES.md",
+  MEMORY: "MEMORY.md",
 };
 
 /**
@@ -150,6 +152,9 @@ export class FileEnvironmentResolver implements EnvironmentResolver {
       const result = await this.resolveDocument(docType, environmentName);
 
       if (!result.ok) {
+        if (OPTIONAL_ENVIRONMENT_DOCUMENTS.has(docType)) {
+          continue;
+        }
         return err(result.error);
       }
 

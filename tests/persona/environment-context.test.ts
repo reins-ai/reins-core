@@ -114,6 +114,18 @@ function createOverlayResolution(
           loadedAt: now,
         },
       },
+      MEMORY: {
+        type: "MEMORY",
+        source: "default",
+        sourceEnvironment: "default",
+        document: {
+          type: "MEMORY",
+          path: "default/MEMORY.md",
+          content: "",
+          environmentName: "default",
+          loadedAt: now,
+        },
+      },
     },
   };
 }

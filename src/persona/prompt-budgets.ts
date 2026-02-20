@@ -12,6 +12,7 @@ export interface PromptBudgetConfig {
   ROUTINES: SectionBudget;
   GOALS: SectionBudget;
   HEARTBEAT: SectionBudget;
+  MEMORY: SectionBudget;
 }
 
 export const DEFAULT_SECTION_BUDGETS: PromptBudgetConfig = {
@@ -41,5 +42,8 @@ export const DEFAULT_SECTION_BUDGETS: PromptBudgetConfig = {
   },
   HEARTBEAT: {
     maxChars: 1000,
+  },
+  MEMORY: {
+    maxChars: 2000,
   },
 };
