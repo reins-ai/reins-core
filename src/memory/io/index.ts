@@ -21,3 +21,9 @@ export {
   type RescanReport,
   type MemoryFileWatcherOptions,
 } from "./memory-file-watcher";
+export {
+  exportMemories,
+  type ExportResult,
+  type ExportedMemoryRecord,
+  type MemoryExportFile,
+} from "./memory-export";
