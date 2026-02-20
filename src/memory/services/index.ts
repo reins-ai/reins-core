@@ -24,3 +24,4 @@ export {
   type WritePolicyViolation,
   type WritePolicyWarning,
 } from "./memory-write-policies";
+export { RagContextInjector } from "./rag-context-injector";
