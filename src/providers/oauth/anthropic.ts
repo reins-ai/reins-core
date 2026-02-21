@@ -46,7 +46,7 @@ import { createLogger } from "../../logger";
 const log = createLogger("providers:anthropic");
 
 interface AnthropicContentBlock {
-  type: "text" | "tool_use" | "tool_result" | "thinking";
+  type: "text" | "tool_use" | "tool_result" | "thinking" | "image";
   text?: string;
   thinking?: string;
   id?: string;
@@ -55,6 +55,12 @@ interface AnthropicContentBlock {
   tool_use_id?: string;
   content?: string;
   is_error?: boolean;
+  source?: {
+    type: "base64" | "url";
+    media_type?: string;
+    data?: string;
+    url?: string;
+  };
 }
 
 interface AnthropicMessage {
@@ -208,11 +214,39 @@ function mapTools(
   }));
 }
 
+function parseDataUrl(url: string): { mediaType: string; data: string } | null {
+  const match = url.match(/^data:([^;]+);base64,(.+)$/s);
+  if (!match) {
+    return null;
+  }
+  return { mediaType: match[1], data: match[2] };
+}
+
 function mapContentBlocks(blocks: ContentBlock[]): AnthropicContentBlock[] {
   return blocks.map((block) => {
     switch (block.type) {
       case "text":
         return { type: "text" as const, text: block.text };
+      case "image": {
+        const parsed = parseDataUrl(block.url);
+        if (parsed) {
+          return {
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: parsed.mediaType,
+              data: parsed.data,
+            },
+          };
+        }
+        return {
+          type: "image" as const,
+          source: {
+            type: "url" as const,
+            url: block.url,
+          },
+        };
+      }
       case "tool_use":
         return {
           type: "tool_use" as const,

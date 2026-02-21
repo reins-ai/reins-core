@@ -19,6 +19,7 @@ import type {
   ChannelPlatform,
   ChannelVoice,
 } from "./types";
+import type { ContentBlock } from "../types/conversation";
 
 const DEFAULT_PROVIDER = "anthropic";
 
@@ -44,7 +45,7 @@ export interface ChannelRouterConversationManager {
     conversationId: string,
     message: {
       role: "user" | "assistant" | "system" | "tool";
-      content: string;
+      content: string | ContentBlock[];
       metadata?: Record<string, unknown>;
     },
   ): Promise<{ id: string }>;
@@ -150,8 +151,11 @@ export class ChannelRouter {
     );
 
     const content = this.toConversationContent(message);
-    if (content.length === 0) {
-      throw new ChannelError("Cannot route inbound message without text content");
+    const contentIsEmpty = typeof content === "string"
+      ? content.length === 0
+      : content.length === 0;
+    if (contentIsEmpty) {
+      throw new ChannelError("Cannot route inbound message without text or media content");
     }
 
     const timestamp = this.nowFn();
@@ -345,25 +349,50 @@ export class ChannelRouter {
     };
   }
 
-  private toConversationContent(channelMessage: ChannelMessage): string {
+  private toConversationContent(channelMessage: ChannelMessage): string | ContentBlock[] {
     const text = channelMessage.text?.trim();
-    if (text && text.length > 0) {
-      return text;
-    }
-
     const transcript = channelMessage.voice?.transcript?.trim();
-    if (transcript && transcript.length > 0) {
-      return transcript;
+
+    const imageBlocks: ContentBlock[] = [];
+    for (const attachment of channelMessage.attachments ?? []) {
+      const isImage =
+        attachment.type === "image"
+        || (attachment.mimeType !== undefined && attachment.mimeType.startsWith("image/"));
+      if (isImage && attachment.url !== undefined) {
+        imageBlocks.push({
+          type: "image",
+          url: attachment.url,
+          mimeType: attachment.mimeType,
+        });
+      }
     }
 
-    return "";
+    if (imageBlocks.length === 0) {
+      return text ?? transcript ?? "";
+    }
+
+    const blocks: ContentBlock[] = [];
+    const textContent = text ?? transcript;
+    if (textContent !== undefined && textContent.length > 0) {
+      blocks.push({ type: "text", text: textContent });
+    }
+    blocks.push(...imageBlocks);
+
+    return blocks;
   }
 
   private async createConversationFromInboundMessage(
     channelMessage: ChannelMessage,
-    content: string,
+    content: string | ContentBlock[],
   ): Promise<string> {
-    const titleBase = content.length > 0 ? content : `Message from ${channelMessage.platform}`;
+    const textContent = typeof content === "string"
+      ? content
+      : content
+        .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+        .map((block) => block.text)
+        .join(" ")
+        .trim();
+    const titleBase = textContent.length > 0 ? textContent : `Message from ${channelMessage.platform}`;
     const createdConversation = await this.conversationManager.create({
       title: titleBase.slice(0, 50),
       model: this.defaultModel,

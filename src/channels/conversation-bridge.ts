@@ -14,7 +14,7 @@ interface ConversationBridgeConversationManager {
     conversationId: string,
     message: {
       role: "user" | "assistant" | "system" | "tool";
-      content: string;
+      content: string | Message["content"];
       channelSource?: ChannelSource;
       metadata?: Record<string, unknown>;
     },
@@ -106,7 +106,7 @@ export class ConversationBridge {
     conversationId: string,
     message: {
       role: "user" | "assistant" | "system" | "tool";
-      content: string;
+      content: Message["content"];
       metadata?: Record<string, unknown>;
     },
   ): Promise<{ id: string }> {
