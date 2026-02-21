@@ -46,6 +46,7 @@ export {
   type WelcomeCopy,
   DaemonInstallStep,
   type DaemonInstallStepOptions,
+  FeatureDiscoveryStep,
   ModelSelectionStep,
   type ModelSelectionStepOptions,
   PersonalityStep,

@@ -378,18 +378,19 @@ describe("Checkpoint Resume", () => {
 
       await engine2.initialize();
 
-      // Complete remaining steps (3-6)
-      for (let i = 0; i < 4; i++) {
+      // Complete remaining steps (3-7)
+      for (let i = 0; i < 5; i++) {
         const result = await engine2.completeCurrentStep({ step: i + 3 });
         expect(result.ok).toBe(true);
       }
 
-      // Session 2 should only have executed steps 3-6, NOT steps 1-2
+      // Session 2 should only have executed steps 3-7, NOT steps 1-2
       expect(session2Log).toEqual([
         "provider-keys",
         "model-select",
         "workspace",
         "personality",
+        "feature-discovery",
       ]);
 
       expect(engine2.isComplete()).toBe(true);
@@ -451,7 +452,7 @@ describe("Checkpoint Resume", () => {
 
       // Simulate kill
 
-      // --- Session 2: Complete remaining 3 steps ---
+      // --- Session 2: Complete remaining 4 steps ---
       const session2Events: OnboardingEvent[] = [];
       const checkpoint2 = new OnboardingCheckpointService({ dataRoot });
       const engine2 = new OnboardingEngine({
@@ -461,6 +462,7 @@ describe("Checkpoint Resume", () => {
       });
 
       await engine2.initialize();
+      await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();

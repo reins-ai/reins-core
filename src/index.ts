@@ -94,6 +94,7 @@ export {
 export {
   DaemonInstallStep,
   type DaemonInstallStepOptions,
+  FeatureDiscoveryStep,
   ModelSelectionStep,
   type ModelSelectionStepOptions,
   PersonalityStep,

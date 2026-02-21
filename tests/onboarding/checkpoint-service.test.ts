@@ -266,6 +266,7 @@ describe("OnboardingCheckpointService", () => {
         "model-select",
         "workspace",
         "personality",
+        "feature-discovery",
       ] as const;
 
       for (const step of steps) {
@@ -334,6 +335,7 @@ describe("OnboardingCheckpointService", () => {
         "model-select",
         "workspace",
         "personality",
+        "feature-discovery",
       ] as const;
 
       for (const step of steps) {
@@ -385,6 +387,7 @@ describe("OnboardingCheckpointService", () => {
         "model-select",
         "workspace",
         "personality",
+        "feature-discovery",
       ] as const;
 
       for (const step of steps) {
@@ -490,6 +493,7 @@ describe("OnboardingCheckpointService", () => {
         "model-select",
         "workspace",
         "personality",
+        "feature-discovery",
       ] as const;
 
       for (const step of steps) {
