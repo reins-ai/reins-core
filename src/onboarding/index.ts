@@ -60,6 +60,12 @@ export {
 export { detectProviderFromKey } from "./key-detect";
 
 export {
+  validateProviderSetup,
+  type ProviderSetupValidation,
+  type ValidateProviderSetupOptions,
+} from "./validation";
+
+export {
   ONBOARDING_CHECKPOINT_VERSION,
   ONBOARDING_STEPS,
   type CompletedStepRecord,

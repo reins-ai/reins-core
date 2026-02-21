@@ -75,6 +75,7 @@ import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from ".
 import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
 import yaml from "js-yaml";
+import { validateProviderSetup } from "../onboarding/validation";
 import { generateDeviceCode, pollDeviceCode } from "./device-code-auth";
 import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
 import {
@@ -1547,6 +1548,11 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleModelsRequest(corsHeaders);
       }
 
+      // Onboarding provider validation endpoint
+      if (url.pathname === "/api/onboarding/validate-provider" && method === "GET") {
+        return this.handleValidateProvider(url, corsHeaders);
+      }
+
       // Browser status endpoint
       if (url.pathname === "/api/browser/status" && method === "GET") {
         return this.handleBrowserStatus(corsHeaders);
@@ -1899,6 +1905,39 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
       return Response.json({ models: [] }, { headers: corsHeaders });
     }
+  }
+
+  private async handleValidateProvider(
+    url: URL,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const providerId = url.searchParams.get("provider");
+    if (!providerId) {
+      return Response.json(
+        { error: "provider query param required" },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    if (!this.providerRegistry) {
+      return Response.json(
+        { configured: false, models: [] },
+        { headers: corsHeaders },
+      );
+    }
+
+    const result = await validateProviderSetup(providerId, {
+      registry: this.providerRegistry,
+    });
+
+    if (!result.ok) {
+      return Response.json(
+        { configured: false, models: [] },
+        { headers: corsHeaders },
+      );
+    }
+
+    return Response.json(result.value, { headers: corsHeaders });
   }
 
   private handleBrowserStatus(corsHeaders: Record<string, string>): Response {
