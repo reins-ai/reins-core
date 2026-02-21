@@ -6,7 +6,7 @@ import { formatForTelegram } from "../../../src/channels/formatting";
 import { ChannelRouter, type AgentResponse } from "../../../src/channels/router";
 import type { ChannelRouterConversationManager } from "../../../src/channels/router";
 import type { ChannelMessage } from "../../../src/channels/types";
-import type { TelegramUpdate } from "../../../src/channels/telegram/types";
+import type { TelegramFile, TelegramUpdate } from "../../../src/channels/telegram/types";
 import { ChannelError } from "../../../src/channels/errors";
 
 // ---------------------------------------------------------------------------
@@ -96,6 +96,21 @@ class MockTelegramClient implements TelegramChannelClient {
       throw next;
     }
     return next;
+  }
+
+  public async getFile(fileId: string): Promise<TelegramFile> {
+    return {
+      file_id: fileId,
+      file_unique_id: `${fileId}-uid`,
+      file_path: `${fileId}.bin`,
+    };
+  }
+
+  public async downloadFile(): Promise<{ data: Uint8Array; contentType?: string }> {
+    return {
+      data: new Uint8Array([1, 2, 3]),
+      contentType: "application/octet-stream",
+    };
   }
 
   public async sendMessage(chatId: string | number, text: string): Promise<unknown> {

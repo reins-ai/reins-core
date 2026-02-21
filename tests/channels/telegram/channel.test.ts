@@ -4,7 +4,7 @@ import { ChannelError } from "../../../src/channels/errors";
 import { TelegramChannel } from "../../../src/channels/telegram/channel";
 import type { TelegramChannelClient } from "../../../src/channels/telegram/channel";
 import type { ChannelConfig, ChannelMessage } from "../../../src/channels/types";
-import type { TelegramUpdate } from "../../../src/channels/telegram/types";
+import type { TelegramFile, TelegramUpdate } from "../../../src/channels/telegram/types";
 
 interface ScheduledTask {
   id: number;
@@ -110,6 +110,21 @@ class MockTelegramClient implements TelegramChannelClient {
     return next;
   }
 
+  public async getFile(fileId: string): Promise<TelegramFile> {
+    return {
+      file_id: fileId,
+      file_unique_id: `${fileId}-unique`,
+      file_path: `${fileId}.bin`,
+    };
+  }
+
+  public async downloadFile(): Promise<{ data: Uint8Array; contentType?: string }> {
+    return {
+      data: new Uint8Array([1, 2, 3]),
+      contentType: "application/octet-stream",
+    };
+  }
+
   public async sendMessage(chatId: string | number, text: string, options?: Record<string, unknown>): Promise<unknown> {
     this.sendMessageCalls.push({ chatId, value: text, options });
     return {};
@@ -165,6 +180,64 @@ function createUpdate(updateId: number, messageId: number, text: string): Telegr
         first_name: "User",
       },
       text,
+    },
+  };
+}
+
+function createPhotoUpdateWithoutCaption(updateId: number, messageId: number): TelegramUpdate {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: messageId,
+      date: 1_735_689_600,
+      chat: {
+        id: 42,
+        type: "private",
+      },
+      from: {
+        id: 999,
+        is_bot: false,
+        first_name: "User",
+      },
+      photo: [
+        {
+          file_id: "photo-small",
+          file_unique_id: "photo-small-uid",
+          width: 90,
+          height: 90,
+        },
+        {
+          file_id: "photo-large",
+          file_unique_id: "photo-large-uid",
+          width: 1_024,
+          height: 768,
+        },
+      ],
+    },
+  };
+}
+
+function createDocumentUpdateWithoutCaption(updateId: number, messageId: number): TelegramUpdate {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: messageId,
+      date: 1_735_689_600,
+      chat: {
+        id: 42,
+        type: "private",
+      },
+      from: {
+        id: 999,
+        is_bot: false,
+        first_name: "User",
+      },
+      document: {
+        file_id: "doc-1",
+        file_unique_id: "doc-1-uid",
+        file_name: "scan.png",
+        mime_type: "image/png",
+      },
     },
   };
 }
@@ -237,6 +310,58 @@ describe("TelegramChannel", () => {
 
     expect(received).toEqual(["first", "second"]);
     expect(client.getUpdatesCalls).toEqual([undefined, 12]);
+  });
+
+  it("uses default image prompt when photo has no caption", async () => {
+    const scheduler = new PollScheduler();
+    const client = new MockTelegramClient({
+      updatesQueue: [[createPhotoUpdateWithoutCaption(10, 100)]],
+    });
+
+    const received: ChannelMessage[] = [];
+    const channel = new TelegramChannel({
+      config: createConfig(),
+      client,
+      schedulePollFn: scheduler.schedule,
+      clearScheduledPollFn: scheduler.clear,
+    });
+
+    channel.onMessage((message) => {
+      received.push(message);
+    });
+
+    await channel.connect();
+    await scheduler.flush(1);
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.text).toBe("What's in this image?");
+    expect(received[0]?.attachments?.[0]?.url?.startsWith("data:image/jpeg;base64,")).toBe(true);
+  });
+
+  it("uses default image prompt when image document has no caption", async () => {
+    const scheduler = new PollScheduler();
+    const client = new MockTelegramClient({
+      updatesQueue: [[createDocumentUpdateWithoutCaption(20, 200)]],
+    });
+
+    const received: ChannelMessage[] = [];
+    const channel = new TelegramChannel({
+      config: createConfig(),
+      client,
+      schedulePollFn: scheduler.schedule,
+      clearScheduledPollFn: scheduler.clear,
+    });
+
+    channel.onMessage((message) => {
+      received.push(message);
+    });
+
+    await channel.connect();
+    await scheduler.flush(1);
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.text).toBe("What's in this image?");
+    expect(received[0]?.attachments?.[0]?.url?.startsWith("data:image/png;base64,")).toBe(true);
   });
 
   it("sends text, photo, document, and voice messages", async () => {

@@ -1,22 +1,37 @@
+import { Buffer } from "node:buffer";
 import { ChannelError } from "../errors";
+import { createLogger } from "../../logger";
 import type {
   Channel,
+  ChannelAttachment,
   ChannelConfig,
   ChannelMessage,
   ChannelMessageHandler,
   ChannelStatus,
 } from "../types";
 import { normalizeTelegramMessage } from "./normalize";
-import type { TelegramUpdate } from "./types";
+import type { TelegramFile, TelegramMessage, TelegramUpdate } from "./types";
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 type PollTimerHandle = ReturnType<typeof setTimeout>;
 
+const log = createLogger("channels:telegram");
+
+const DEFAULT_IMAGE_PROMPT = "What's in this image?";
+const DEFAULT_DOCUMENT_PROMPT = "Please analyze this document.";
+
+interface DownloadedTelegramFile {
+  data: Uint8Array;
+  contentType?: string;
+}
+
 export interface TelegramChannelClient {
   getMe(): Promise<unknown>;
   getUpdates(offset?: number): Promise<TelegramUpdate[]>;
+  getFile(fileId: string): Promise<TelegramFile>;
+  downloadFile(filePath: string): Promise<DownloadedTelegramFile>;
   sendMessage(chatId: string | number, text: string, options?: Record<string, unknown>): Promise<unknown>;
   sendPhoto(chatId: string | number, photo: string, options?: Record<string, unknown>): Promise<unknown>;
   sendDocument(chatId: string | number, document: string, options?: Record<string, unknown>): Promise<unknown>;
@@ -274,9 +289,11 @@ export class TelegramChannel implements Channel {
         continue;
       }
 
+      const enrichedMessage = await this.enrichInboundMedia(update, normalizedMessage);
+
       for (const handler of this.handlers) {
         try {
-          await handler(normalizedMessage);
+          await handler(enrichedMessage);
         } catch (error) {
           const handlerError = toError(error);
           this.statusState.lastError = `Message handler failed: ${handlerError.message}`;
@@ -297,5 +314,168 @@ export class TelegramChannel implements Channel {
         ? Math.max(0, this.nowFn() - this.connectedAtMs)
         : 0,
     };
+  }
+
+  private async enrichInboundMedia(update: TelegramUpdate, message: ChannelMessage): Promise<ChannelMessage> {
+    const sourceMessage = this.extractTelegramMessage(update);
+    if (sourceMessage === undefined) {
+      return message;
+    }
+
+    let attachments = message.attachments;
+
+    if (sourceMessage.photo !== undefined && sourceMessage.photo.length > 0) {
+      const largestPhoto = sourceMessage.photo[sourceMessage.photo.length - 1];
+      if (largestPhoto !== undefined) {
+        log.debug("processing inbound photo attachment", {
+          channelId: this.config.id,
+          fileId: largestPhoto.file_id,
+        });
+        attachments = await this.withResolvedAttachmentData(
+          attachments,
+          largestPhoto.file_id,
+          "image/jpeg",
+          "image",
+        );
+      }
+    }
+
+    if (sourceMessage.document !== undefined) {
+      log.debug("processing inbound document attachment", {
+        channelId: this.config.id,
+        fileId: sourceMessage.document.file_id,
+        mimeType: sourceMessage.document.mime_type,
+      });
+      attachments = await this.withResolvedAttachmentData(
+        attachments,
+        sourceMessage.document.file_id,
+        sourceMessage.document.mime_type,
+        "file",
+      );
+    }
+
+    if (message.text !== undefined && message.text.trim().length > 0) {
+      return {
+        ...message,
+        attachments,
+      };
+    }
+
+    const fallbackText = this.buildFallbackPrompt(sourceMessage, attachments);
+    if (fallbackText === undefined) {
+      return {
+        ...message,
+        attachments,
+      };
+    }
+
+    log.info("using fallback prompt for media message without caption", {
+      channelId: this.config.id,
+      updateId: update.update_id,
+      fallbackPrompt: fallbackText,
+    });
+
+    return {
+      ...message,
+      attachments,
+      text: fallbackText,
+    };
+  }
+
+  private async withResolvedAttachmentData(
+    attachments: ChannelAttachment[] | undefined,
+    fileId: string,
+    fallbackMimeType: string | undefined,
+    attachmentType: "image" | "file",
+  ): Promise<ChannelAttachment[] | undefined> {
+    if (attachments === undefined || attachments.length === 0) {
+      return attachments;
+    }
+
+    const targetIndex = attachments.findIndex(
+      (attachment) => attachment.platformData?.file_id === fileId,
+    );
+    if (targetIndex < 0) {
+      return attachments;
+    }
+
+    try {
+      const resolved = await this.resolveTelegramFileDataUrl(fileId, fallbackMimeType);
+      const nextAttachments = [...attachments];
+      const existing = nextAttachments[targetIndex]!;
+      nextAttachments[targetIndex] = {
+        ...existing,
+        type: attachmentType,
+        url: resolved.dataUrl,
+        mimeType: resolved.mimeType,
+      };
+
+      return nextAttachments;
+    } catch (error) {
+      const resolvedError = toError(error);
+      log.warn("failed to resolve telegram file for inbound media", {
+        channelId: this.config.id,
+        fileId,
+        error: resolvedError.message,
+      });
+      return attachments;
+    }
+  }
+
+  private async resolveTelegramFileDataUrl(
+    fileId: string,
+    fallbackMimeType: string | undefined,
+  ): Promise<{ dataUrl: string; mimeType: string }> {
+    const fileMeta = await this.client.getFile(fileId);
+    if (fileMeta.file_path === undefined || fileMeta.file_path.length === 0) {
+      throw new ChannelError(`Telegram file metadata for ${fileId} does not include file_path`);
+    }
+
+    const downloaded = await this.client.downloadFile(fileMeta.file_path);
+    if (downloaded.data.length === 0) {
+      throw new ChannelError(`Telegram file ${fileId} downloaded with empty payload`);
+    }
+
+    const mimeType = downloaded.contentType === undefined || downloaded.contentType === "application/octet-stream"
+      ? (fallbackMimeType ?? downloaded.contentType ?? "application/octet-stream")
+      : downloaded.contentType;
+    const base64 = Buffer.from(downloaded.data).toString("base64");
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+
+    log.debug("resolved telegram file to data url", {
+      channelId: this.config.id,
+      fileId,
+      mimeType,
+      sizeBytes: downloaded.data.length,
+    });
+
+    return { dataUrl, mimeType };
+  }
+
+  private buildFallbackPrompt(
+    sourceMessage: TelegramMessage,
+    attachments: ChannelAttachment[] | undefined,
+  ): string | undefined {
+    if (attachments === undefined || attachments.length === 0) {
+      return undefined;
+    }
+
+    if (sourceMessage.photo !== undefined && sourceMessage.photo.length > 0) {
+      return DEFAULT_IMAGE_PROMPT;
+    }
+
+    if (sourceMessage.document !== undefined) {
+      const mimeType = sourceMessage.document.mime_type ?? "";
+      if (mimeType.startsWith("image/")) {
+        return DEFAULT_IMAGE_PROMPT;
+      }
+      return DEFAULT_DOCUMENT_PROMPT;
+    }
+
+    return undefined;
+  }
+
+  private extractTelegramMessage(update: TelegramUpdate): TelegramMessage | undefined {
+    return update.message ?? update.edited_message ?? update.channel_post ?? update.edited_channel_post;
   }
 }

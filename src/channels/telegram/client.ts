@@ -4,6 +4,7 @@ import type {
   TelegramApiResponse,
   TelegramChatAction,
   TelegramClientOptions,
+  TelegramFile,
   TelegramGetUpdatesOptions,
   TelegramMessage,
   TelegramSendMediaOptions,
@@ -176,6 +177,55 @@ export class TelegramClient {
     const timeoutMs = Math.max(this.requestTimeoutMs, (timeoutSeconds + 5) * 1_000);
 
     return this.request<TelegramUpdate[]>("getUpdates", payload, timeoutMs);
+  }
+
+  /**
+   * Resolve Telegram file metadata by file_id.
+   */
+  public async getFile(fileId: string): Promise<TelegramFile> {
+    return this.request<TelegramFile>("getFile", { file_id: fileId });
+  }
+
+  /**
+   * Download Telegram file binary content by file_path.
+   */
+  public async downloadFile(filePath: string): Promise<{ data: Uint8Array; contentType?: string }> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+    try {
+      const response = await this.fetchFn(this.buildFileUrl(filePath), {
+        method: "GET",
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new ChannelError(`Telegram file download failed with status ${response.status}`);
+      }
+
+      const contentTypeHeader = response.headers.get("content-type");
+      const contentType = contentTypeHeader?.split(";")[0]?.trim();
+      const data = new Uint8Array(await response.arrayBuffer());
+      return {
+        data,
+        contentType: contentType && contentType.length > 0 ? contentType : undefined,
+      };
+    } catch (error) {
+      if (error instanceof ChannelError) {
+        throw error;
+      }
+
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new ChannelError("Telegram file download timed out");
+      }
+
+      throw new ChannelError(
+        "Telegram file download failed",
+        error instanceof Error ? error : undefined,
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**
@@ -396,5 +446,9 @@ export class TelegramClient {
 
   private buildMethodUrl(method: string): string {
     return `${this.baseUrl}/bot${this.token}/${method}`;
+  }
+
+  private buildFileUrl(filePath: string): string {
+    return `${this.baseUrl}/file/bot${this.token}/${filePath}`;
   }
 }
