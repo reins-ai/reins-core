@@ -181,4 +181,171 @@ describe("SummarisationStrategy", () => {
 
     expect(result.find((message) => message.id === "legacy-summary")).toBeDefined();
   });
+
+  it("skips compaction when message count is under keepRecent threshold", async () => {
+    let chatCalled = false;
+    const provider = makeProvider(async () => {
+      chatCalled = true;
+      return {
+        id: "resp-skip",
+        model: "test-model",
+        content: "Should not be called",
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        finishReason: "stop",
+      };
+    });
+    const strategy = new SummarisationStrategy({
+      provider,
+      model: "test-model",
+    });
+
+    const messages = makeLongConversation(5);
+    const result = await strategy.truncate(messages, {
+      maxTokens: 4096,
+      reservedTokens: 0,
+      keepRecentMessages: 10,
+    });
+
+    expect(chatCalled).toBe(false);
+    expect(result).toEqual(messages);
+  });
+
+  it("passes summary prompt to provider when custom prompt is provided", async () => {
+    let capturedRequest: ChatRequest | null = null;
+    const provider = makeProvider(async (request) => {
+      capturedRequest = request;
+      return {
+        id: "resp-prompt",
+        model: "test-model",
+        content: "Summary with custom prompt",
+        usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+        finishReason: "stop",
+      };
+    });
+    const customPrompt = "Summarise this conversation in bullet points.";
+    const strategy = new SummarisationStrategy({
+      provider,
+      model: "test-model",
+      summaryPrompt: customPrompt,
+    });
+
+    await strategy.truncate(makeLongConversation(30), {
+      maxTokens: 4096,
+      reservedTokens: 0,
+      keepRecentMessages: 5,
+    });
+
+    expect(capturedRequest).not.toBeNull();
+    expect(capturedRequest!.systemPrompt).toBe(customPrompt);
+  });
+
+  it("uses default summary prompt when none is provided", async () => {
+    let capturedRequest: ChatRequest | null = null;
+    const provider = makeProvider(async (request) => {
+      capturedRequest = request;
+      return {
+        id: "resp-default-prompt",
+        model: "test-model",
+        content: "Summary with default prompt",
+        usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+        finishReason: "stop",
+      };
+    });
+    const strategy = new SummarisationStrategy({
+      provider,
+      model: "test-model",
+    });
+
+    await strategy.truncate(makeLongConversation(30), {
+      maxTokens: 4096,
+      reservedTokens: 0,
+      keepRecentMessages: 5,
+    });
+
+    expect(capturedRequest).not.toBeNull();
+    expect(capturedRequest!.systemPrompt).toContain("summarising a conversation");
+  });
+
+  it("respects summaryMaxTokens option for provider call", async () => {
+    let capturedRequest: ChatRequest | null = null;
+    const provider = makeProvider(async (request) => {
+      capturedRequest = request;
+      return {
+        id: "resp-max-tokens",
+        model: "test-model",
+        content: "Short summary",
+        usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+        finishReason: "stop",
+      };
+    });
+    const strategy = new SummarisationStrategy({
+      provider,
+      model: "test-model",
+      summaryMaxTokens: 200,
+    });
+
+    await strategy.truncate(makeLongConversation(30), {
+      maxTokens: 4096,
+      reservedTokens: 0,
+      keepRecentMessages: 5,
+    });
+
+    expect(capturedRequest).not.toBeNull();
+    expect(capturedRequest!.maxTokens).toBe(200);
+  });
+
+  it("returns a copy of messages when no compaction is needed", async () => {
+    const provider = makeProvider(async () => {
+      throw new Error("should not be called");
+    });
+    const strategy = new SummarisationStrategy({
+      provider,
+      model: "test-model",
+    });
+
+    const messages = [
+      makeMessage("sys", "system", "System", 1),
+      makeMessage("m1", "user", "Hello", 2),
+      makeMessage("m2", "assistant", "Hi", 3),
+    ];
+
+    const result = await strategy.truncate(messages, {
+      maxTokens: 4096,
+      reservedTokens: 0,
+      keepRecentMessages: 10,
+    });
+
+    expect(result).toEqual(messages);
+    expect(result).not.toBe(messages);
+  });
+
+  it("places system messages before summary and recent messages in output", async () => {
+    const provider = makeProvider(async () => ({
+      id: "resp-order",
+      model: "test-model",
+      content: "Ordered summary",
+      usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+      finishReason: "stop",
+    }));
+    const strategy = new SummarisationStrategy({
+      provider,
+      model: "test-model",
+    });
+
+    const result = await strategy.truncate(makeLongConversation(30), {
+      maxTokens: 4096,
+      reservedTokens: 0,
+      keepRecentMessages: 5,
+    });
+
+    expect(result[0]?.role).toBe("system");
+    expect(result[0]?.isSummary).not.toBe(true);
+
+    const summaryIndex = result.findIndex((m) => m.isSummary === true);
+    expect(summaryIndex).toBeGreaterThan(0);
+
+    const recentMessages = result.slice(summaryIndex + 1);
+    expect(recentMessages.length).toBe(5);
+    expect(recentMessages.every((m) => m.role === "user" || m.role === "assistant")).toBe(true);
+  });
 });
