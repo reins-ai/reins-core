@@ -1,5 +1,6 @@
 import { parentPort } from "node:worker_threads";
 
+import { createLogger } from "../../logger";
 import type {
   PluginContext,
   PluginEvent,
@@ -12,6 +13,8 @@ import type {
 import type { PluginDataAccess } from "../api";
 import { loadPluginEntrypoint } from "./module-loader";
 import type { HostToWorkerMessage, SandboxConfig, WorkerToHostMessage } from "./types";
+
+const log = createLogger("plugins:worker-entry");
 
 if (!parentPort) {
   throw new Error("Plugin sandbox worker must run with a parentPort");
@@ -66,8 +69,9 @@ function denyProcessEnvAccess(): void {
         throw new Error("Access to process.env is denied in plugin sandbox");
       },
     });
-  } catch {
-    // Ignore in runtimes where process.env is non-configurable.
+  } catch (e) {
+    // Expected: process.env may be non-configurable in some runtimes
+    log.debug("failed to deny process.env access", { error: e instanceof Error ? e.message : String(e) });
   }
 }
 

@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
+import { createLogger } from "../../logger";
 import { BASH_DEFINITION } from "../builtins";
+
+const log = createLogger("tools:bash");
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../../types";
 import { validateCommand } from "./command-policy";
 import { validatePath } from "./sandbox";
@@ -268,14 +271,15 @@ async function runCommand(options: {
       try {
         process.kill(-child.pid, sig);
         return;
-      } catch {
-        // Process group not found or already exited; fall through to direct kill
+      } catch (e) {
+        // Expected: process group not found or already exited — fall through to direct kill
+        log.debug("process group kill failed", { pid: child.pid, signal: sig, error: e instanceof Error ? e.message : String(e) });
       }
     }
     try {
       child.kill(sig);
     } catch {
-      // Child already exited
+      // Expected: child already exited
     }
   };
 

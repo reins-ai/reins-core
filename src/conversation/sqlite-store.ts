@@ -5,6 +5,9 @@ import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 
 import { ConversationError } from "../errors";
+import { createLogger } from "../logger";
+
+const log = createLogger("conversation:sqlite-store");
 import { err, ok } from "../result";
 import {
   deserializeContent,
@@ -497,8 +500,9 @@ export class SQLiteConversationStore implements ConversationStore {
     if (row.content_blocks) {
       try {
         return JSON.parse(row.content_blocks) as ContentBlock[];
-      } catch {
-        // Corrupted content_blocks — fall through to content column
+      } catch (e) {
+        // Expected: corrupted content_blocks — fall through to content column
+        log.debug("corrupted content_blocks, falling back to content column", { error: e instanceof Error ? e.message : String(e) });
       }
     }
 
@@ -543,8 +547,9 @@ export class SQLiteConversationStore implements ConversationStore {
   private safeRollback(): void {
     try {
       this.connection.exec("ROLLBACK");
-    } catch {
-      // no-op
+    } catch (e) {
+      // Expected: ROLLBACK may fail if no transaction is active
+      log.debug("rollback failed", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 

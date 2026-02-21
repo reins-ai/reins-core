@@ -1,5 +1,8 @@
 import { AuthError } from "../errors";
+import { createLogger } from "../logger";
 import { err, ok, type Result } from "../result";
+
+const log = createLogger("providers:auth-service");
 import type { ProviderAuthMode as AuthMode, ProviderConfig, ProviderType } from "../types/provider";
 import type { CredentialRecord, CredentialType, EncryptedCredentialStore } from "./credentials";
 import { OAuthProviderRegistry } from "./oauth/provider";
@@ -700,8 +703,9 @@ export class ProviderAuthService implements AuthService {
 
     try {
       pending.session.stop();
-    } catch {
-      // swallow cleanup failures
+    } catch (e) {
+      // Expected: cleanup may fail if session is already stopped
+      log.debug("failed to stop pending OAuth callback session", { provider, error: e instanceof Error ? e.message : String(e) });
     }
 
     this.pendingOAuthCallbackSessions.delete(provider);

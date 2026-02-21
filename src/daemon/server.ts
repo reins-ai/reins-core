@@ -336,8 +336,9 @@ export class StreamRegistry {
     for (const subscriber of subscribers) {
       try {
         subscriber(event);
-      } catch {
-        // Subscriber errors must not break the stream pipeline
+      } catch (e) {
+        // Expected: subscriber errors must not break the stream pipeline
+        log("warn", "stream subscriber error", { error: e instanceof Error ? e.message : String(e) });
       }
     }
 
@@ -2024,8 +2025,9 @@ export class DaemonHttpServer implements DaemonManagedService {
       if (typeof body.quality === "number" && body.quality >= 0 && body.quality <= 100) {
         quality = body.quality;
       }
-    } catch {
-      // Use default quality if body is missing or invalid.
+    } catch (e) {
+      // Expected: body may be missing or invalid — use default quality
+      log("info", "using default screenshot quality", { error: e instanceof Error ? e.message : String(e) });
     }
 
     const result = await this.browserService.takeScreenshot(quality);
@@ -4710,8 +4712,9 @@ export class DaemonHttpServer implements DaemonManagedService {
       let body: { outputDir?: string } = {};
       try {
         body = (await request.json()) as typeof body;
-      } catch {
-        // Empty body is fine — use default output directory
+      } catch (e) {
+        // Expected: empty body is fine — use default output directory
+        log("info", "using default output directory for persona export", { error: e instanceof Error ? e.message : String(e) });
       }
 
       const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
@@ -5873,7 +5876,9 @@ export class DaemonHttpServer implements DaemonManagedService {
         return { ok: false, error: "Request body is required" };
       }
       return { ok: true, value: JSON.parse(text) };
-    } catch {
+    } catch (e) {
+      // Expected: invalid JSON in request body
+      log("info", "invalid JSON in request body", { error: e instanceof Error ? e.message : String(e) });
       return { ok: false, error: "Invalid JSON in request body" };
     }
   }
@@ -5951,6 +5956,7 @@ function toConvexSiteOrigin(convexUrl: string): string | null {
 
     return parsed.origin;
   } catch {
+    // Expected: invalid URL format — return null to indicate no site URL
     return null;
   }
 }

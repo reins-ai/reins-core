@@ -5,6 +5,10 @@ import { dirname, join } from "node:path";
 
 import { Database } from "bun:sqlite";
 
+import { createLogger } from "../logger";
+
+const log = createLogger("tasks:store");
+
 import type {
   TaskCreateInput,
   TaskListOptions,
@@ -355,8 +359,9 @@ export class SQLiteTaskStore implements TaskStore {
   private safeRollback(): void {
     try {
       this.connection.exec("ROLLBACK");
-    } catch {
-      // no-op
+    } catch (e) {
+      // Expected: ROLLBACK may fail if no transaction is active
+      log.debug("rollback failed", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

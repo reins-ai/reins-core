@@ -167,14 +167,15 @@ export class WatcherCronManager {
             config.url,
             diff,
           );
-        } catch {
-          // Notification delivery errors must never disrupt cron execution.
+        } catch (e) {
+          // Expected: notification delivery errors must never disrupt cron execution
+          log.warn("watcher notification delivery failed", { watcherId, error: e instanceof Error ? e.message : String(e) });
         }
       }
-    } catch {
-      // Error is already recorded on the watcher via markError() in
-      // BrowserWatcher.checkForChanges(). We swallow the re-thrown error
-      // here so the cron scheduler is never disrupted.
+    } catch (e) {
+      // Expected: error is already recorded on the watcher via markError() in
+      // BrowserWatcher.checkForChanges(). Swallowed so the cron scheduler is never disrupted.
+      log.debug("watcher check error (already recorded on watcher)", { watcherId, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -241,8 +242,9 @@ export class WatcherCronManager {
     for (const watcher of this.registry.list()) {
       try {
         await this.cronScheduler.remove(cronJobId(watcher.id));
-      } catch {
-        // Best-effort cleanup — don't crash on individual removal failures.
+      } catch (e) {
+        // Expected: best-effort cleanup — don't crash on individual removal failures
+        log.debug("failed to remove watcher cron job during shutdown", { watcherId: watcher.id, error: e instanceof Error ? e.message : String(e) });
       }
     }
   }
@@ -256,8 +258,9 @@ export class WatcherCronManager {
       const tmpPath = `${this.watchersFilePath}.tmp`;
       await this.io.writeFile(tmpPath, json, "utf8");
       await this.io.rename(tmpPath, this.watchersFilePath);
-    } catch {
-      // Persistence errors must never crash the watcher system.
+    } catch (e) {
+      // Expected: persistence errors must never crash the watcher system
+      log.warn("failed to persist watcher state", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

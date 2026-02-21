@@ -1,6 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { createLogger } from "../../logger";
+
+const log = createLogger("memory:nudge-feedback-store");
+
 export type NudgeFeedbackAction = "dismissed" | "accepted" | "ignored";
 
 export interface NudgeFeedback {
@@ -238,8 +242,9 @@ export class FileNudgeFeedbackStore extends NudgeFeedbackStore {
     try {
       await mkdir(dirname(this.filePath), { recursive: true });
       await writeFile(this.filePath, this.serialize() + "\n", "utf8");
-    } catch {
-      // Best-effort persistence — don't crash on write failure
+    } catch (e) {
+      // Expected: best-effort persistence — don't crash on write failure
+      log.warn("failed to persist nudge feedback", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

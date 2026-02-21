@@ -1,4 +1,7 @@
+import { createLogger } from "../logger";
 import type { PluginEvent, PluginEventHandler } from "../types";
+
+const log = createLogger("plugins:events");
 
 export interface PluginEventBus {
   emit(event: PluginEvent, data: unknown): Promise<void>;
@@ -80,8 +83,9 @@ export class InMemoryPluginEventBus implements PluginEventBus {
   private async runHandler(handler: PluginEventHandler, data: unknown): Promise<void> {
     try {
       await handler(data);
-    } catch {
-      // Swallow handler errors so one plugin cannot stop event delivery.
+    } catch (e) {
+      // Expected: handler errors must not stop event delivery to other plugins
+      log.debug("plugin event handler error", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

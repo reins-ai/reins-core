@@ -2,7 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { createLogger } from "../../logger";
 import { parse, serialize, type MemoryFileRecord } from "../io/index";
+
+const log = createLogger("memory:repository");
 import {
   isValidMemorySourceType,
   isValidPersistedMemoryLayer,
@@ -906,8 +909,9 @@ export class SqliteMemoryRepository implements MemoryRepository {
   private rollback(db: ReturnType<SqliteMemoryDb["getDb"]>): void {
     try {
       db.exec("ROLLBACK");
-    } catch {
-      // no-op
+    } catch (e) {
+      // Expected: ROLLBACK may fail if no transaction is active
+      log.debug("rollback failed", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 

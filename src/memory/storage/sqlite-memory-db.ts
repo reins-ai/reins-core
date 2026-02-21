@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 
 import { Database } from "bun:sqlite";
 
+import { createLogger } from "../../logger";
 import { ReinsError } from "../../errors";
+
+const log = createLogger("memory:sqlite-db");
 import { err, ok, type Result } from "../../result";
 
 const MIGRATION_FILE_PATTERN = /^(\d+)_.*\.sql$/;
@@ -182,8 +185,9 @@ export class SqliteMemoryDb {
   private safeRollback(db: Database): void {
     try {
       db.exec("ROLLBACK");
-    } catch {
-      // no-op
+    } catch (e) {
+      // Expected: ROLLBACK may fail if no transaction is active
+      log.debug("rollback failed", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

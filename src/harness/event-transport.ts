@@ -1,5 +1,8 @@
+import { createLogger } from "../logger";
 import type { TypedEventBus } from "./event-bus";
 import { harnessEventTypes, type EventEnvelope, type HarnessEventMap, type HarnessEventType } from "./events";
+
+const log = createLogger("harness:event-transport");
 
 const DEFAULT_REPLAY_LIMIT = 256;
 
@@ -170,8 +173,9 @@ export class EventTransportAdapter {
     for (const handler of this.frameHandlers) {
       try {
         handler(frame);
-      } catch {
-        // Frame handler failures must not stop transport fan-out.
+      } catch (e) {
+        // Expected: frame handler failures must not stop transport fan-out
+        log.debug("frame handler error", { error: e instanceof Error ? e.message : String(e) });
       }
     }
   }

@@ -1,6 +1,9 @@
 import { Worker } from "node:worker_threads";
 
+import { createLogger } from "../../logger";
 import type { PluginEvent, ToolContext, ToolResult } from "../../types";
+
+const log = createLogger("plugins:sandbox");
 import type { PluginDataAccess } from "../api";
 import { StubPluginDataAccess } from "../api";
 import { InMemoryPermissionAuditLog, type PermissionAuditLog } from "../audit";
@@ -141,8 +144,9 @@ export class PluginSandbox {
     try {
       try {
         worker.postMessage({ type: "shutdown" } satisfies HostToWorkerMessage);
-      } catch {
-        // Worker may already be terminated. Continue with termination cleanup.
+      } catch (e) {
+        // Expected: worker may already be terminated — continue with cleanup
+        log.debug("failed to send shutdown message to worker", { error: e instanceof Error ? e.message : String(e) });
       }
 
       await Promise.race([

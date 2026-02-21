@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
+import { createLogger } from "../logger";
 import { readUserConfig, type UserConfig } from "../config";
+
+const log = createLogger("tasks:worker-manager");
 import { AgentLoop } from "../harness/agent-loop";
 import { PermissionChecker } from "../harness/permissions";
 import type { ProviderRegistry } from "../providers";
@@ -272,8 +275,9 @@ export class WorkerManager {
       ) {
         this.maxConcurrentWorkers = configured;
       }
-    } catch {
-      // Keep default when config read fails.
+    } catch (e) {
+      // Expected: keep default when config read fails
+      log.debug("failed to read max workers from config", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 

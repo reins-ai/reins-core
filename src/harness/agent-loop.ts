@@ -883,7 +883,9 @@ export class AgentLoop {
           if (ragContext) {
             systemPrompt = appendRelevantDocumentContext(systemPrompt, ragContext);
           }
-        } catch {}
+        } catch (e) {
+          log.debug("RAG context injection failed", { error: e instanceof Error ? e.message : String(e) });
+        }
       }
     }
 
@@ -895,7 +897,9 @@ export class AgentLoop {
     const conversationContext = this.buildConversationContext(messages);
     try {
       return await nudgeInjector.injectNudges(conversationContext, systemPrompt ?? "");
-    } catch {
+    } catch (e) {
+      // Expected: nudge injection is non-critical — fall back to original prompt
+      log.debug("nudge injection failed", { error: e instanceof Error ? e.message : String(e) });
       return systemPrompt;
     }
   }
@@ -983,6 +987,7 @@ function serializeToolResult(result: ToolResult): string {
   try {
     return JSON.stringify(result.result);
   } catch {
+    // Expected: result may not be JSON-serializable — fall back to String()
     return String(result.result);
   }
 }

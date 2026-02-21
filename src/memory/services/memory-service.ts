@@ -1,5 +1,8 @@
+import { createLogger } from "../../logger";
 import { err, ok, type Result } from "../../result";
 import type { MemoryLayer, MemoryRecord, MemoryType } from "../types/index";
+
+const log = createLogger("memory:service");
 import type {
   CreateMemoryInput,
   ListMemoryOptions,
@@ -355,8 +358,9 @@ export class MemoryService implements MemoryServiceContract {
       if (warning) {
         warnings.push(warning);
       }
-    } catch {
-      // Duplicate check is best-effort — don't block writes
+    } catch (e) {
+      // Expected: duplicate check is best-effort — don't block writes
+      log.debug("duplicate check failed", { error: e instanceof Error ? e.message : String(e) });
     }
 
     return warnings;
