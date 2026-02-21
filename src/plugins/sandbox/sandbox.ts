@@ -10,8 +10,7 @@ const SANDBOX_STOP_GRACE_MS = 100;
 /** Hard deadline (ms) for the terminate() call to complete. */
 const SANDBOX_TERMINATE_TIMEOUT_MS = 500;
 
-import type { PluginDataAccess } from "../api";
-import { StubPluginDataAccess } from "../api";
+import { createNoOpDataAccess, type PluginDataAccess } from "../api";
 import { InMemoryPermissionAuditLog, type PermissionAuditLog } from "../audit";
 import { EnforcedDataAccess } from "../enforcement";
 import { PluginPermissionChecker } from "../permissions";
@@ -42,7 +41,7 @@ export class PluginSandbox {
   private readonly errorCallbacks: Array<(error: Error) => void> = [];
   private readonly logs: Array<{ level: string; message: string; args: unknown[] }> = [];
 
-  private dataAccess: PluginDataAccess = new StubPluginDataAccess();
+  private dataAccess: PluginDataAccess = createNoOpDataAccess();
   private readonly auditLog: PermissionAuditLog;
 
   constructor(protected readonly config: SandboxConfig, auditLog?: PermissionAuditLog) {

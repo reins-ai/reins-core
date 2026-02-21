@@ -56,40 +56,33 @@ export interface RemindersDataAPI {
   create(input: { title: string; dueAt: Date }): Promise<ReminderSummary>;
 }
 
-export class StubPluginDataAccess implements PluginDataAccess {
-  public readonly conversations: ConversationDataAPI = {
-    list: async () => [],
-    getMessages: async () => [],
+/**
+ * Creates a no-op PluginDataAccess suitable as a safe default before real
+ * data access is injected. List operations return empty arrays; create
+ * operations throw because no backing store is configured.
+ */
+export function createNoOpDataAccess(): PluginDataAccess {
+  const noCreate = (): never => {
+    throw new PluginError("No data access configured — call setDataAccess() before using create operations");
   };
 
-  public readonly calendar: CalendarDataAPI = {
-    list: async () => [],
-    create: async (input) => ({
-      id: "calendar-stub-event",
-      title: input.title,
-      startAt: input.startAt,
-      endAt: input.endAt,
-    }),
-  };
-
-  public readonly notes: NotesDataAPI = {
-    list: async () => [],
-    create: async (input) => ({
-      id: "notes-stub-note",
-      title: input.title,
-      content: input.content,
-      updatedAt: new Date(),
-    }),
-  };
-
-  public readonly reminders: RemindersDataAPI = {
-    list: async () => [],
-    create: async (input) => ({
-      id: "reminders-stub-reminder",
-      title: input.title,
-      dueAt: input.dueAt,
-      completed: false,
-    }),
+  return {
+    conversations: {
+      list: async () => [],
+      getMessages: async () => [],
+    },
+    calendar: {
+      list: async () => [],
+      create: () => noCreate(),
+    },
+    notes: {
+      list: async () => [],
+      create: () => noCreate(),
+    },
+    reminders: {
+      list: async () => [],
+      create: () => noCreate(),
+    },
   };
 }
 

@@ -7,7 +7,7 @@ import {
 } from "../../src/plugins/context";
 import { InMemoryPluginEventBus } from "../../src/plugins/events";
 import { InMemoryLogOutput, ScopedPluginLogger } from "../../src/plugins/logger";
-import { StubPluginDataAccess } from "../../src/plugins/api";
+import { StubPluginDataAccess } from "./helpers/stub-data-access";
 import type { Tool } from "../../src/types";
 
 function createTool(name: string): Tool {

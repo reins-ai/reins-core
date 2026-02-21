@@ -7,8 +7,7 @@ import type {
   ToolContext,
   ToolResult,
 } from "../../types";
-import type { PluginDataAccess } from "../api";
-import { StubPluginDataAccess } from "../api";
+import { createNoOpDataAccess, type PluginDataAccess } from "../api";
 import { InMemoryPermissionAuditLog, type PermissionAuditLog } from "../audit";
 import { EnforcedDataAccess } from "../enforcement";
 import { PluginPermissionChecker } from "../permissions";
@@ -24,7 +23,7 @@ export class MockPluginSandbox extends PluginSandbox {
   private readonly toolCallbacks: Array<(tool: SerializedToolDefinition) => void> = [];
   private readonly mockErrorCallbacks: Array<(error: Error) => void> = [];
 
-  private mockDataAccess: PluginDataAccess = new StubPluginDataAccess();
+  private mockDataAccess: PluginDataAccess = createNoOpDataAccess();
   private readonly mockAuditLog: PermissionAuditLog;
 
   constructor(private readonly mockConfig: SandboxConfig, auditLog?: PermissionAuditLog) {
