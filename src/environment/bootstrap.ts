@@ -7,7 +7,10 @@ import type { DaemonPathOptions } from "../daemon/paths";
 import type { PersonalityPreset } from "../onboarding/types";
 import {
   CONFIG_SCHEMA_VERSION,
+  DEFAULT_AUTO_COMPACT_THRESHOLD,
   DEFAULT_HEARTBEAT_INTERVAL_MINUTES,
+  DEFAULT_KEEP_RECENT_MESSAGES,
+  DEFAULT_SUMMARY_MAX_TOKENS,
   type ReinsGlobalConfig,
 } from "../config/format-decision";
 import { EnvironmentBootstrapFailedError } from "./errors";
@@ -166,6 +169,12 @@ export function generateDefaultConfigContent(): string {
       currencyCode: "USD",
     },
     heartbeatIntervalMinutes: DEFAULT_HEARTBEAT_INTERVAL_MINUTES,
+    context: {
+      autoCompact: false,
+      autoCompactThreshold: DEFAULT_AUTO_COMPACT_THRESHOLD,
+      keepRecentMessages: DEFAULT_KEEP_RECENT_MESSAGES,
+      summaryMaxTokens: DEFAULT_SUMMARY_MAX_TOKENS,
+    },
   };
 
   return `// Reins global configuration (JSON5)\n${JSON.stringify(config, null, 2)}\n`;

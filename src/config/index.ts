@@ -6,6 +6,7 @@ export type {
   ConfigStoreOptions,
   ConfigValidationIssue,
   ConfigValidationResult,
+  ContextConfig,
   GlobalCredentialsConfig,
   ModelDefaultsConfig,
   ReinsGlobalConfig,

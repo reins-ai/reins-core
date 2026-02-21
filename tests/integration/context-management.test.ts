@@ -46,14 +46,14 @@ const createLongConversation = (): Message[] => {
 };
 
 describe("integration/context-management", () => {
-  it("truncates oversized conversations with DropOldestStrategy", () => {
+  it("truncates oversized conversations with DropOldestStrategy", async () => {
     const input = createLongConversation();
     const manager = new ContextManager({
       strategy: new DropOldestStrategy(),
       defaultMaxTokens: mockModel.contextWindow,
     });
 
-    const prepared = manager.prepare(input, {
+    const prepared = await manager.prepare(input, {
       model: mockModel,
       reservedForOutput: 512,
     });
@@ -64,7 +64,7 @@ describe("integration/context-management", () => {
     expect(manager.estimateTokens(prepared)).toBeLessThanOrEqual(mockModel.contextWindow - 512);
   });
 
-  it("uses a different truncation shape for SlidingWindowStrategy", () => {
+  it("uses a different truncation shape for SlidingWindowStrategy", async () => {
     const input: Message[] = [
       createMessage("m-system", "system", "System: stay helpful.", 1),
       createMessage("m-1", "user", "old short", 2),
@@ -82,11 +82,11 @@ describe("integration/context-management", () => {
       defaultMaxTokens: mockModel.contextWindow,
     });
 
-    const dropOldest = dropOldestManager.prepare(input, {
+    const dropOldest = await dropOldestManager.prepare(input, {
       maxTokens: 120,
       reservedForOutput: 20,
     });
-    const sliding = slidingManager.prepare(input, {
+    const sliding = await slidingManager.prepare(input, {
       maxTokens: 120,
       reservedForOutput: 20,
     });
@@ -98,29 +98,29 @@ describe("integration/context-management", () => {
     expect(sliding.some((message) => message.id === "m-1")).toBe(true);
   });
 
-  it("respects output token reservation and throws on invalid effective limit", () => {
+  it("respects output token reservation and throws on invalid effective limit", async () => {
     const input = createLongConversation();
     const manager = new ContextManager({
       strategy: new KeepSystemAndRecentStrategy(),
       defaultMaxTokens: mockModel.contextWindow,
     });
 
-    const withoutReserve = manager.prepare(input, {
+    const withoutReserve = await manager.prepare(input, {
       model: mockModel,
       reservedForOutput: 0,
     });
-    const withReserve = manager.prepare(input, {
+    const withReserve = await manager.prepare(input, {
       model: mockModel,
       reservedForOutput: 1500,
     });
 
     expect(manager.estimateTokens(withReserve)).toBeLessThanOrEqual(manager.estimateTokens(withoutReserve));
 
-    expect(() =>
+    await expect(
       manager.prepare(input, {
         maxTokens: 100,
         reservedForOutput: 100,
       }),
-    ).toThrow(ConversationError);
+    ).rejects.toBeInstanceOf(ConversationError);
   });
 });

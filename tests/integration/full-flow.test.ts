@@ -138,7 +138,7 @@ describe("integration/full-flow", () => {
     });
 
     const turnOneHistory = await conversationManager.getHistory(conversation.id);
-    const turnOneContext = contextManager.prepare(turnOneHistory, {
+    const turnOneContext = await contextManager.prepare(turnOneHistory, {
       model: turnOneRoute.model,
       reservedForOutput: 200,
       systemPrompt,
@@ -172,7 +172,7 @@ describe("integration/full-flow", () => {
       capabilities: ["chat", "tool_use"],
     });
     const turnTwoHistory = await conversationManager.getHistory(conversation.id);
-    const turnTwoContext = contextManager.prepare(turnTwoHistory, {
+    const turnTwoContext = await contextManager.prepare(turnTwoHistory, {
       model: turnTwoRoute.model,
       reservedForOutput: 200,
       systemPrompt,
@@ -205,7 +205,7 @@ describe("integration/full-flow", () => {
       capabilities: ["chat"],
     });
     const finalHistoryBeforeAnswer = await conversationManager.getHistory(conversation.id);
-    const finalContext = contextManager.prepare(finalHistoryBeforeAnswer, {
+    const finalContext = await contextManager.prepare(finalHistoryBeforeAnswer, {
       model: finalRoute.model,
       reservedForOutput: 200,
       systemPrompt,

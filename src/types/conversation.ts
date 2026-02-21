@@ -108,6 +108,7 @@ export interface Message {
   id: string;
   role: MessageRole;
   content: string | ContentBlock[];
+  isSummary?: boolean;
   channelSource?: ChannelSource;
   toolCalls?: ToolCall[];
   toolResultId?: string;

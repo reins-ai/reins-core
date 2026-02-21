@@ -1,10 +1,10 @@
 import { ConversationError } from "../errors";
 import type { Model, Message } from "../types";
 import { estimateConversationTokens } from "./tokenizer";
-import type { TruncationStrategy } from "./strategies";
+import type { AsyncTruncationStrategy, TruncationStrategy } from "./strategies";
 
 export interface ContextManagerConfig {
-  strategy: TruncationStrategy;
+  strategy: TruncationStrategy | AsyncTruncationStrategy;
   defaultMaxTokens?: number;
   modelTokenLimits?: Record<string, number>;
 }
@@ -27,7 +27,7 @@ export interface UsageReport {
 export class ContextManager {
   constructor(private readonly config: ContextManagerConfig) {}
 
-  prepare(messages: Message[], options: PrepareOptions): Message[] {
+  async prepare(messages: Message[], options: PrepareOptions): Promise<Message[]> {
     const prepared = this.ensureSystemPrompt(messages, options.systemPrompt);
     const maxTokens = this.resolveMaxTokens(options);
     const reservedForOutput = Math.max(0, options.reservedForOutput ?? 0);
@@ -41,11 +41,13 @@ export class ContextManager {
       return prepared;
     }
 
-    return this.config.strategy.truncate(prepared, {
+    const truncated = this.config.strategy.truncate(prepared, {
       maxTokens,
       reservedTokens: reservedForOutput,
       model: options.model,
     });
+
+    return await Promise.resolve(truncated);
   }
 
   estimateTokens(messages: Message[]): number {

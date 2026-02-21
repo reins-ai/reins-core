@@ -62,7 +62,7 @@ describe("integration/conversation-flow", () => {
       strategy: new DropOldestStrategy(),
       defaultMaxTokens: 4096,
     });
-    const prepared = contextManager.prepare(history, {
+    const prepared = await contextManager.prepare(history, {
       model: routed.model,
       reservedForOutput: 256,
       systemPrompt,
