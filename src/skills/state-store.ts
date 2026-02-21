@@ -1,6 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { createLogger } from "../logger";
+
+const log = createLogger("skills:state-store");
+
 /**
  * Persisted state for a single skill.
  */
@@ -113,8 +117,9 @@ export class FileSkillStateStore implements SkillStateStore {
     try {
       await mkdir(dirname(this.filePath), { recursive: true });
       await writeFile(this.filePath, JSON.stringify(this.data, null, 2) + "\n", "utf8");
-    } catch {
-      // Best-effort persistence — don't crash on write failure
+    } catch (e) {
+      // Expected: best-effort persistence — don't crash on write failure
+      log.warn("failed to persist skill state", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

@@ -6,7 +6,8 @@ import { formatForTelegram } from "../../../src/channels/formatting";
 import { ChannelRouter, type AgentResponse } from "../../../src/channels/router";
 import type { ChannelRouterConversationManager } from "../../../src/channels/router";
 import type { ChannelMessage } from "../../../src/channels/types";
-import type { TelegramUpdate } from "../../../src/channels/telegram/types";
+import type { ContentBlock } from "../../../src/types/conversation";
+import type { TelegramFile, TelegramUpdate } from "../../../src/channels/telegram/types";
 import { ChannelError } from "../../../src/channels/errors";
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,21 @@ class MockTelegramClient implements TelegramChannelClient {
     return next;
   }
 
+  public async getFile(fileId: string): Promise<TelegramFile> {
+    return {
+      file_id: fileId,
+      file_unique_id: `${fileId}-uid`,
+      file_path: `${fileId}.bin`,
+    };
+  }
+
+  public async downloadFile(): Promise<{ data: Uint8Array; contentType?: string }> {
+    return {
+      data: new Uint8Array([1, 2, 3]),
+      contentType: "application/octet-stream",
+    };
+  }
+
   public async sendMessage(chatId: string | number, text: string): Promise<unknown> {
     this.sendMessageCalls.push({ chatId, text });
     return {};
@@ -125,7 +141,7 @@ interface MockConversationManager {
     conversationId: string;
     message: {
       role: "user" | "assistant" | "system" | "tool";
-      content: string;
+      content: string | ContentBlock[];
       metadata?: Record<string, unknown>;
     };
   }>;
@@ -353,8 +369,17 @@ describe("Telegram E2E Flow", () => {
       expect(msg.attachments![0]!.type).toBe("image");
       expect(msg.attachments![0]!.platformData?.file_id).toBe("large_id");
 
-      // Caption is used as conversation content
-      expect(addedMessages[0]!.message.content).toBe("Check this out");
+      expect(addedMessages[0]!.message.content).toEqual([
+        {
+          type: "text",
+          text: "Check this out",
+        },
+        {
+          type: "image",
+          url: "data:image/jpeg;base64,AQID",
+          mimeType: "image/jpeg",
+        },
+      ]);
 
       await channel.disconnect();
     });

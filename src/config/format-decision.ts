@@ -16,6 +16,9 @@ export const MAX_TEMPERATURE = 2;
 export const MIN_MAX_TOKENS = 1;
 export const MAX_MAX_TOKENS = 128_000;
 
+/** Default max tokens for model responses when no explicit value is configured. */
+export const DEFAULT_MODEL_MAX_TOKENS = 4096;
+
 export const MIN_AUTO_COMPACT_THRESHOLD = 0.5;
 export const MAX_AUTO_COMPACT_THRESHOLD = 0.99;
 export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.9;
@@ -94,7 +97,7 @@ export const DEFAULT_REINS_GLOBAL_CONFIG: ReinsGlobalConfig = {
     provider: null,
     model: null,
     temperature: 0.7,
-    maxTokens: 4096,
+    maxTokens: DEFAULT_MODEL_MAX_TOKENS,
   },
   billing: {
     mode: "off",

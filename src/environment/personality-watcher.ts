@@ -2,6 +2,10 @@ import { watch, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
+import { createLogger } from "../logger";
+
+const log = createLogger("environment:personality-watcher");
+
 /**
  * Options for the PersonalityWatcher.
  */
@@ -88,8 +92,9 @@ export class PersonalityWatcher {
     if (this.watcher) {
       try {
         this.watcher.close();
-      } catch {
-        // Ignore close errors
+      } catch (e) {
+        // Expected: watcher may already be closed
+        log.debug("failed to close file watcher", { error: e instanceof Error ? e.message : String(e) });
       }
       this.watcher = null;
     }
@@ -119,9 +124,9 @@ export class PersonalityWatcher {
     try {
       const content = await readFile(this.personalityFilePath, "utf8");
       this.onChanged(content);
-    } catch {
-      // File may have been deleted or is temporarily unavailable
-      // during an editor swap — silently ignore
+    } catch (e) {
+      // Expected: file may have been deleted or is temporarily unavailable during an editor swap
+      log.debug("personality file read failed", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

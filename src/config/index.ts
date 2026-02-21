@@ -1,3 +1,4 @@
+export { DAEMON_HOST, DAEMON_PORT, DEFAULT_MODEL, DEFAULT_MODEL_WITH_PROVIDER } from "./defaults";
 export { CONFIG_SCHEMA_VERSION, DEFAULT_REINS_GLOBAL_CONFIG } from "./format-decision";
 export { isValidEnvironmentName, validateGlobalConfig } from "./schema";
 export { ConfigStore } from "./store";

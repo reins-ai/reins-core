@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { err, ok } from "../result";
+import { createLogger } from "../logger";
 import { DaemonError, type DaemonManagedService, type DaemonResult } from "../daemon/types";
 import { RoutineDueEvaluator, type DueRoutine, type Routine } from "./routines";
 
@@ -28,15 +29,17 @@ export interface HeartbeatWatcherServiceOptions {
   logger?: HeartbeatWatcherLogger;
 }
 
+const _moduleLog = createLogger("heartbeat");
+
 const defaultLogger: HeartbeatWatcherLogger = {
   info: (message, details) => {
-    console.info(message, details ?? {});
+    _moduleLog.info(message, details);
   },
   warn: (message, details) => {
-    console.warn(message, details ?? {});
+    _moduleLog.warn(message, details);
   },
   error: (message, details) => {
-    console.error(message, details ?? {});
+    _moduleLog.error(message, details);
   },
 };
 

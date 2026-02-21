@@ -247,7 +247,7 @@ async function runReminders(platform: Platform): Promise<ToolResult> {
       callId: `reminders-${platform}`,
       action: "create",
       title: "Ship release",
-      dueAt: "in 60 minutes",
+      dueAt: "2026-03-05T12:00:00.000Z",
       priority: "high",
     },
     context,

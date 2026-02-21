@@ -1,11 +1,12 @@
 import { join } from "node:path";
 import { getLogsDir, ServiceInstaller } from "../../index";
 import type { ServiceDefinition } from "../../daemon/types";
+import { DAEMON_PORT } from "../../config/defaults";
 
 type WriteFn = (text: string) => void;
 type ServiceAction = "install" | "start" | "stop" | "restart" | "logs";
 
-const DEFAULT_DAEMON_BASE_URL = "http://localhost:7433";
+const DEFAULT_DAEMON_BASE_URL = `http://localhost:${DAEMON_PORT}`;
 const SUPPORTED_ACTIONS: ServiceAction[] = ["install", "start", "stop", "restart", "logs"];
 
 type InstallerContract = Pick<ServiceInstaller, "generateConfig" | "install" | "start" | "stop" | "restart">;
@@ -91,7 +92,7 @@ export async function runService(action: string, customDeps: Partial<ServiceComm
           "reins service start",
           "",
           `● Service start requested via ${platformLabel}.`,
-          `Health   ${healthReady ? "daemon reachable at localhost:7433" : "service started, but health endpoint not ready yet"}`,
+          `Health   ${healthReady ? `daemon reachable at localhost:${DAEMON_PORT}` : "service started, but health endpoint not ready yet"}`,
           "",
         ].join("\n"),
       );
@@ -129,7 +130,7 @@ export async function runService(action: string, customDeps: Partial<ServiceComm
           "reins service restart",
           "",
           `● Service restarted via ${platformLabel}.`,
-          `Health   ${healthReady ? "daemon reachable at localhost:7433" : "restart completed, waiting for daemon health"}`,
+          `Health   ${healthReady ? `daemon reachable at localhost:${DAEMON_PORT}` : "restart completed, waiting for daemon health"}`,
           "",
         ].join("\n"),
       );

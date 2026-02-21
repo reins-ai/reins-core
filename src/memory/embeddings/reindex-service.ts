@@ -1,7 +1,10 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 
+import { createLogger } from "../../logger";
 import { ReinsError } from "../../errors";
+
+const log = createLogger("memory:reindex-service");
 import { err, ok, type Result } from "../../result";
 import { cosineSimilarity } from "../search/vector-distance";
 import type { SqliteMemoryDb } from "../storage/sqlite-memory-db";
@@ -533,8 +536,9 @@ function blobToVector(blob: Buffer): Float32Array {
 function rollback(db: ReturnType<SqliteMemoryDb["getDb"]>): void {
   try {
     db.exec("ROLLBACK");
-  } catch {
-    // no-op
+  } catch (e) {
+    // Expected: ROLLBACK may fail if no transaction is active
+    log.debug("rollback failed", { error: e instanceof Error ? e.message : String(e) });
   }
 }
 

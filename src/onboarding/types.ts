@@ -16,6 +16,7 @@ export const ONBOARDING_STEPS = [
   "model-select",
   "workspace",
   "personality",
+  "feature-discovery",
 ] as const;
 
 /**

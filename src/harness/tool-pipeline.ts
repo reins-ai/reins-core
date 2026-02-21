@@ -1,7 +1,10 @@
+import { createLogger } from "../logger";
 import type { ToolExecutor } from "../tools";
 import type { ToolCall, ToolContext, ToolResult } from "../types";
 import type { TypedEventBus } from "./event-bus";
 import type { HarnessEventMap } from "./events";
+
+const log = createLogger("harness:tool-pipeline");
 
 const DEFAULT_MAX_OUTPUT_LENGTH = 10_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -118,8 +121,9 @@ export class ToolPipeline {
     for (const hook of this.afterHooks) {
       try {
         await hook(result, toolCall, context);
-      } catch {
-        // Hook failures are isolated so tracing hooks cannot break tool execution.
+      } catch (e) {
+        // Expected: hook failures are isolated so tracing hooks cannot break tool execution
+        log.debug("after-hook error", { tool: toolCall.name, error: e instanceof Error ? e.message : String(e) });
       }
     }
   }

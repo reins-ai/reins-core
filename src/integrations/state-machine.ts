@@ -1,6 +1,9 @@
+import { createLogger } from "../logger";
 import { err, ok, type Result } from "../result";
 import { IntegrationError } from "./errors";
 import { IntegrationState } from "./types";
+
+const log = createLogger("integrations:state-machine");
 
 export type StateChangeListener = (
   integrationId: string,
@@ -81,8 +84,9 @@ export class IntegrationStateMachine {
     for (const listener of this.listeners) {
       try {
         listener(this.integrationId, from, to);
-      } catch {
-        // Listener errors must not break the state machine
+      } catch (e) {
+        // Expected: listener errors must not break the state machine
+        log.debug("state change listener error", { integrationId: this.integrationId, from, to, error: e instanceof Error ? e.message : String(e) });
       }
     }
   }

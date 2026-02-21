@@ -1,6 +1,9 @@
 import type { Result } from "../result";
 import { ok, err } from "../result";
+import { createLogger } from "../logger";
 import { ChannelError } from "./errors";
+
+const log = createLogger("channels:transcription");
 
 /**
  * Default Groq API endpoint for audio transcription.
@@ -75,8 +78,9 @@ export async function transcribeAudio(
       if (body.length > 0) {
         detail = `: ${body.slice(0, 200)}`;
       }
-    } catch {
-      // Ignore body read failures.
+    } catch (e) {
+      // Expected: error response body may be unreadable
+      log.debug("failed to read transcription error response body", { error: e instanceof Error ? e.message : String(e) });
     }
 
     return err(

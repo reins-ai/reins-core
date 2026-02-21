@@ -1,6 +1,6 @@
 /**
  * Daemon HTTP server exposing provider auth and conversation endpoints.
- * Listens on localhost:7433
+ * Listens on localhost at the configured daemon port (default 7433, override with REINS_DAEMON_PORT)
  */
 
 import { readFile, writeFile } from "node:fs/promises";
@@ -23,6 +23,7 @@ import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strate
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
 import type { CredentialRecord } from "../providers/credentials/types";
 import { AnthropicOAuthProvider } from "../providers/oauth/anthropic";
+import { OAuthTokenKeepaliveService } from "../providers/oauth/keepalive";
 import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
 import { ProviderRegistry } from "../providers/registry";
@@ -75,6 +76,7 @@ import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from ".
 import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
 import yaml from "js-yaml";
+import { validateProviderSetup } from "../onboarding/validation";
 import { generateDeviceCode, pollDeviceCode } from "./device-code-auth";
 import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
 import {
@@ -156,6 +158,7 @@ import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
+import { ANTHROPIC_CLIENT_ID, DAEMON_PORT as CONFIG_DAEMON_PORT, DEFAULT_MODEL } from "../config/defaults";
 
 interface ActiveExecution {
   conversationId: string;
@@ -336,8 +339,9 @@ export class StreamRegistry {
     for (const subscriber of subscribers) {
       try {
         subscriber(event);
-      } catch {
-        // Subscriber errors must not break the stream pipeline
+      } catch (e) {
+        // Expected: subscriber errors must not break the stream pipeline
+        log("warn", "stream subscriber error", { error: e instanceof Error ? e.message : String(e) });
       }
     }
 
@@ -362,11 +366,10 @@ export class StreamRegistry {
   }
 }
 
-const DEFAULT_PORT = 7433;
+const DEFAULT_PORT = CONFIG_DAEMON_PORT;
 const DEFAULT_HOST = "localhost";
 
 // Anthropic OAuth configuration (matches claude.ai OAuth flow)
-const ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const ANTHROPIC_OAUTH_CONFIG = {
   clientId: ANTHROPIC_CLIENT_ID,
   authorizationUrl: "https://claude.ai/oauth/authorize",
@@ -380,6 +383,7 @@ interface DefaultServices {
   modelRouter: ModelRouter;
   credentialStore: EncryptedCredentialStore;
   providerRegistry: ProviderRegistry;
+  tokenStore: CredentialBackedOAuthTokenStore;
 }
 
 interface StoredApiKeyPayload {
@@ -683,6 +687,7 @@ interface HealthResponse {
   };
 }
 
+/** API contract version advertised in the /health response. Bump when making breaking protocol changes. */
 const CONTRACT_VERSION = "2026-02-w1";
 const MESSAGE_ROUTE = {
   canonical: "/api/messages",
@@ -909,6 +914,7 @@ function createDefaultServices(): DefaultServices {
     modelRouter,
     credentialStore: store,
     providerRegistry: registry,
+    tokenStore,
   };
 }
 
@@ -1165,6 +1171,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private documentIndexer: DocumentIndexer | null = null;
   private documentSearch: HybridDocumentSearch | null = null;
   private activeSubAgentPool: SubAgentPool | null = null;
+  private oauthKeepalive: OAuthTokenKeepaliveService | null = null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
     registeredCount: 0,
@@ -1210,6 +1217,15 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.modelRouter = services.modelRouter;
       credentialStore = services.credentialStore;
       providerRegistry = services.providerRegistry;
+
+      // Wire up Anthropic OAuth keepalive using the auth service as single source of truth.
+      // authService.getOAuthAccessToken() updates BOTH storage paths (oauth_anthropic and
+      // auth_anthropic_oauth) making it the correct function to use for keepalive refresh.
+      this.oauthKeepalive = new OAuthTokenKeepaliveService({
+        provider: "anthropic",
+        getOrRefreshToken: () => this.authService.getOAuthAccessToken("anthropic"),
+        loadCurrentTokens: () => services.tokenStore.load("anthropic"),
+      });
     }
 
     this.credentialStore = credentialStore ?? null;
@@ -1398,6 +1414,17 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
       this.startWebSocketHeartbeatLoop();
 
+      // Start OAuth token keepalive to proactively refresh before expiry
+      if (this.oauthKeepalive) {
+        try {
+          await this.oauthKeepalive.start();
+        } catch (error) {
+          log("warn", "OAuth keepalive failed to start; tokens will be refreshed on-demand only", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       const capabilities = this.conversationManager
         ? "with conversation services"
         : "without conversation services";
@@ -1447,6 +1474,10 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       await this.stopEnvironmentSessionRuntime();
+
+      if (this.oauthKeepalive) {
+        this.oauthKeepalive.stop();
+      }
 
       this.stopWebSocketHeartbeatLoop();
       this.wsRegistry.clear();
@@ -1543,6 +1574,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Models endpoint
       if (url.pathname === "/api/models" && method === "GET") {
         return this.handleModelsRequest(corsHeaders);
+      }
+
+      // Onboarding provider validation endpoint
+      if (url.pathname === "/api/onboarding/validate-provider" && method === "GET") {
+        return this.handleValidateProvider(url, corsHeaders);
       }
 
       // Browser status endpoint
@@ -1899,6 +1935,39 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
   }
 
+  private async handleValidateProvider(
+    url: URL,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    const providerId = url.searchParams.get("provider");
+    if (!providerId) {
+      return Response.json(
+        { error: "provider query param required" },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    if (!this.providerRegistry) {
+      return Response.json(
+        { configured: false, models: [] },
+        { headers: corsHeaders },
+      );
+    }
+
+    const result = await validateProviderSetup(providerId, {
+      registry: this.providerRegistry,
+    });
+
+    if (!result.ok) {
+      return Response.json(
+        { configured: false, models: [] },
+        { headers: corsHeaders },
+      );
+    }
+
+    return Response.json(result.value, { headers: corsHeaders });
+  }
+
   private handleBrowserStatus(corsHeaders: Record<string, string>): Response {
     if (!this.browserService) {
       return Response.json(
@@ -2024,8 +2093,9 @@ export class DaemonHttpServer implements DaemonManagedService {
       if (typeof body.quality === "number" && body.quality >= 0 && body.quality <= 100) {
         quality = body.quality;
       }
-    } catch {
-      // Use default quality if body is missing or invalid.
+    } catch (e) {
+      // Expected: body may be missing or invalid — use default quality
+      log("info", "using default screenshot quality", { error: e instanceof Error ? e.message : String(e) });
     }
 
     const result = await this.browserService.takeScreenshot(quality);
@@ -3308,6 +3378,23 @@ export class DaemonHttpServer implements DaemonManagedService {
           provider: authResult.value.provider,
           model: requestedModel,
         });
+
+        if (this.channelService) {
+          try {
+            await this.channelService.forwardAssistantError(
+              context.conversationId,
+              failure.code,
+              failure.message,
+              context.assistantMessageId,
+            );
+          } catch (forwardError) {
+            log("warn", "Failed to forward auth preflight failure to channel", {
+              conversationId: context.conversationId,
+              assistantMessageId: context.assistantMessageId,
+              error: forwardError instanceof Error ? forwardError.message : String(forwardError),
+            });
+          }
+        }
         return;
       }
 
@@ -3437,8 +3524,9 @@ export class DaemonHttpServer implements DaemonManagedService {
 
       if (this.channelService) {
         try {
-          await this.channelService.forwardAssistantResponse(
+          await this.channelService.forwardAssistantError(
             context.conversationId,
+            failure.code,
             failure.message,
             context.assistantMessageId,
           );
@@ -4192,7 +4280,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     const conversation = await this.conversationManager!.create({
       title: body.title,
-      model: body.model ?? "claude-sonnet-4-20250514",
+      model: body.model ?? DEFAULT_MODEL,
       provider: body.provider ?? "anthropic",
     });
 
@@ -4710,8 +4798,9 @@ export class DaemonHttpServer implements DaemonManagedService {
       let body: { outputDir?: string } = {};
       try {
         body = (await request.json()) as typeof body;
-      } catch {
-        // Empty body is fine — use default output directory
+      } catch (e) {
+        // Expected: empty body is fine — use default output directory
+        log("info", "using default output directory for persona export", { error: e instanceof Error ? e.message : String(e) });
       }
 
       const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
@@ -5873,7 +5962,9 @@ export class DaemonHttpServer implements DaemonManagedService {
         return { ok: false, error: "Request body is required" };
       }
       return { ok: true, value: JSON.parse(text) };
-    } catch {
+    } catch (e) {
+      // Expected: invalid JSON in request body
+      log("info", "invalid JSON in request body", { error: e instanceof Error ? e.message : String(e) });
       return { ok: false, error: "Invalid JSON in request body" };
     }
   }
@@ -5951,6 +6042,7 @@ function toConvexSiteOrigin(convexUrl: string): string | null {
 
     return parsed.origin;
   } catch {
+    // Expected: invalid URL format — return null to indicate no site URL
     return null;
   }
 }

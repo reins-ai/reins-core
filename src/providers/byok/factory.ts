@@ -1,5 +1,8 @@
 import { ProviderError } from "../../errors";
+import { createLogger } from "../../logger";
 import type { Provider } from "../../types/provider";
+
+const log = createLogger("providers:byok:factory");
 import { BYOKManager } from "./manager";
 import { BYOKAnthropicProvider } from "./anthropic";
 import { BYOKGoogleProvider } from "./google";
@@ -61,8 +64,9 @@ export class BYOKProviderFactory {
 
       try {
         available.add(normalizeProviderType(key.provider));
-      } catch {
-        // Ignore unsupported provider labels that may have been persisted.
+      } catch (e) {
+        // Expected: unsupported provider labels may have been persisted
+        log.debug("skipping unsupported provider label", { provider: key.provider, error: e instanceof Error ? e.message : String(e) });
       }
     }
 

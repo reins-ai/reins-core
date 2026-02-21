@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
+import { createLogger } from "../logger";
 import { readUserConfig, type UserConfig } from "../config";
+
+const log = createLogger("tasks:worker-manager");
 import { AgentLoop } from "../harness/agent-loop";
 import { PermissionChecker } from "../harness/permissions";
 import type { ProviderRegistry } from "../providers";
@@ -10,6 +13,7 @@ import type { TaskRecord } from "./types";
 import type { TaskQueue } from "./task-queue";
 
 const DEFAULT_MAX_CONCURRENT_WORKERS = 3;
+/** Maximum wall-clock time (ms) a single task worker may run before being aborted. */
 const DEFAULT_WORKER_TIMEOUT_MS = 10 * 60 * 1000;
 
 type WorkerAbortReason = "cancelled" | "timeout";
@@ -272,8 +276,9 @@ export class WorkerManager {
       ) {
         this.maxConcurrentWorkers = configured;
       }
-    } catch {
-      // Keep default when config read fails.
+    } catch (e) {
+      // Expected: keep default when config read fails
+      log.debug("failed to read max workers from config", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 

@@ -1,9 +1,12 @@
 import type { Model, Message, Provider } from "../types";
+import { createLogger } from "../logger";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
   estimateTokens,
 } from "./tokenizer";
+
+const log = createLogger("context");
 
 export interface TruncationOptions {
   maxTokens: number;
@@ -98,6 +101,10 @@ function toSummaryText(message: Message): string {
               return `[tool_use:${block.name}] ${JSON.stringify(block.input)}`;
             }
 
+            if (block.type === "image") {
+              return `[image:${block.mimeType ?? "unknown"}] ${block.url}`;
+            }
+
             return `[tool_result:${block.tool_use_id}] ${block.content}`;
           })
           .join("\n");
@@ -172,7 +179,9 @@ export class SummarisationStrategy implements AsyncTruncationStrategy {
         ...recentMessages,
       ];
     } catch (error) {
-      console.warn("SummarisationStrategy failed; using DropOldestStrategy fallback.", error);
+      log.warn("SummarisationStrategy failed; using DropOldestStrategy fallback", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return this.fallbackStrategy.truncate(messages, options);
     }
   }

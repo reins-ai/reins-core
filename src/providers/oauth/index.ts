@@ -2,6 +2,8 @@ export { AnthropicOAuthProvider } from "./anthropic";
 export { OAuthFlowHandler } from "./flow";
 export { glmOAuthProviderDefinition } from "./glm";
 export { GoogleOAuthProvider } from "./google";
+export { OAuthTokenKeepaliveService } from "./keepalive";
+export type { OAuthKeepaliveOptions } from "./keepalive";
 export { kimiOAuthProviderDefinition } from "./kimi";
 export { MiniMaxOAuthProvider } from "./minimax";
 export { OpenAIOAuthProvider } from "./openai";

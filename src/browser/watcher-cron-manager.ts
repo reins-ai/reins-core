@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { createLogger } from "../logger";
 import type { CronScheduler } from "../cron/scheduler";
 import type { CronJobCreateInput } from "../cron/types";
 import type { BrowserDaemonService } from "./browser-daemon-service";
@@ -27,6 +28,8 @@ export interface WatcherCronManagerOptions {
   watchersFilePath?: string;
   persistenceIO?: WatcherPersistenceIO;
 }
+
+const log = createLogger("browser:watcher");
 
 const CRON_JOB_PREFIX = "watcher-cron-";
 
@@ -164,14 +167,15 @@ export class WatcherCronManager {
             config.url,
             diff,
           );
-        } catch {
-          // Notification delivery errors must never disrupt cron execution.
+        } catch (e) {
+          // Expected: notification delivery errors must never disrupt cron execution
+          log.warn("watcher notification delivery failed", { watcherId, error: e instanceof Error ? e.message : String(e) });
         }
       }
-    } catch {
-      // Error is already recorded on the watcher via markError() in
-      // BrowserWatcher.checkForChanges(). We swallow the re-thrown error
-      // here so the cron scheduler is never disrupted.
+    } catch (e) {
+      // Expected: error is already recorded on the watcher via markError() in
+      // BrowserWatcher.checkForChanges(). Swallowed so the cron scheduler is never disrupted.
+      log.debug("watcher check error (already recorded on watcher)", { watcherId, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -186,9 +190,7 @@ export class WatcherCronManager {
       const raw = await this.io.readFile(this.watchersFilePath, "utf8");
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
-        console.warn(
-          JSON.stringify({ scope: "watcher-persistence", level: "warn", message: "watchers.json is not an array, starting with empty registry" }),
-        );
+        log.warn("watchers.json is not an array, starting with empty registry");
         return;
       }
       states = parsed as WatcherState[];
@@ -196,9 +198,9 @@ export class WatcherCronManager {
       if (isFileNotFoundError(error)) {
         return;
       }
-      console.warn(
-        JSON.stringify({ scope: "watcher-persistence", level: "warn", message: `Failed to load watchers: ${error instanceof Error ? error.message : String(error)}` }),
-      );
+      log.warn("Failed to load watchers", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return;
     }
 
@@ -218,14 +220,16 @@ export class WatcherCronManager {
       try {
         const result = await this.cronScheduler.create(cronInput);
         if (!result.ok) {
-          console.warn(
-            JSON.stringify({ scope: "watcher-persistence", level: "warn", message: `Failed to schedule resumed watcher ${watcher.id}: ${result.error.message}` }),
-          );
+          log.warn("Failed to schedule resumed watcher", {
+            watcherId: watcher.id,
+            error: result.error.message,
+          });
         }
       } catch (error) {
-        console.warn(
-          JSON.stringify({ scope: "watcher-persistence", level: "warn", message: `Failed to schedule resumed watcher ${watcher.id}: ${error instanceof Error ? error.message : String(error)}` }),
-        );
+        log.warn("Failed to schedule resumed watcher", {
+          watcherId: watcher.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   }
@@ -238,8 +242,9 @@ export class WatcherCronManager {
     for (const watcher of this.registry.list()) {
       try {
         await this.cronScheduler.remove(cronJobId(watcher.id));
-      } catch {
-        // Best-effort cleanup — don't crash on individual removal failures.
+      } catch (e) {
+        // Expected: best-effort cleanup — don't crash on individual removal failures
+        log.debug("failed to remove watcher cron job during shutdown", { watcherId: watcher.id, error: e instanceof Error ? e.message : String(e) });
       }
     }
   }
@@ -253,8 +258,9 @@ export class WatcherCronManager {
       const tmpPath = `${this.watchersFilePath}.tmp`;
       await this.io.writeFile(tmpPath, json, "utf8");
       await this.io.rename(tmpPath, this.watchersFilePath);
-    } catch {
-      // Persistence errors must never crash the watcher system.
+    } catch (e) {
+      // Expected: persistence errors must never crash the watcher system
+      log.warn("failed to persist watcher state", { error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

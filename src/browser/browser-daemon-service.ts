@@ -3,7 +3,11 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { CDP_PORT } from "../config/defaults";
+import { createLogger } from "../logger";
 import { err, ok, type Result } from "../result";
+
+const log = createLogger("browser:daemon-service");
 import { DaemonError, type DaemonManagedService } from "../daemon/types";
 import { CdpClient } from "./cdp-client";
 import { findChromeBinary } from "./chrome-finder";
@@ -13,7 +17,7 @@ import type { BrowserConfig, BrowserStatus, CaptureScreenshotResult, TabInfo } f
 
 const DEFAULT_CONFIG: BrowserConfig = {
   profilePath: process.env.REINS_BROWSER_PROFILE?.trim() || `${homedir()}/.reins/browser/profiles/default`,
-  port: 9222,
+  port: CDP_PORT,
   headless: false,
   maxWatchers: 10,
 };
@@ -109,8 +113,9 @@ export class BrowserDaemonService implements DaemonManagedService {
     if (this.watcherManager) {
       try {
         await this.watcherManager.resumeWatchers();
-      } catch {
-        // Watcher resume errors must not prevent daemon startup.
+      } catch (e) {
+        // Expected: watcher resume errors must not prevent daemon startup
+        log.warn("failed to resume watchers during startup", { error: e instanceof Error ? e.message : String(e) });
       }
     }
     return ok(undefined);
@@ -121,8 +126,9 @@ export class BrowserDaemonService implements DaemonManagedService {
       if (this.watcherManager) {
         try {
           await this.watcherManager.stopAllCronJobs();
-        } catch {
-          // Watcher cleanup errors must not prevent daemon shutdown.
+        } catch (e) {
+          // Expected: watcher cleanup errors must not prevent daemon shutdown
+          log.warn("failed to stop watcher cron jobs during shutdown", { error: e instanceof Error ? e.message : String(e) });
         }
       }
       await this.stopChrome(signal);
@@ -332,8 +338,9 @@ export class BrowserDaemonService implements DaemonManagedService {
       this.cdpClient = client;
       try {
         await injectStealthScripts(client);
-      } catch {
-        // Non-fatal: browser control remains available even if stealth injection fails.
+      } catch (e) {
+        // Expected: stealth injection is non-fatal — browser control remains available
+        log.warn("stealth script injection failed", { error: e instanceof Error ? e.message : String(e) });
       }
     } catch (error) {
       await this.stopChrome("SIGTERM");
@@ -388,7 +395,7 @@ export class BrowserDaemonService implements DaemonManagedService {
           return;
         }
       } catch {
-        // Chrome not ready yet.
+        // Expected: Chrome not ready yet — retry after delay
       }
 
       await new Promise<void>((resolve) => {
@@ -443,6 +450,7 @@ export class BrowserDaemonService implements DaemonManagedService {
 
       return Math.round(kb / 1024);
     } catch {
+      // Expected: /proc may not be readable or process may have exited
       return undefined;
     }
   }
@@ -462,6 +470,7 @@ export class BrowserDaemonService implements DaemonManagedService {
 
       return Math.round(kb / 1024);
     } catch {
+      // Expected: ps command may fail if process has exited
       return undefined;
     }
   }

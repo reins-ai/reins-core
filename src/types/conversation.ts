@@ -30,7 +30,14 @@ export interface ToolResultBlock {
   is_error?: boolean;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
+export interface ImageBlock {
+  type: "image";
+  /** Data URL ("data:image/jpeg;base64,...") or HTTPS URL. */
+  url: string;
+  mimeType?: string;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock;
 
 /**
  * Extract plain text from message content.
@@ -82,7 +89,7 @@ export function deserializeContent(value: string): string | ContentBlock[] {
       return value;
     }
 
-    const validTypes = new Set(["text", "tool_use", "tool_result"]);
+    const validTypes = new Set(["text", "tool_use", "tool_result", "image"]);
     if (!validTypes.has(first.type)) {
       return value;
     }

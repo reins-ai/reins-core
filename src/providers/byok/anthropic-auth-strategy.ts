@@ -1,5 +1,8 @@
 import { AuthError } from "../../errors";
+import { createLogger } from "../../logger";
 import { err, ok, type Result } from "../../result";
+
+const log = createLogger("providers:byok:anthropic-auth");
 import type { EncryptedCredentialStore } from "../credentials/store";
 import type {
   ApiKeyAuthStrategy,
@@ -136,8 +139,9 @@ export class AnthropicApiKeyStrategy implements ApiKeyAuthStrategy {
       let body = "";
       try {
         body = await response.text();
-      } catch {
-        // Ignore body read failures during error classification
+      } catch (e) {
+        // Expected: body may be unreadable on certain error responses
+        log.debug("failed to read error response body", { error: e instanceof Error ? e.message : String(e) });
       }
 
       return err(classifyValidationError(response.status, body));

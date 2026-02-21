@@ -20,6 +20,7 @@ import { ProviderSetupStep } from "../../src/onboarding/steps/provider-setup";
 import { ModelSelectionStep } from "../../src/onboarding/steps/model-selection";
 import { WorkspaceStep } from "../../src/onboarding/steps/workspace";
 import { PersonalityStep } from "../../src/onboarding/steps/personality";
+import { FeatureDiscoveryStep } from "../../src/onboarding/steps/feature-discovery";
 import { detectProviderFromKey } from "../../src/onboarding/key-detect";
 
 // ---------------------------------------------------------------------------
@@ -73,8 +74,9 @@ function createRealStepHandlers(overrides?: {
   });
 
   const personality = new PersonalityStep();
+  const featureDiscovery = new FeatureDiscoveryStep();
 
-  return [welcome, daemonInstall, providerSetup, modelSelection, workspace, personality];
+  return [welcome, daemonInstall, providerSetup, modelSelection, workspace, personality, featureDiscovery];
 }
 
 // ---------------------------------------------------------------------------
@@ -91,10 +93,10 @@ describe("Onboarding Integration", () => {
   });
 
   // =========================================================================
-  // Quickstart flow — completes all 6 steps with defaults
+  // Quickstart flow — completes all 7 steps with defaults
   // =========================================================================
 
-  describe("quickstart flow completes all 6 steps", () => {
+  describe("quickstart flow completes all 7 steps", () => {
     it("completes the full wizard without user interaction (except key)", async () => {
       const dataRoot = await createTempDataRoot();
       const events: OnboardingEvent[] = [];
@@ -150,7 +152,13 @@ describe("Onboarding Integration", () => {
       const step6 = await engine.completeCurrentStep();
       expect(step6.ok).toBe(true);
       if (!step6.ok) return;
-      expect(step6.value.isComplete).toBe(true);
+      expect(step6.value.currentStep).toBe("feature-discovery");
+
+      // Step 7: Feature discovery — informational, auto-completes
+      const step7 = await engine.completeCurrentStep();
+      expect(step7.ok).toBe(true);
+      if (!step7.ok) return;
+      expect(step7.value.isComplete).toBe(true);
 
       // Verify wizard completion
       expect(engine.isComplete()).toBe(true);
@@ -170,13 +178,14 @@ describe("Onboarding Integration", () => {
 
       await engine.initialize();
 
-      // Complete all 6 steps
+      // Complete all 7 steps
       await engine.completeCurrentStep({ userName: "Alice" });
       await engine.completeCurrentStep();
       await engine.completeCurrentStep({ apiKey: "sk-ant-key-abc" });
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep(); // feature-discovery
 
       expect(engine.isComplete()).toBe(true);
 
@@ -188,9 +197,12 @@ describe("Onboarding Integration", () => {
 
       // Personality step defaults
       expect(data.preset).toBe("balanced");
+
+      // Feature discovery step data
+      expect(data.featureDiscoveryViewed).toBe(true);
     });
 
-    it("emits stepEnter and stepComplete events for all 6 steps", async () => {
+    it("emits stepEnter and stepComplete events for all 7 steps", async () => {
       const dataRoot = await createTempDataRoot();
       const events: OnboardingEvent[] = [];
 
@@ -212,12 +224,13 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep(); // feature-discovery
 
-      // Verify stepEnter events for all 6 steps
+      // Verify stepEnter events for all 7 steps
       const enterEvents = events.filter((e) => e.type === "stepEnter");
       expect(enterEvents.length).toBe(ONBOARDING_STEPS.length);
 
-      // Verify stepComplete events for all 6 steps
+      // Verify stepComplete events for all 7 steps
       const completeEvents = events.filter((e) => e.type === "stepComplete");
       expect(completeEvents.length).toBe(ONBOARDING_STEPS.length);
 
@@ -250,6 +263,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep(); // feature-discovery
 
       // Verify checkpoint file
       const loadResult = await checkpoint.load();
@@ -259,11 +273,11 @@ describe("Onboarding Integration", () => {
       const config = loadResult.value!;
       expect(config.setupComplete).toBe(true);
       expect(config.userName).toBe("Charlie");
-      expect(config.completedSteps).toHaveLength(6);
+      expect(config.completedSteps).toHaveLength(7);
       expect(config.completedAt).toBeTruthy();
       expect(config.personality?.preset).toBe("balanced");
 
-      // All 6 steps recorded in order
+      // All 7 steps recorded in order
       const stepNames = config.completedSteps.map((s) => s.step);
       expect(stepNames).toEqual([...ONBOARDING_STEPS]);
     });
@@ -361,9 +375,13 @@ describe("Onboarding Integration", () => {
       // Step 6: Personality — advanced mode shows all preset cards
       const step6 = await engine.completeCurrentStep();
       expect(step6.ok).toBe(true);
-      if (!step6.ok) return;
 
-      expect(step6.value.isComplete).toBe(true);
+      // Step 7: Feature discovery — informational
+      const step7 = await engine.completeCurrentStep();
+      expect(step7.ok).toBe(true);
+      if (!step7.ok) return;
+
+      expect(step7.value.isComplete).toBe(true);
       expect(engine.isComplete()).toBe(true);
     });
 
@@ -542,8 +560,8 @@ describe("Onboarding Integration", () => {
 
       await engine2.initialize();
 
-      // Complete remaining 5 steps
-      for (let i = 0; i < 5; i++) {
+      // Complete remaining 6 steps (daemon-install through feature-discovery)
+      for (let i = 0; i < 6; i++) {
         const data: Record<string, unknown> = {};
         if (i === 1) data.apiKey = "sk-ant-key";
         const result = await engine2.completeCurrentStep(
@@ -608,18 +626,20 @@ describe("Onboarding Integration", () => {
 
       await engine2.initialize();
 
-      // Complete remaining 4 steps
+      // Complete remaining 5 steps
       await engine2.completeCurrentStep({ apiKey: "sk-ant-key" });
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
+      await engine2.completeCurrentStep(); // feature-discovery
 
-      // Only steps 3-6 should have been executed in session 2
+      // Only steps 3-7 should have been executed in session 2
       expect(executionLog).toEqual([
         "provider-keys",
         "model-select",
         "workspace",
         "personality",
+        "feature-discovery",
       ]);
 
       expect(engine2.isComplete()).toBe(true);
@@ -657,7 +677,7 @@ describe("Onboarding Integration", () => {
       await e2.completeCurrentStep();
       expect(e2.getState().currentStep).toBe("workspace");
 
-      // --- Session 3: Complete steps 5-6 ---
+      // --- Session 3: Complete steps 5-7 ---
       const cp3 = new OnboardingCheckpointService({ dataRoot });
       const e3 = new OnboardingEngine({
         checkpoint: cp3,
@@ -670,6 +690,7 @@ describe("Onboarding Integration", () => {
       expect(e3.getState().currentStep).toBe("workspace");
       await e3.completeCurrentStep();
       await e3.completeCurrentStep();
+      await e3.completeCurrentStep(); // feature-discovery
 
       expect(e3.isComplete()).toBe(true);
 
@@ -679,7 +700,7 @@ describe("Onboarding Integration", () => {
       if (!finalLoad.ok) return;
       expect(finalLoad.value!.setupComplete).toBe(true);
       expect(finalLoad.value!.userName).toBe("Karl");
-      expect(finalLoad.value!.completedSteps).toHaveLength(6);
+      expect(finalLoad.value!.completedSteps).toHaveLength(7);
     });
 
     it("checkpoint includes version field for migration safety", async () => {
@@ -733,6 +754,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep(); // feature-discovery
 
       // Verify wizardComplete config has userName
       const wizardComplete = events.find((e) => e.type === "wizardComplete");
@@ -770,6 +792,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep(); // feature-discovery
 
       const data = engine.getCollectedData();
       // WelcomeStep defaults to "User" when no name provided
@@ -847,6 +870,7 @@ describe("Onboarding Integration", () => {
       // Continue to completion
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep(); // feature-discovery
       expect(engine.isComplete()).toBe(true);
     });
   });

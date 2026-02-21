@@ -1,5 +1,8 @@
 import { AuthError } from "../errors";
+import { createLogger } from "../logger";
 import { err, ok, type Result } from "../result";
+
+const log = createLogger("providers:auth-service");
 import type { ProviderAuthMode as AuthMode, ProviderConfig, ProviderType } from "../types/provider";
 import type { CredentialRecord, CredentialType, EncryptedCredentialStore } from "./credentials";
 import { OAuthProviderRegistry } from "./oauth/provider";
@@ -21,6 +24,10 @@ import { OAuthFlowHandler } from "./oauth/flow";
 import type { ProviderRegistry } from "./registry";
 
 const REINS_GATEWAY_PROVIDER_ID = "reins-gateway";
+/**
+ * How early (ms) before token expiry to proactively refresh OAuth tokens.
+ * Session TTL itself is not hardcoded here — it comes from the provider's token response (`expires_in`).
+ */
 const OAUTH_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
 interface SerializedOAuthTokens {
@@ -700,8 +707,9 @@ export class ProviderAuthService implements AuthService {
 
     try {
       pending.session.stop();
-    } catch {
-      // swallow cleanup failures
+    } catch (e) {
+      // Expected: cleanup may fail if session is already stopped
+      log.debug("failed to stop pending OAuth callback session", { provider, error: e instanceof Error ? e.message : String(e) });
     }
 
     this.pendingOAuthCallbackSessions.delete(provider);

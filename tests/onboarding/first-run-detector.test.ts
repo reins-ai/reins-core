@@ -148,6 +148,7 @@ describe("FirstRunDetector", () => {
         "model-select",
         "workspace",
         "personality",
+        "feature-discovery",
       ]);
       const detector = new FirstRunDetector({
         checkpoint: createMockCheckpointService(checkpoint),

@@ -4,9 +4,7 @@ import { ok } from "../../src/result";
 import { registerMemoryCronJobs } from "../../src/daemon/memory-cron-registration";
 import { DaemonHttpServer } from "../../src/daemon/server";
 import { MemoryConsolidationJob } from "../../src/cron/jobs/memory-consolidation-job";
-import { MorningBriefingJob } from "../../src/cron/jobs/morning-briefing-job";
 import type { ConsolidationRunner } from "../../src/memory/consolidation/consolidation-runner";
-import type { MorningBriefingService } from "../../src/memory/proactive/morning-briefing-service";
 import type { MemoryService, ExplicitMemoryInput, MemoryListOptions } from "../../src/memory/services/memory-service";
 import type { MemoryRecord } from "../../src/memory/types/memory-record";
 import { ToolExecutor } from "../../src/tools";
@@ -24,26 +22,9 @@ function createStubRunner(): ConsolidationRunner {
   } as unknown as ConsolidationRunner;
 }
 
-function createStubBriefingService(): MorningBriefingService {
-  return {
-    generateBriefing: async () => ok({
-      timestamp: new Date(),
-      sections: [],
-      totalItems: 0,
-      generatedInMs: 0,
-    }),
-  } as unknown as MorningBriefingService;
-}
-
 function createConsolidationJob(): MemoryConsolidationJob {
   return new MemoryConsolidationJob({
     runner: createStubRunner(),
-  });
-}
-
-function createBriefingJob(): MorningBriefingJob {
-  return new MorningBriefingJob({
-    service: createStubBriefingService(),
   });
 }
 
@@ -89,31 +70,26 @@ class FakeMemoryService {
 }
 
 describe("memory cron registration", () => {
-  it("registers both cron jobs when memory is ready", () => {
+  it("registers consolidation job when memory is ready", () => {
     const consolidationJob = createConsolidationJob();
-    const briefingJob = createBriefingJob();
 
     const result = registerMemoryCronJobs({
       consolidationJob,
-      briefingJob,
       isMemoryReady: () => true,
     });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.isConsolidationRunning()).toBe(true);
-      expect(result.value.isBriefingRunning()).toBe(true);
       result.value.stopAll();
     }
   });
 
   it("rejects cron registration when memory is not ready", () => {
     const consolidationJob = createConsolidationJob();
-    const briefingJob = createBriefingJob();
 
     const result = registerMemoryCronJobs({
       consolidationJob,
-      briefingJob,
       isMemoryReady: () => false,
     });
 
@@ -123,16 +99,13 @@ describe("memory cron registration", () => {
     }
 
     expect(consolidationJob.isRunning()).toBe(false);
-    expect(briefingJob.isRunning()).toBe(false);
   });
 
-  it("stops both cron jobs via handle", () => {
+  it("stops consolidation job via handle", () => {
     const consolidationJob = createConsolidationJob();
-    const briefingJob = createBriefingJob();
 
     const result = registerMemoryCronJobs({
       consolidationJob,
-      briefingJob,
       isMemoryReady: () => true,
     });
 
@@ -141,36 +114,10 @@ describe("memory cron registration", () => {
 
     const handle = result.value;
     expect(handle.isConsolidationRunning()).toBe(true);
-    expect(handle.isBriefingRunning()).toBe(true);
 
     handle.stopAll();
 
     expect(handle.isConsolidationRunning()).toBe(false);
-    expect(handle.isBriefingRunning()).toBe(false);
-  });
-
-  it("rolls back consolidation job if briefing job fails to start", () => {
-    const consolidationJob = createConsolidationJob();
-
-    // Create a briefing job that is disabled so start() returns an error
-    const briefingJob = new MorningBriefingJob({
-      service: createStubBriefingService(),
-      schedule: { enabled: false },
-    });
-
-    const result = registerMemoryCronJobs({
-      consolidationJob,
-      briefingJob,
-      isMemoryReady: () => true,
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("DAEMON_CRON_REGISTRATION_FAILED");
-    }
-
-    // Consolidation should have been rolled back
-    expect(consolidationJob.isRunning()).toBe(false);
   });
 
   it("returns error if consolidation job fails to start", () => {
@@ -179,11 +126,9 @@ describe("memory cron registration", () => {
       runner: createStubRunner(),
       schedule: { enabled: false },
     });
-    const briefingJob = createBriefingJob();
 
     const result = registerMemoryCronJobs({
       consolidationJob,
-      briefingJob,
       isMemoryReady: () => true,
     });
 
@@ -193,25 +138,20 @@ describe("memory cron registration", () => {
     }
 
     expect(consolidationJob.isRunning()).toBe(false);
-    expect(briefingJob.isRunning()).toBe(false);
   });
 
-  it("cron jobs are not started before registration", () => {
+  it("consolidation job is not started before registration", () => {
     const consolidationJob = createConsolidationJob();
-    const briefingJob = createBriefingJob();
 
     expect(consolidationJob.isRunning()).toBe(false);
-    expect(briefingJob.isRunning()).toBe(false);
   });
 
   it("cron registration enforces post-initialization ordering", () => {
     const consolidationJob = createConsolidationJob();
-    const briefingJob = createBriefingJob();
 
     // First call with memory not ready — should fail
     const failResult = registerMemoryCronJobs({
       consolidationJob,
-      briefingJob,
       isMemoryReady: () => false,
     });
     expect(failResult.ok).toBe(false);
@@ -219,7 +159,6 @@ describe("memory cron registration", () => {
     // Second call with memory ready — should succeed
     const successResult = registerMemoryCronJobs({
       consolidationJob,
-      briefingJob,
       isMemoryReady: () => true,
     });
     expect(successResult.ok).toBe(true);

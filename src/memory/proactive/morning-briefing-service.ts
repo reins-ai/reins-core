@@ -6,6 +6,7 @@ import type { MemoryRepository } from "../storage/memory-repository";
 import type { MemoryRecord } from "../types/memory-record";
 import type { MemoryType } from "../types/index";
 
+/** How far back (ms) the morning briefing scans for relevant memories. Default: 24 hours. */
 const DEFAULT_LOOKBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_SECTIONS = 4;
 const DEFAULT_MAX_ITEMS_PER_SECTION = 5;

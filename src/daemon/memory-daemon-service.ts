@@ -1,3 +1,4 @@
+import { createLogger } from "../logger";
 import { DaemonError, type DaemonManagedService, type DaemonResult } from "./types";
 import { err, ok, type Result } from "../result";
 import { MemoryError, type MemoryErrorCode, type MemoryHealthStatus, type MemoryServiceContract } from "../memory/services";
@@ -33,18 +34,20 @@ const defaultFlushPendingWrites = async (): Promise<Result<void, MemoryError>> =
 const defaultCheckStorageHealth = async (): Promise<Result<boolean, MemoryError>> => ok(true);
 const defaultCloseStorage = async (): Promise<Result<void, MemoryError>> => ok(undefined);
 
+const moduleLogger = createLogger("memory");
+
 const defaultLogger: MemoryDaemonServiceLogger = {
-  info: (...args) => {
-    console.info(...args);
+  info: (message, ...args) => {
+    moduleLogger.info(message, args.length > 0 ? { args } : undefined);
   },
-  warn: (...args) => {
-    console.warn(...args);
+  warn: (message, ...args) => {
+    moduleLogger.warn(message, args.length > 0 ? { args } : undefined);
   },
-  error: (...args) => {
-    console.error(...args);
+  error: (message, ...args) => {
+    moduleLogger.error(message, args.length > 0 ? { args } : undefined);
   },
-  debug: (...args) => {
-    console.debug(...args);
+  debug: (message, ...args) => {
+    moduleLogger.debug(message, args.length > 0 ? { args } : undefined);
   },
 };
 

@@ -1,5 +1,8 @@
 import type { ConversationManager } from "../conversation/manager";
+import { createLogger } from "../logger";
 import type { WatcherDiff } from "./types";
+
+const log = createLogger("browser:notifications");
 
 /**
  * Decoupled notification delivery interface for watcher change alerts.
@@ -120,9 +123,9 @@ export interface NotificationLogger {
 
 const consoleNotificationLogger: NotificationLogger = {
   warn(message: string) {
-    console.warn(JSON.stringify({ scope: "watcher-notification", level: "warn", message }));
+    log.warn(message);
   },
   error(message: string) {
-    console.error(JSON.stringify({ scope: "watcher-notification", level: "error", message }));
+    log.error(message);
   },
 };

@@ -1,9 +1,12 @@
+import { createLogger } from "../logger";
 import {
   createEventId,
   HARNESS_EVENT_VERSION,
   type EventEnvelope,
   type HarnessEventMap,
 } from "./events";
+
+const log = createLogger("harness:event-bus");
 
 type EventMap = object;
 type EventKey<TEventMap extends EventMap> = Extract<keyof TEventMap, string>;
@@ -88,8 +91,9 @@ export class TypedEventBus<TEventMap extends EventMap> {
   ): Promise<void> {
     try {
       await handler(event);
-    } catch {
-      // Swallow handler errors so one subscriber cannot stop event delivery.
+    } catch (e) {
+      // Expected: handler errors must not stop event delivery to other subscribers
+      log.debug("event handler error", { event: event.type, error: e instanceof Error ? e.message : String(e) });
     }
   }
 }

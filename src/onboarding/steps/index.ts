@@ -59,3 +59,7 @@ export {
 export {
   WorkspaceStep,
 } from "./workspace";
+
+export {
+  FeatureDiscoveryStep,
+} from "./feature-discovery";

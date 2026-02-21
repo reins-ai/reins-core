@@ -23,9 +23,9 @@ export interface AuthMiddlewareOptions {
 
 export interface AuthMiddlewareResult {
   /** Wrap an existing fetch handler with auth enforcement */
-  wrapHandler(
-    handler: (request: Request, server: any) => Promise<Response>,
-  ): (request: Request, server: any) => Promise<Response>;
+  wrapHandler<TServer>(
+    handler: (request: Request, server: TServer) => Promise<Response>,
+  ): (request: Request, server: TServer) => Promise<Response>;
 }
 
 const LOCALHOST_IPS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
@@ -36,10 +36,10 @@ export function createAuthMiddleware(options: AuthMiddlewareOptions): AuthMiddle
   const localhostAutoBootstrap = options.localhostAutoBootstrap ?? true;
 
   return {
-    wrapHandler(
-      handler: (request: Request, server: any) => Promise<Response>,
-    ): (request: Request, server: any) => Promise<Response> {
-      return async (request: Request, server: any): Promise<Response> => {
+    wrapHandler<TServer>(
+      handler: (request: Request, server: TServer) => Promise<Response>,
+    ): (request: Request, server: TServer) => Promise<Response> {
+      return async (request: Request, server: TServer): Promise<Response> => {
         const url = new URL(request.url);
 
         if (request.method === "OPTIONS" || exemptPaths.has(url.pathname)) {
@@ -152,7 +152,7 @@ function extractBearerToken(request: Request): string | null {
   return token.length > 0 ? token : null;
 }
 
-function isLocalhostRequest(request: Request, server: any): boolean {
+function isLocalhostRequest(request: Request, server: unknown): boolean {
   const requestIp = resolveRequestIp(request, server);
   if (requestIp && LOCALHOST_IPS.has(requestIp)) {
     return true;
@@ -166,35 +166,44 @@ function isLocalhostRequest(request: Request, server: any): boolean {
   return false;
 }
 
-function resolveRequestIp(request: Request, server: any): string | null {
-  if (!server || typeof server.requestIP !== "function") {
+function resolveRequestIp(request: Request, server: unknown): string | null {
+  if (!isRecord(server)) {
+    return null;
+  }
+
+  const requestIpFn = server.requestIP;
+  if (typeof requestIpFn !== "function") {
     return null;
   }
 
   try {
-    const info = server.requestIP(request);
-    if (!info || typeof info !== "object") {
+    const info = (requestIpFn as (request: Request) => unknown)(request);
+    if (!isRecord(info)) {
       return null;
     }
 
-    const address = (info as { address?: unknown }).address;
+    const address = info.address;
     return typeof address === "string" ? normalizeIp(address) : null;
   } catch {
     return null;
   }
 }
 
-function resolveServerHostname(server: any): string | null {
-  if (!server || typeof server !== "object") {
+function resolveServerHostname(server: unknown): string | null {
+  if (!isRecord(server)) {
     return null;
   }
 
-  const hostname = (server as { hostname?: unknown }).hostname;
+  const hostname = server.hostname;
   if (typeof hostname !== "string") {
     return null;
   }
 
   return hostname.trim().toLowerCase();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function normalizeIp(ip: string): string {

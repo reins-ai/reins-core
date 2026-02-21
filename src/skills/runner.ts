@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 
+import { createLogger } from "../logger";
 import { err, ok, type Result } from "../result";
+
+const log = createLogger("skills:runner");
 import { SkillError, SKILL_ERROR_CODES } from "./errors";
 import {
   AutoDenyPermissionChecker,
@@ -149,10 +152,14 @@ export class ScriptRunner {
 
     try {
       process.kill(-pid, "SIGTERM");
-    } catch {
+    } catch (e) {
+      // Expected: process group may not exist — fall back to direct kill
+      log.debug("process group kill failed, trying direct kill", { pid, error: e instanceof Error ? e.message : String(e) });
       try {
         process.kill(pid, "SIGTERM");
-      } catch {
+      } catch (e2) {
+        // Expected: process may have already exited
+        log.debug("direct process kill failed", { pid, error: e2 instanceof Error ? e2.message : String(e2) });
       }
     }
   }

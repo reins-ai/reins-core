@@ -6,6 +6,7 @@ import type { NudgeInjector } from "../memory/proactive/nudge-injector";
 import type { ContextManager } from "../context/manager";
 import type { TypedEventBus } from "./event-bus";
 import type { CompactionEventPayload, HarnessEventMap } from "./events";
+import { createLogger } from "../logger";
 import { SummarisationStrategy } from "../context/strategies";
 import { DoomLoopGuard } from "./doom-loop-guard";
 import { PermissionChecker } from "./permissions";
@@ -14,7 +15,10 @@ import type { ToolExecutor } from "../tools";
 import type { AgentLoopFactory } from "./sub-agent-pool";
 import type { RagContextInjector } from "../memory/services/rag-context-injector";
 
+const log = createLogger("harness");
+
 const DEFAULT_MAX_STEPS = 25;
+/** Maximum tokens reserved for RAG context injected before each step. */
 const DEFAULT_RAG_CONTEXT_MAX_TOKENS = 2000;
 const DEFAULT_CONTEXT_LIMIT_TOKENS = 200_000;
 const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.9;
@@ -772,7 +776,7 @@ export class AgentLoop {
       await this.emitCompaction(payload);
 
       if (after.utilization > TARGET_POST_COMPACTION_UTILIZATION) {
-        console.warn("Auto-compaction completed but context utilization remains above target.", {
+        log.warn("Auto-compaction completed but context utilization remains above target", {
           utilization: after.utilization,
           target: TARGET_POST_COMPACTION_UTILIZATION,
         });
@@ -780,7 +784,9 @@ export class AgentLoop {
 
       return payload;
     } catch (error) {
-      console.warn("Auto-compaction failed; continuing without compaction.", error);
+      log.warn("Auto-compaction failed; continuing without compaction", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   }
@@ -878,7 +884,9 @@ export class AgentLoop {
           if (ragContext) {
             systemPrompt = appendRelevantDocumentContext(systemPrompt, ragContext);
           }
-        } catch {}
+        } catch (e) {
+          log.debug("RAG context injection failed", { error: e instanceof Error ? e.message : String(e) });
+        }
       }
     }
 
@@ -890,7 +898,9 @@ export class AgentLoop {
     const conversationContext = this.buildConversationContext(messages);
     try {
       return await nudgeInjector.injectNudges(conversationContext, systemPrompt ?? "");
-    } catch {
+    } catch (e) {
+      // Expected: nudge injection is non-critical — fall back to original prompt
+      log.debug("nudge injection failed", { error: e instanceof Error ? e.message : String(e) });
       return systemPrompt;
     }
   }
@@ -978,6 +988,7 @@ function serializeToolResult(result: ToolResult): string {
   try {
     return JSON.stringify(result.result);
   } catch {
+    // Expected: result may not be JSON-serializable — fall back to String()
     return String(result.result);
   }
 }

@@ -16,8 +16,6 @@ import { MemoryError } from "../memory/services";
 import { MemoryService } from "../memory/services/memory-service";
 import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
 import type { MemoryRepository } from "../memory/storage";
-import { MemoryConsolidationJob } from "../cron/jobs/memory-consolidation-job";
-import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
 import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
 import { MemoryCapabilitiesResolver } from "./memory-capabilities";
 import { bootstrapInstallRoot } from "../environment";
@@ -32,6 +30,9 @@ import {
 } from "../browser/conversation-notification-delivery";
 import { CronScheduler } from "../cron/scheduler";
 import { LocalCronStore } from "../cron/store";
+import { createLogger } from "../logger";
+
+const log = createLogger("daemon");
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryService;
@@ -57,13 +58,13 @@ function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<Initia
       repository,
       logger: {
         info: (message) => {
-          console.info(`[memory] ${message}`);
+          log.info(message);
         },
         warn: (message) => {
-          console.warn(`[memory] ${message}`);
+          log.warn(message);
         },
         error: (message) => {
-          console.error(`[memory] ${message}`);
+          log.error(message);
         },
       },
     });
@@ -106,56 +107,12 @@ function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<Initia
   }
 }
 
-function createStubConsolidationJob(): MemoryConsolidationJob {
-  const stubRunner = {
-    run: async () => ok({
-      runId: crypto.randomUUID(),
-      timestamp: new Date(),
-      stats: { candidatesProcessed: 0, factsDistilled: 0, created: 0, updated: 0, superseded: 0, skipped: 0 },
-      mergeResult: null,
-      errors: [],
-      durationMs: 0,
-    }),
-  } as unknown as import("../memory/consolidation/consolidation-runner").ConsolidationRunner;
-
-  return new MemoryConsolidationJob({
-    runner: stubRunner,
-    onComplete: (result) => {
-      console.info(`[cron] Consolidation completed: ${result.stats.factsDistilled} facts distilled`);
-    },
-    onError: (error) => {
-      console.error(`[cron] Consolidation failed: ${error.message}`);
-    },
-  });
-}
-
-function createStubBriefingJob(): MorningBriefingJob {
-  const stubService = {
-    generateBriefing: async () => ok({
-      timestamp: new Date(),
-      sections: [],
-      totalItems: 0,
-      generatedInMs: 0,
-    }),
-  } as unknown as import("../memory/proactive/morning-briefing-service").MorningBriefingService;
-
-  return new MorningBriefingJob({
-    service: stubService,
-    onComplete: (briefing) => {
-      console.info(`[cron] Morning briefing generated: ${briefing.totalItems} items`);
-    },
-    onError: (error) => {
-      console.error(`[cron] Morning briefing failed: ${error.message}`);
-    },
-  });
-}
-
 async function main() {
   const runtime = new DaemonRuntime();
 
   const bootstrapResult = await bootstrapInstallRoot();
   if (!bootstrapResult.ok) {
-    console.error("Failed to bootstrap install root:", bootstrapResult.error.message);
+    log.error("Failed to bootstrap install root", { error: bootstrapResult.error.message });
     process.exit(1);
   }
 
@@ -165,7 +122,7 @@ async function main() {
 
   const memoryRuntimeResult = initializeMemoryRuntime(memoryDbPath, memoryDataDir);
   if (!memoryRuntimeResult.ok) {
-    console.error("Failed to initialize memory runtime:", memoryRuntimeResult.error.message);
+    log.error("Failed to initialize memory runtime", { error: memoryRuntimeResult.error.message });
     process.exit(1);
   }
 
@@ -251,40 +208,40 @@ async function main() {
 
   const browserRegistration = runtime.registerService(browserService);
   if (!browserRegistration.ok) {
-    console.error("Failed to register browser service:", browserRegistration.error.message);
+    log.error("Failed to register browser service", { error: browserRegistration.error.message });
     process.exit(1);
   }
 
   const skillRegistration = runtime.registerService(skillService);
   if (!skillRegistration.ok) {
-    console.error("Failed to register skill service:", skillRegistration.error.message);
+    log.error("Failed to register skill service", { error: skillRegistration.error.message });
     process.exit(1);
   }
 
   const memoryRegistration = runtime.registerService(memoryService);
   if (!memoryRegistration.ok) {
-    console.error("Failed to register memory service:", memoryRegistration.error.message);
+    log.error("Failed to register memory service", { error: memoryRegistration.error.message });
     process.exit(1);
   }
 
   // Register HTTP server after dependent managed services.
   const httpRegistration = runtime.registerService(httpServer);
   if (!httpRegistration.ok) {
-    console.error("Failed to register HTTP service:", httpRegistration.error.message);
+    log.error("Failed to register HTTP service", { error: httpRegistration.error.message });
     process.exit(1);
   }
 
   // Start daemon (starts all registered services)
   const startResult = await runtime.start();
   if (!startResult.ok) {
-    console.error("Failed to start daemon:", startResult.error.message);
+    log.error("Failed to start daemon", { error: startResult.error.message });
     process.exit(1);
   }
 
   // Start the browser watcher cron scheduler now that all services are running.
   const schedulerStartResult = await browserCronScheduler.start();
   if (!schedulerStartResult.ok) {
-    console.warn("Failed to start browser watcher cron scheduler:", schedulerStartResult.error.message);
+    log.warn("Failed to start browser watcher cron scheduler", { error: schedulerStartResult.error.message });
   }
 
   // Wire up conversation notifications for watchers — the ConversationManager
@@ -293,35 +250,31 @@ async function main() {
   if (conversationManager) {
     conversationNotificationDelivery = new ConversationNotificationDelivery(conversationManager);
   } else {
-    console.warn("ConversationManager not available — watcher notifications will be suppressed");
+    log.warn("ConversationManager not available — watcher notifications will be suppressed");
   }
 
   // Register memory cron jobs after memory service is confirmed ready.
-  // Consolidation and briefing runners use stub implementations until
-  // the full pipeline (embedding provider, LLM) is configured in Wave 5.
   let cronHandle: MemoryCronHandle | undefined;
   if (memoryService.isReady()) {
     const cronResult = registerMemoryCronJobs({
-      consolidationJob: createStubConsolidationJob(),
-      briefingJob: createStubBriefingJob(),
       isMemoryReady: () => memoryService.isReady(),
     });
 
     if (cronResult.ok) {
       cronHandle = cronResult.value;
-      console.log("Memory cron jobs registered successfully");
+      log.info("Memory cron jobs registered successfully");
     } else {
-      console.warn("Failed to register memory cron jobs:", cronResult.error.message);
+      log.warn("Failed to register memory cron jobs", { error: cronResult.error.message });
     }
   } else {
-    console.warn("Memory service not ready — skipping cron job registration");
+    log.warn("Memory service not ready — skipping cron job registration");
   }
 
-  console.log("Daemon started successfully");
+  log.info("Daemon started successfully");
 
   // Handle shutdown signals
   process.on("SIGTERM", async () => {
-    console.log("Received SIGTERM, shutting down...");
+    log.info("Received SIGTERM, shutting down...");
     cronHandle?.stopAll();
     await browserCronScheduler.stop();
     await runtime.stop({ signal: "SIGTERM" });
@@ -329,7 +282,7 @@ async function main() {
   });
 
   process.on("SIGINT", async () => {
-    console.log("Received SIGINT, shutting down...");
+    log.info("Received SIGINT, shutting down...");
     cronHandle?.stopAll();
     await browserCronScheduler.stop();
     await runtime.stop({ signal: "SIGINT" });
@@ -338,6 +291,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Fatal daemon error:", error);
+  log.error("Fatal daemon error", { error });
   process.exit(1);
 });

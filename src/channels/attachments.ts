@@ -2,7 +2,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdir, rm, writeFile, readFile } from "node:fs/promises";
 
+import { createLogger } from "../logger";
 import { ChannelError } from "./errors";
+
+const log = createLogger("channels:attachments");
 import type { ChannelAttachment, ChannelPlatform } from "./types";
 
 /**
@@ -267,7 +270,7 @@ export function extractFileNameFromUrl(url: string): string {
       return decodeURIComponent(lastSegment);
     }
   } catch {
-    // Invalid URL — fall through to default
+    // Expected: invalid URL — fall through to default filename
   }
 
   return "attachment";
@@ -374,7 +377,7 @@ export class AttachmentHandler {
       const declaredSize = parseInt(contentLengthHeader, 10);
       if (Number.isFinite(declaredSize) && declaredSize > maxSize) {
         // Consume body to avoid connection leak
-        try { await response.body?.cancel(); } catch { /* ignore */ }
+        try { await response.body?.cancel(); } catch { /* Expected: body may already be consumed */ }
         const maxMb = (maxSize / (1024 * 1024)).toFixed(0);
         const actualMb = (declaredSize / (1024 * 1024)).toFixed(1);
         throw new ChannelError(
@@ -464,8 +467,9 @@ export class AttachmentHandler {
     try {
       await this.rmFn(tempPath, { force: true });
       this.activeTempPaths.delete(tempPath);
-    } catch {
-      // Ignore cleanup errors — file may already be gone
+    } catch (e) {
+      // Expected: file may already be gone
+      log.debug("temp file cleanup failed", { tempPath, error: e instanceof Error ? e.message : String(e) });
     }
   }
 

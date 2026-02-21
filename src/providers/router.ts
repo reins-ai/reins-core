@@ -1,5 +1,8 @@
 import { AuthError, ProviderError } from "../errors";
+import { createLogger } from "../logger";
 import { err, ok, type Result } from "../result";
+
+const log = createLogger("providers:router");
 import type { Model, ModelCapability, Provider } from "../types";
 import type { AuthService, ConversationAuthCheck, ProviderAuthGuidance } from "./auth-service";
 import { ProviderRegistry } from "./registry";
@@ -37,8 +40,9 @@ export class ModelRouter {
       try {
         const models = await provider.listModels();
         allModels.push(...models);
-      } catch {
-        // Skip providers that fail to list models
+      } catch (e) {
+        // Expected: some providers may be temporarily unavailable
+        log.debug("skipping provider that failed to list models", { provider: provider.config.id, error: e instanceof Error ? e.message : String(e) });
       }
     }
     return allModels;
