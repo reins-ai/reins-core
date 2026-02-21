@@ -1,9 +1,12 @@
 import type { Model, Message, Provider } from "../types";
+import { createLogger } from "../logger";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
   estimateTokens,
 } from "./tokenizer";
+
+const log = createLogger("context");
 
 export interface TruncationOptions {
   maxTokens: number;
@@ -172,7 +175,9 @@ export class SummarisationStrategy implements AsyncTruncationStrategy {
         ...recentMessages,
       ];
     } catch (error) {
-      console.warn("SummarisationStrategy failed; using DropOldestStrategy fallback.", error);
+      log.warn("SummarisationStrategy failed; using DropOldestStrategy fallback", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return this.fallbackStrategy.truncate(messages, options);
     }
   }

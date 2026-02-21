@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { createLogger } from "../logger";
 import type { CronScheduler } from "../cron/scheduler";
 import type { CronJobCreateInput } from "../cron/types";
 import type { BrowserDaemonService } from "./browser-daemon-service";
@@ -27,6 +28,8 @@ export interface WatcherCronManagerOptions {
   watchersFilePath?: string;
   persistenceIO?: WatcherPersistenceIO;
 }
+
+const log = createLogger("browser:watcher");
 
 const CRON_JOB_PREFIX = "watcher-cron-";
 
@@ -186,9 +189,7 @@ export class WatcherCronManager {
       const raw = await this.io.readFile(this.watchersFilePath, "utf8");
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
-        console.warn(
-          JSON.stringify({ scope: "watcher-persistence", level: "warn", message: "watchers.json is not an array, starting with empty registry" }),
-        );
+        log.warn("watchers.json is not an array, starting with empty registry");
         return;
       }
       states = parsed as WatcherState[];
@@ -196,9 +197,9 @@ export class WatcherCronManager {
       if (isFileNotFoundError(error)) {
         return;
       }
-      console.warn(
-        JSON.stringify({ scope: "watcher-persistence", level: "warn", message: `Failed to load watchers: ${error instanceof Error ? error.message : String(error)}` }),
-      );
+      log.warn("Failed to load watchers", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return;
     }
 
@@ -218,14 +219,16 @@ export class WatcherCronManager {
       try {
         const result = await this.cronScheduler.create(cronInput);
         if (!result.ok) {
-          console.warn(
-            JSON.stringify({ scope: "watcher-persistence", level: "warn", message: `Failed to schedule resumed watcher ${watcher.id}: ${result.error.message}` }),
-          );
+          log.warn("Failed to schedule resumed watcher", {
+            watcherId: watcher.id,
+            error: result.error.message,
+          });
         }
       } catch (error) {
-        console.warn(
-          JSON.stringify({ scope: "watcher-persistence", level: "warn", message: `Failed to schedule resumed watcher ${watcher.id}: ${error instanceof Error ? error.message : String(error)}` }),
-        );
+        log.warn("Failed to schedule resumed watcher", {
+          watcherId: watcher.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   }
