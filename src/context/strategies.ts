@@ -1,5 +1,4 @@
 import type { Model, Message } from "../types";
-import type { ContextManagerConfig } from "./manager";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
@@ -17,7 +16,7 @@ export interface TruncationStrategy {
 }
 
 export interface AsyncTruncationStrategy {
-  truncate(messages: Message[], config: ContextManagerConfig): Promise<Message[]>;
+  truncate(messages: Message[], options: TruncationOptions): Promise<Message[]>;
 }
 
 const CONVERSATION_OVERHEAD = 3;

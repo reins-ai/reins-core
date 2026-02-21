@@ -17,19 +17,19 @@ const message = (
 });
 
 describe("ContextManager", () => {
-  it("passes through messages when under limit", () => {
+  it("passes through messages when under limit", async () => {
     const manager = new ContextManager({
       strategy: new DropOldestStrategy(),
       defaultMaxTokens: 200,
     });
 
     const input = [message("m1", "user", "hello", 1)];
-    const prepared = manager.prepare(input, { maxTokens: 200 });
+    const prepared = await manager.prepare(input, { maxTokens: 200 });
 
     expect(prepared).toEqual(input);
   });
 
-  it("truncates when over limit", () => {
+  it("truncates when over limit", async () => {
     const manager = new ContextManager({
       strategy: new DropOldestStrategy(),
       defaultMaxTokens: 40,
@@ -42,20 +42,20 @@ describe("ContextManager", () => {
       message("m4", "user", "new user message", 4),
     ];
 
-    const prepared = manager.prepare(input, { maxTokens: 25 });
+    const prepared = await manager.prepare(input, { maxTokens: 25 });
 
     expect(prepared.length).toBeLessThan(input.length);
     expect(prepared.some((item) => item.role === "system")).toBe(true);
   });
 
-  it("adds system prompt when missing", () => {
+  it("adds system prompt when missing", async () => {
     const manager = new ContextManager({
       strategy: new DropOldestStrategy(),
       defaultMaxTokens: 200,
     });
 
     const input = [message("m1", "user", "hi there", 1)];
-    const prepared = manager.prepare(input, {
+    const prepared = await manager.prepare(input, {
       maxTokens: 200,
       systemPrompt: "You are Reins.",
     });
@@ -64,7 +64,7 @@ describe("ContextManager", () => {
     expect(prepared[0]?.content).toBe("You are Reins.");
   });
 
-  it("respects reservedForOutput", () => {
+  it("respects reservedForOutput", async () => {
     const manager = new ContextManager({
       strategy: new DropOldestStrategy(),
       defaultMaxTokens: 200,
@@ -75,11 +75,11 @@ describe("ContextManager", () => {
       message("m2", "user", "x".repeat(120), 2),
     ];
 
-    const withoutReserve = manager.prepare(input, {
+    const withoutReserve = await manager.prepare(input, {
       maxTokens: 60,
       reservedForOutput: 0,
     });
-    const withReserve = manager.prepare(input, {
+    const withReserve = await manager.prepare(input, {
       maxTokens: 60,
       reservedForOutput: 30,
     });
@@ -87,7 +87,7 @@ describe("ContextManager", () => {
     expect(withReserve.length).toBeLessThanOrEqual(withoutReserve.length);
   });
 
-  it("supports per-model token limit configuration", () => {
+  it("supports per-model token limit configuration", async () => {
     const manager = new ContextManager({
       strategy: new DropOldestStrategy(),
       modelTokenLimits: {
@@ -101,7 +101,7 @@ describe("ContextManager", () => {
       message("m2", "user", "x".repeat(180), 2),
     ];
 
-    const prepared = manager.prepare(input, {
+    const prepared = await manager.prepare(input, {
       modelId: "gpt-4o-mini",
       reservedForOutput: 10,
     });
