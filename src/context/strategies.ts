@@ -1,4 +1,4 @@
-import type { Model, Message } from "../types";
+import type { Model, Message, Provider } from "../types";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
@@ -9,6 +9,7 @@ export interface TruncationOptions {
   maxTokens: number;
   reservedTokens: number;
   model?: Model;
+  keepRecentMessages?: number;
 }
 
 export interface TruncationStrategy {
@@ -18,6 +19,18 @@ export interface TruncationStrategy {
 export interface AsyncTruncationStrategy {
   truncate(messages: Message[], options: TruncationOptions): Promise<Message[]>;
 }
+
+export interface SummarisationStrategyOptions {
+  provider: Provider;
+  model: string;
+  summaryMaxTokens?: number;
+  summaryPrompt?: string;
+}
+
+const DEFAULT_SUMMARY_MAX_TOKENS = 500;
+const DEFAULT_KEEP_RECENT_MESSAGES = 20;
+const DEFAULT_SUMMARY_PROMPT =
+  "You are summarising a conversation to reduce context. Create a concise summary of the following messages that preserves all important information, decisions, and context needed to continue the conversation naturally. Be thorough but concise.";
 
 const CONVERSATION_OVERHEAD = 3;
 const MESSAGE_BASE_OVERHEAD = 5;
@@ -69,6 +82,100 @@ function truncateMessageContent(message: Message, maxMessageTokens: number): Mes
 
 function preserveMessageOrder(source: Message[], keep: Set<string>): Message[] {
   return source.filter((message) => keep.has(message.id));
+}
+
+function toSummaryText(message: Message): string {
+  const content =
+    typeof message.content === "string"
+      ? message.content
+      : message.content
+          .map((block) => {
+            if (block.type === "text") {
+              return block.text;
+            }
+
+            if (block.type === "tool_use") {
+              return `[tool_use:${block.name}] ${JSON.stringify(block.input)}`;
+            }
+
+            return `[tool_result:${block.tool_use_id}] ${block.content}`;
+          })
+          .join("\n");
+
+  return `${message.role.toUpperCase()}: ${content}`;
+}
+
+export class SummarisationStrategy implements AsyncTruncationStrategy {
+  private readonly fallbackStrategy = new DropOldestStrategy();
+
+  constructor(private readonly options: SummarisationStrategyOptions) {}
+
+  async truncate(messages: Message[], options: TruncationOptions): Promise<Message[]> {
+    const systemMessages = messages.filter(
+      (message) => message.role === "system" && message.isSummary !== true,
+    );
+    const existingSummaryMessages = messages.filter((message) => message.isSummary === true);
+    const regularMessages = messages.filter(
+      (message) => message.role !== "system" && message.isSummary !== true,
+    );
+    const keepRecent = Math.max(
+      0,
+      options.keepRecentMessages ?? DEFAULT_KEEP_RECENT_MESSAGES,
+    );
+
+    if (messages.length <= keepRecent + systemMessages.length) {
+      return [...messages];
+    }
+
+    if (regularMessages.length <= keepRecent) {
+      return [...messages];
+    }
+
+    const splitIndex = Math.max(0, regularMessages.length - keepRecent);
+    const oldestMessages = regularMessages.slice(0, splitIndex);
+    const recentMessages = regularMessages.slice(splitIndex);
+
+    if (oldestMessages.length === 0) {
+      return [...messages];
+    }
+
+    try {
+      const summaryResponse = await this.options.provider.chat({
+        model: this.options.model,
+        systemPrompt: this.options.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT,
+        messages: [
+          {
+            id: "summarisation-request",
+            role: "user",
+            content: oldestMessages.map(toSummaryText).join("\n\n"),
+            createdAt: new Date(),
+          },
+        ],
+        maxTokens: this.options.summaryMaxTokens ?? DEFAULT_SUMMARY_MAX_TOKENS,
+      });
+
+      const summaryTokenBudget = this.options.summaryMaxTokens ?? DEFAULT_SUMMARY_MAX_TOKENS;
+      const summaryContent = truncateTextToBudget(summaryResponse.content, summaryTokenBudget);
+
+      const syntheticSummary: Message = {
+        id: `summary-${Date.now()}`,
+        role: "system",
+        content: summaryContent,
+        isSummary: true,
+        createdAt: new Date(),
+      };
+
+      return [
+        ...systemMessages,
+        ...existingSummaryMessages,
+        syntheticSummary,
+        ...recentMessages,
+      ];
+    } catch (error) {
+      console.warn("SummarisationStrategy failed; using DropOldestStrategy fallback.", error);
+      return this.fallbackStrategy.truncate(messages, options);
+    }
+  }
 }
 
 export class DropOldestStrategy implements TruncationStrategy {
