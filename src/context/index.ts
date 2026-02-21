@@ -9,6 +9,7 @@ export {
   DropOldestStrategy,
   KeepSystemAndRecentStrategy,
   SlidingWindowStrategy,
+  type AsyncTruncationStrategy,
   type TruncationOptions,
   type TruncationStrategy,
 } from "./strategies";

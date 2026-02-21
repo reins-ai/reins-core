@@ -1,4 +1,5 @@
 import type { Model, Message } from "../types";
+import type { ContextManagerConfig } from "./manager";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
@@ -13,6 +14,10 @@ export interface TruncationOptions {
 
 export interface TruncationStrategy {
   truncate(messages: Message[], options: TruncationOptions): Message[];
+}
+
+export interface AsyncTruncationStrategy {
+  truncate(messages: Message[], config: ContextManagerConfig): Promise<Message[]>;
 }
 
 const CONVERSATION_OVERHEAD = 3;
@@ -73,7 +78,9 @@ export class DropOldestStrategy implements TruncationStrategy {
     const next = [...messages];
 
     while (estimateConversationTokens(next) > effectiveLimit) {
-      const dropIndex = next.findIndex((message) => message.role !== "system");
+      const dropIndex = next.findIndex(
+        (message) => message.role !== "system" && message.isSummary !== true,
+      );
       if (dropIndex === -1) {
         break;
       }
@@ -98,9 +105,13 @@ export class SlidingWindowStrategy implements TruncationStrategy {
       return messages;
     }
 
-    const systemMessages = messages.filter((message) => message.role === "system");
-    const nonSystemMessages = messages.filter((message) => message.role !== "system");
-    const selectedIds = new Set(systemMessages.map((message) => message.id));
+    const alwaysKeepMessages = messages.filter(
+      (message) => message.role === "system" || message.isSummary === true,
+    );
+    const nonSystemMessages = messages.filter(
+      (message) => message.role !== "system" && message.isSummary !== true,
+    );
+    const selectedIds = new Set(alwaysKeepMessages.map((message) => message.id));
 
     for (let index = nonSystemMessages.length - 1; index >= 0; index -= 1) {
       const candidate = nonSystemMessages[index];
@@ -122,16 +133,16 @@ export class SlidingWindowStrategy implements TruncationStrategy {
 
     const latest = nonSystemMessages[nonSystemMessages.length - 1];
     if (!latest) {
-      return systemMessages.map((message) =>
+      return alwaysKeepMessages.map((message) =>
         truncateMessageContent(message, Math.max(1, effectiveLimit - CONVERSATION_OVERHEAD)),
       );
     }
 
     const trimmedLatest = truncateMessageContent(
       latest,
-      Math.max(1, effectiveLimit - estimateConversationTokens(systemMessages)),
+      Math.max(1, effectiveLimit - estimateConversationTokens(alwaysKeepMessages)),
     );
-    truncated = [...systemMessages, trimmedLatest];
+    truncated = [...alwaysKeepMessages, trimmedLatest];
 
     return truncated;
   }
@@ -144,8 +155,12 @@ export class KeepSystemAndRecentStrategy implements TruncationStrategy {
       return messages;
     }
 
-    const systemMessages = messages.filter((message) => message.role === "system");
-    const nonSystemMessages = messages.filter((message) => message.role !== "system");
+    const alwaysKeepMessages = messages.filter(
+      (message) => message.role === "system" || message.isSummary === true,
+    );
+    const nonSystemMessages = messages.filter(
+      (message) => message.role !== "system" && message.isSummary !== true,
+    );
     const chunks: Message[][] = [];
 
     for (let index = 0; index < nonSystemMessages.length; index += 1) {
@@ -163,7 +178,7 @@ export class KeepSystemAndRecentStrategy implements TruncationStrategy {
       }
     }
 
-    const selectedIds = new Set(systemMessages.map((message) => message.id));
+    const selectedIds = new Set(alwaysKeepMessages.map((message) => message.id));
 
     for (let chunkIndex = chunks.length - 1; chunkIndex >= 0; chunkIndex -= 1) {
       const chunk = chunks[chunkIndex];
@@ -190,15 +205,15 @@ export class KeepSystemAndRecentStrategy implements TruncationStrategy {
 
     const latest = nonSystemMessages[nonSystemMessages.length - 1];
     if (!latest) {
-      return systemMessages.map((message) =>
+      return alwaysKeepMessages.map((message) =>
         truncateMessageContent(message, Math.max(1, effectiveLimit - CONVERSATION_OVERHEAD)),
       );
     }
 
     const trimmedLatest = truncateMessageContent(
       latest,
-      Math.max(1, effectiveLimit - estimateConversationTokens(systemMessages)),
+      Math.max(1, effectiveLimit - estimateConversationTokens(alwaysKeepMessages)),
     );
-    return [...systemMessages, trimmedLatest];
+    return [...alwaysKeepMessages, trimmedLatest];
   }
 }

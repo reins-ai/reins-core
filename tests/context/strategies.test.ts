@@ -115,4 +115,67 @@ describe("truncation strategies", () => {
       expect(estimateConversationTokens(truncated)).toBeLessThanOrEqual(maxTokens);
     }
   });
+
+  it("DropOldestStrategy preserves summary messages when truncating", () => {
+    const strategy = new DropOldestStrategy();
+    const messages: Message[] = [
+      makeMessage("m1", "system", "system instructions", 1),
+      makeMessage("m2", "user", "old user", 2),
+      {
+        ...makeMessage("m3", "assistant", "summary of prior context", 3),
+        isSummary: true,
+      },
+      makeMessage("m4", "assistant", "recent assistant", 4),
+    ];
+
+    const truncated = strategy.truncate(messages, {
+      maxTokens: 28,
+      reservedTokens: 0,
+    });
+
+    expect(truncated.find((message) => message.id === "m3")).toBeDefined();
+  });
+
+  it("SlidingWindowStrategy preserves summary messages when truncating", () => {
+    const strategy = new SlidingWindowStrategy();
+    const messages: Message[] = [
+      makeMessage("m1", "system", "system instructions", 1),
+      makeMessage("m2", "user", "old user", 2),
+      {
+        ...makeMessage("m3", "assistant", "summary of prior context", 3),
+        isSummary: true,
+      },
+      makeMessage("m4", "user", "new user", 4),
+      makeMessage("m5", "assistant", "new assistant", 5),
+    ];
+
+    const truncated = strategy.truncate(messages, {
+      maxTokens: 30,
+      reservedTokens: 0,
+    });
+
+    expect(truncated.find((message) => message.id === "m3")).toBeDefined();
+  });
+
+  it("KeepSystemAndRecentStrategy preserves summary messages when truncating", () => {
+    const strategy = new KeepSystemAndRecentStrategy();
+    const messages: Message[] = [
+      makeMessage("m1", "system", "system instructions", 1),
+      makeMessage("m2", "user", "old user", 2),
+      {
+        ...makeMessage("m3", "assistant", "summary of prior context", 3),
+        isSummary: true,
+      },
+      makeMessage("m4", "assistant", "old assistant", 4),
+      makeMessage("m5", "user", "new user", 5),
+      makeMessage("m6", "assistant", "new assistant", 6),
+    ];
+
+    const truncated = strategy.truncate(messages, {
+      maxTokens: 34,
+      reservedTokens: 0,
+    });
+
+    expect(truncated.find((message) => message.id === "m3")).toBeDefined();
+  });
 });
