@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { CDP_PORT } from "../config/defaults";
 import { createLogger } from "../logger";
 import { err, ok, type Result } from "../result";
 
@@ -16,7 +17,7 @@ import type { BrowserConfig, BrowserStatus, CaptureScreenshotResult, TabInfo } f
 
 const DEFAULT_CONFIG: BrowserConfig = {
   profilePath: process.env.REINS_BROWSER_PROFILE?.trim() || `${homedir()}/.reins/browser/profiles/default`,
-  port: 9222,
+  port: CDP_PORT,
   headless: false,
   maxWatchers: 10,
 };

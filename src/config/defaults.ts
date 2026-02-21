@@ -9,3 +9,6 @@ export const DAEMON_PORT = parseInt(process.env.REINS_DAEMON_PORT ?? "7433", 10)
 
 /** Hostname the daemon binds to by default. */
 export const DAEMON_HOST = "localhost";
+
+/** Port for Chrome DevTools Protocol (CDP) debugging. Override with REINS_CDP_PORT env var. */
+export const CDP_PORT = parseInt(process.env.REINS_CDP_PORT ?? "9222", 10);
