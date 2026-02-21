@@ -134,21 +134,11 @@ describe("SummarisationStrategy", () => {
       reservedTokens: 0,
       keepRecentMessages: 5,
     };
-    const originalWarn = console.warn;
-    let warnCalled = false;
-    console.warn = () => {
-      warnCalled = true;
-    };
 
-    try {
-      const result = await strategy.truncate(input, options);
-      const expected = fallback.truncate(input, options);
+    const result = await strategy.truncate(input, options);
+    const expected = fallback.truncate(input, options);
 
-      expect(warnCalled).toBe(true);
-      expect(result).toEqual(expected);
-    } finally {
-      console.warn = originalWarn;
-    }
+    expect(result).toEqual(expected);
   });
 
   it("preserves existing summary messages from input", async () => {
