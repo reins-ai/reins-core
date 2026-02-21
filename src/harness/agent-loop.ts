@@ -3,8 +3,10 @@ import type { ToolDefinition } from "../types";
 import type { ThinkingLevel } from "../types/provider";
 import type { ConversationContext } from "../memory/proactive/nudge-engine";
 import type { NudgeInjector } from "../memory/proactive/nudge-injector";
+import type { ContextManager } from "../context/manager";
 import type { TypedEventBus } from "./event-bus";
-import type { HarnessEventMap } from "./events";
+import type { CompactionEventPayload, HarnessEventMap } from "./events";
+import { SummarisationStrategy } from "../context/strategies";
 import { DoomLoopGuard } from "./doom-loop-guard";
 import { PermissionChecker } from "./permissions";
 import type { ToolPipeline, ToolPipelineResult } from "./tool-pipeline";
@@ -14,6 +16,11 @@ import type { RagContextInjector } from "../memory/services/rag-context-injector
 
 const DEFAULT_MAX_STEPS = 25;
 const DEFAULT_RAG_CONTEXT_MAX_TOKENS = 2000;
+const DEFAULT_CONTEXT_LIMIT_TOKENS = 200_000;
+const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.9;
+const DEFAULT_KEEP_RECENT_MESSAGES = 20;
+const DEFAULT_SUMMARY_MAX_TOKENS = 500;
+const TARGET_POST_COMPACTION_UTILIZATION = 0.4;
 const STEP_LIMIT_MESSAGE = "Step limit reached. Tools are now disabled. Please provide a final response.";
 const ABORTED_MESSAGE = "Agent loop aborted";
 
@@ -103,6 +110,14 @@ export interface ProviderLoopOptions {
   model: string;
   messages: Message[];
   thinkingLevel?: ThinkingLevel;
+  contextManager?: ContextManager;
+  contextLimitTokens?: number;
+  autoCompaction?: {
+    enabled?: boolean;
+    threshold?: number;
+    keepRecentMessages?: number;
+    summaryMaxTokens?: number;
+  };
   toolExecutor: ToolExecutor;
   toolContext: ToolContext;
   tools?: ToolDefinition[];
@@ -115,6 +130,7 @@ export type LoopEvent =
   | { type: "thinking"; content: string }
   | { type: "tool_call_start"; toolCall: ToolCall }
   | { type: "tool_call_end"; result: ToolResult }
+  | { type: "compaction"; summary: string; beforeTokenEstimate: number; afterTokenEstimate: number }
   | {
       type: "done";
       usage?: TokenUsage;
@@ -270,6 +286,16 @@ export class AgentLoop {
           stepsUsed,
         };
         return;
+      }
+
+      const compactionEvent = await this.maybeAutoCompactContext(options, messages, loopSignal);
+      if (compactionEvent) {
+        yield {
+          type: "compaction",
+          summary: compactionEvent.summary,
+          beforeTokenEstimate: compactionEvent.beforeTokenEstimate,
+          afterTokenEstimate: compactionEvent.afterTokenEstimate,
+        };
       }
 
       const stepRequest = {
@@ -693,6 +719,140 @@ export class AgentLoop {
       initiatedBy: "system",
       reason: ABORTED_MESSAGE,
     });
+  }
+
+  private async maybeAutoCompactContext(
+    options: ProviderLoopOptions,
+    messages: Message[],
+    signal?: AbortSignal,
+  ): Promise<CompactionEventPayload | undefined> {
+    const autoCompaction = options.autoCompaction;
+    if (!autoCompaction?.enabled || !options.contextManager || this.isAbortedSignal(signal)) {
+      return undefined;
+    }
+
+    const maxTokens = this.resolveContextLimit(options.contextLimitTokens);
+    const threshold = this.resolveAutoCompactionThreshold(autoCompaction.threshold);
+    const before = options.contextManager.getUsageReport(messages, maxTokens);
+
+    if (before.utilization < threshold) {
+      return undefined;
+    }
+
+    try {
+      const strategy = new SummarisationStrategy({
+        provider: options.provider,
+        model: options.model,
+        summaryMaxTokens: this.resolveSummaryMaxTokens(autoCompaction.summaryMaxTokens),
+      });
+
+      const compacted = await strategy.truncate(messages, {
+        maxTokens,
+        reservedTokens: 0,
+        keepRecentMessages: this.resolveKeepRecentMessages(autoCompaction.keepRecentMessages),
+      });
+
+      const after = options.contextManager.getUsageReport(compacted, maxTokens);
+      const summary = this.extractCompactionSummary(compacted);
+      const payload: CompactionEventPayload = {
+        summary,
+        beforeTokenEstimate: before.totalTokens,
+        afterTokenEstimate: after.totalTokens,
+      };
+
+      messages.splice(
+        0,
+        messages.length,
+        ...compacted.map((message) => ({
+          ...message,
+          content: cloneContentBlocks(message.content),
+        })),
+      );
+
+      await this.emitCompaction(payload);
+
+      if (after.utilization > TARGET_POST_COMPACTION_UTILIZATION) {
+        console.warn("Auto-compaction completed but context utilization remains above target.", {
+          utilization: after.utilization,
+          target: TARGET_POST_COMPACTION_UTILIZATION,
+        });
+      }
+
+      return payload;
+    } catch (error) {
+      console.warn("Auto-compaction failed; continuing without compaction.", error);
+      return undefined;
+    }
+  }
+
+  private async emitCompaction(payload: CompactionEventPayload): Promise<void> {
+    if (!this.options.eventBus) {
+      return;
+    }
+
+    await this.options.eventBus.emit("compaction", payload);
+  }
+
+  private extractCompactionSummary(messages: Message[]): string {
+    const summaryMessage = messages.find((message) => message.isSummary === true);
+    if (!summaryMessage) {
+      return "";
+    }
+
+    if (typeof summaryMessage.content === "string") {
+      return summaryMessage.content;
+    }
+
+    return summaryMessage.content
+      .map((block) => {
+        if (block.type === "text") {
+          return block.text;
+        }
+
+        if (block.type === "tool_result") {
+          return block.content;
+        }
+
+        if (block.type === "tool_use") {
+          return `${block.name}: ${JSON.stringify(block.input)}`;
+        }
+
+        return "";
+      })
+      .join("\n")
+      .trim();
+  }
+
+  private resolveContextLimit(contextLimitTokens: number | undefined): number {
+    if (typeof contextLimitTokens !== "number" || !Number.isFinite(contextLimitTokens)) {
+      return DEFAULT_CONTEXT_LIMIT_TOKENS;
+    }
+
+    return Math.max(1, Math.floor(contextLimitTokens));
+  }
+
+  private resolveAutoCompactionThreshold(threshold: number | undefined): number {
+    if (typeof threshold !== "number" || !Number.isFinite(threshold)) {
+      return DEFAULT_AUTO_COMPACT_THRESHOLD;
+    }
+
+    return Math.min(0.99, Math.max(0.5, threshold));
+  }
+
+  private resolveKeepRecentMessages(keepRecentMessages: number | undefined): number {
+    if (typeof keepRecentMessages !== "number" || !Number.isFinite(keepRecentMessages)) {
+      return DEFAULT_KEEP_RECENT_MESSAGES;
+    }
+
+    return Math.max(1, Math.floor(keepRecentMessages));
+  }
+
+  private resolveSummaryMaxTokens(summaryMaxTokens: number | undefined): number {
+    if (typeof summaryMaxTokens !== "number" || !Number.isFinite(summaryMaxTokens)) {
+      return DEFAULT_SUMMARY_MAX_TOKENS;
+    }
+
+    return Math.max(100, Math.floor(summaryMaxTokens));
   }
 
   private isAborted(): boolean {
