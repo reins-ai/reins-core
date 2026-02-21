@@ -16,8 +16,6 @@ import { MemoryError } from "../memory/services";
 import { MemoryService } from "../memory/services/memory-service";
 import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
 import type { MemoryRepository } from "../memory/storage";
-import { MemoryConsolidationJob } from "../cron/jobs/memory-consolidation-job";
-import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
 import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
 import { MemoryCapabilitiesResolver } from "./memory-capabilities";
 import { bootstrapInstallRoot } from "../environment";
@@ -107,50 +105,6 @@ function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<Initia
     db.close();
     return err(new DaemonError("Failed to initialize memory runtime", "DAEMON_MEMORY_INIT_FAILED", error instanceof Error ? error : undefined));
   }
-}
-
-function createStubConsolidationJob(): MemoryConsolidationJob {
-  const stubRunner = {
-    run: async () => ok({
-      runId: crypto.randomUUID(),
-      timestamp: new Date(),
-      stats: { candidatesProcessed: 0, factsDistilled: 0, created: 0, updated: 0, superseded: 0, skipped: 0 },
-      mergeResult: null,
-      errors: [],
-      durationMs: 0,
-    }),
-  } as unknown as import("../memory/consolidation/consolidation-runner").ConsolidationRunner;
-
-  return new MemoryConsolidationJob({
-    runner: stubRunner,
-    onComplete: (result) => {
-      log.info("Consolidation completed", { factsDistilled: result.stats.factsDistilled });
-    },
-    onError: (error) => {
-      log.error("Consolidation failed", { error: error.message });
-    },
-  });
-}
-
-function createStubBriefingJob(): MorningBriefingJob {
-  const stubService = {
-    generateBriefing: async () => ok({
-      timestamp: new Date(),
-      sections: [],
-      totalItems: 0,
-      generatedInMs: 0,
-    }),
-  } as unknown as import("../memory/proactive/morning-briefing-service").MorningBriefingService;
-
-  return new MorningBriefingJob({
-    service: stubService,
-    onComplete: (briefing) => {
-      log.info("Morning briefing generated", { totalItems: briefing.totalItems });
-    },
-    onError: (error) => {
-      log.error("Morning briefing failed", { error: error.message });
-    },
-  });
 }
 
 async function main() {
@@ -300,13 +254,9 @@ async function main() {
   }
 
   // Register memory cron jobs after memory service is confirmed ready.
-  // Consolidation and briefing runners use stub implementations until
-  // the full pipeline (embedding provider, LLM) is configured in Wave 5.
   let cronHandle: MemoryCronHandle | undefined;
   if (memoryService.isReady()) {
     const cronResult = registerMemoryCronJobs({
-      consolidationJob: createStubConsolidationJob(),
-      briefingJob: createStubBriefingJob(),
       isMemoryReady: () => memoryService.isReady(),
     });
 
