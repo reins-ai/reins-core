@@ -13,6 +13,7 @@ import type { TaskRecord } from "./types";
 import type { TaskQueue } from "./task-queue";
 
 const DEFAULT_MAX_CONCURRENT_WORKERS = 3;
+/** Maximum wall-clock time (ms) a single task worker may run before being aborted. */
 const DEFAULT_WORKER_TIMEOUT_MS = 10 * 60 * 1000;
 
 type WorkerAbortReason = "cancelled" | "timeout";

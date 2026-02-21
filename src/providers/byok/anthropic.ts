@@ -169,8 +169,15 @@ function mapMessages(request: ChatRequest): AnthropicMessage[] {
 }
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
+/** Fallback max_tokens when the caller does not specify one. */
 const DEFAULT_MAX_TOKENS = 1024;
+/**
+ * Minimum max_tokens required when extended thinking is enabled.
+ * Must be strictly greater than MIN_THINKING_BUDGET_TOKENS so the model
+ * has at least one output token beyond the thinking budget.
+ */
 const MIN_THINKING_MAX_TOKENS = 1025;
+/** Minimum budget_tokens accepted by the Anthropic thinking API. */
 const MIN_THINKING_BUDGET_TOKENS = 1024;
 const ANTHROPIC_THINKING_BETA = "interleaved-thinking-2025-05-14";
 

@@ -2,6 +2,7 @@ import type { ProviderHealth } from "./types";
 
 type HealthCallback = (health: ProviderHealth) => void;
 
+/** Default timeout (ms) for each health-check probe request. */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 function normalizeBaseUrl(baseUrl: string): string {

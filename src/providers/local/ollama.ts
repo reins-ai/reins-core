@@ -66,7 +66,9 @@ interface OllamaTagsResponse {
   }>;
 }
 
+/** Default Ollama server URL. Override via LocalProviderConfig.baseUrl. */
 const DEFAULT_BASE_URL = "http://localhost:11434";
+/** Default request timeout (ms). Override via LocalProviderConfig.timeout. */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 function normalizeBaseUrl(baseUrl: string): string {

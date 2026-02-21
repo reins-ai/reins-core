@@ -3,7 +3,8 @@ import type { ConvexDaemonClient } from "../convex";
 import { err, ok, type Result } from "../result";
 
 const DEFAULT_CODE_LENGTH = 6;
-const DEFAULT_TTL_MS = 15 * 60 * 1000;
+/** Default time-to-live (ms) for a device code before it expires. */
+const DEVICE_CODE_TTL_MS = 15 * 60 * 1000;
 
 const createDeviceCodeReference = "device_codes:create";
 const getDeviceCodeByCodeReference = "device_codes:getByCode";
@@ -52,7 +53,7 @@ export async function generateDeviceCode(
   options: GenerateDeviceCodeOptions,
 ): Promise<Result<DeviceCodeGenerationResult, AuthError>> {
   const now = options.now ?? Date.now;
-  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+  const ttlMs = options.ttlMs ?? DEVICE_CODE_TTL_MS;
   const codeLength = options.codeLength ?? DEFAULT_CODE_LENGTH;
 
   if (!Number.isInteger(codeLength) || codeLength <= 0) {

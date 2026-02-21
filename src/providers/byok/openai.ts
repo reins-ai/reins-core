@@ -90,6 +90,8 @@ function parseToolCalls(value: unknown): ToolCall[] {
 }
 
 const DEFAULT_BASE_URL = "https://api.openai.com";
+// max_tokens is passed through from ChatRequest.maxTokens with no provider-level default;
+// callers should rely on the global modelDefaults.maxTokens (DEFAULT_MODEL_MAX_TOKENS in format-decision.ts).
 
 export class BYOKOpenAIProvider implements Provider {
   public readonly config: ProviderConfig;

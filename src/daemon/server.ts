@@ -684,6 +684,7 @@ interface HealthResponse {
   };
 }
 
+/** API contract version advertised in the /health response. Bump when making breaking protocol changes. */
 const CONTRACT_VERSION = "2026-02-w1";
 const MESSAGE_ROUTE = {
   canonical: "/api/messages",

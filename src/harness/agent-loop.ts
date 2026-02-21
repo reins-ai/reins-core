@@ -18,6 +18,7 @@ import type { RagContextInjector } from "../memory/services/rag-context-injector
 const log = createLogger("harness");
 
 const DEFAULT_MAX_STEPS = 25;
+/** Maximum tokens reserved for RAG context injected before each step. */
 const DEFAULT_RAG_CONTEXT_MAX_TOKENS = 2000;
 const DEFAULT_CONTEXT_LIMIT_TOKENS = 200_000;
 const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.9;

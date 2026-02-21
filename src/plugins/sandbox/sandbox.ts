@@ -4,6 +4,12 @@ import { createLogger } from "../../logger";
 import type { PluginEvent, ToolContext, ToolResult } from "../../types";
 
 const log = createLogger("plugins:sandbox");
+
+/** Grace period (ms) for the worker to exit cleanly before force-terminating. */
+const SANDBOX_STOP_GRACE_MS = 100;
+/** Hard deadline (ms) for the terminate() call to complete. */
+const SANDBOX_TERMINATE_TIMEOUT_MS = 500;
+
 import type { PluginDataAccess } from "../api";
 import { StubPluginDataAccess } from "../api";
 import { InMemoryPermissionAuditLog, type PermissionAuditLog } from "../audit";
@@ -156,7 +162,7 @@ export class PluginSandbox {
           });
         }),
         new Promise<void>((resolve) => {
-          setTimeout(resolve, 100);
+          setTimeout(resolve, SANDBOX_STOP_GRACE_MS);
         }),
       ]);
     } finally {
@@ -166,7 +172,7 @@ export class PluginSandbox {
           .then(() => undefined)
           .catch(() => undefined),
         new Promise<void>((resolve) => {
-          setTimeout(resolve, 500);
+          setTimeout(resolve, SANDBOX_TERMINATE_TIMEOUT_MS);
         }),
       ]);
       this.cleanupAfterStop();
