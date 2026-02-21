@@ -5,9 +5,7 @@ import { dirname, join, win32 } from "node:path";
 import { getDataRoot } from "../daemon/paths";
 import type { PersonalityConfig } from "../onboarding/types";
 import { err, ok, type Result } from "../result";
-
-const DEFAULT_DAEMON_HOST = "localhost";
-const DEFAULT_DAEMON_PORT = 7433;
+import { DAEMON_HOST as DEFAULT_DAEMON_HOST, DAEMON_PORT as DEFAULT_DAEMON_PORT } from "./defaults";
 
 export type UserProviderMode = "byok" | "gateway" | "none";
 

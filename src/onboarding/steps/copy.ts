@@ -1,4 +1,5 @@
 import type { PersonalityPreset } from "../types";
+import { DAEMON_PORT } from "../../config/defaults";
 
 /**
  * Personality-aware copy variants for onboarding steps.
@@ -336,7 +337,7 @@ const DAEMON_INSTALL_TECHNICAL: DaemonInstallCopy = {
   description:
     "The Reins daemon is a background process that runs the cron scheduler, executes background tasks via AgentLoop workers, and delivers results over WebSocket.",
   benefit: "Enables proactive features: morning briefings, heartbeat routines, nudge evaluation, and async task execution.",
-  alreadyRunningMessage: "Daemon is healthy (localhost:7433).",
+  alreadyRunningMessage: `Daemon is healthy (localhost:${DAEMON_PORT}).`,
   installingMessage: "Installing system service…",
   installedMessage: "Daemon installed and health check passed.",
   manualInstallMessage: "No service installer available. Start the daemon manually: `bun run reins-daemon`.",

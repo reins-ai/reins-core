@@ -1,5 +1,6 @@
 import { err, ok, type Result } from "../../result";
 import { createStdoutStreamRenderer, type StdoutLike, type StdoutStreamRenderer } from "../stdout-stream";
+import { DAEMON_PORT } from "../../config/defaults";
 
 type FetchFn = typeof fetch;
 
@@ -106,7 +107,7 @@ interface NormalizedOneshotOptions {
   timeoutSeconds: number;
 }
 
-const DEFAULT_HTTP_BASE_URL = "http://127.0.0.1:7433";
+const DEFAULT_HTTP_BASE_URL = `http://127.0.0.1:${DAEMON_PORT}`;
 const DEFAULT_TIMEOUT_SECONDS = 60;
 
 function toWsUrl(httpBaseUrl: string): string {
@@ -140,7 +141,7 @@ function mapFetchError(error: unknown, timeoutMs: number): OneshotError {
 
   return {
     code: "DAEMON_UNAVAILABLE",
-    message: "Daemon is not running on localhost:7433",
+    message: `Daemon is not running on localhost:${DAEMON_PORT}`,
   };
 }
 

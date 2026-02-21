@@ -1,6 +1,6 @@
 /**
  * Daemon HTTP server exposing provider auth and conversation endpoints.
- * Listens on localhost:7433
+ * Listens on localhost at the configured daemon port (default 7433, override with REINS_DAEMON_PORT)
  */
 
 import { readFile, writeFile } from "node:fs/promises";
@@ -156,6 +156,7 @@ import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
+import { DAEMON_PORT as CONFIG_DAEMON_PORT } from "../config/defaults";
 
 interface ActiveExecution {
   conversationId: string;
@@ -363,7 +364,7 @@ export class StreamRegistry {
   }
 }
 
-const DEFAULT_PORT = 7433;
+const DEFAULT_PORT = CONFIG_DAEMON_PORT;
 const DEFAULT_HOST = "localhost";
 
 // Anthropic OAuth configuration (matches claude.ai OAuth flow)

@@ -8,8 +8,9 @@ import type {
   StepResult,
 } from "./types";
 import { getDaemonInstallCopy, type DaemonInstallCopy } from "./copy";
+import { DAEMON_PORT } from "../../config/defaults";
 
-const DEFAULT_HEALTH_URL = "http://localhost:7433/health";
+const DEFAULT_HEALTH_URL = `http://localhost:${DAEMON_PORT}/health`;
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
 const DEFAULT_INSTALL_PATH = "/usr/local/bin";
 

@@ -1,9 +1,10 @@
 import { ReinsError } from "../../errors";
 import { err, ok, type Result } from "../../result";
+import { DAEMON_PORT } from "../../config/defaults";
 
 type WriteFn = (text: string) => void;
 
-const DEFAULT_DAEMON_BASE_URL = "http://localhost:7433";
+const DEFAULT_DAEMON_BASE_URL = `http://localhost:${DAEMON_PORT}`;
 
 interface DaemonStatusPayload {
   status: "running" | "offline";

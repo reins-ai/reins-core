@@ -6,9 +6,9 @@ export type TransportType = (typeof TRANSPORT_TYPES)[number];
 export interface DaemonProfile {
   /** Unique profile name (e.g., "local", "office-server") */
   name: string;
-  /** HTTP base URL (e.g., "http://localhost:7433") */
+  /** HTTP base URL (e.g., "http://localhost:7433" using the default daemon port) */
   httpUrl: string;
-  /** WebSocket URL (e.g., "ws://localhost:7433") */
+  /** WebSocket URL (e.g., "ws://localhost:7433" using the default daemon port) */
   wsUrl: string;
   /** Detected or manually set transport type */
   transportType: TransportType;

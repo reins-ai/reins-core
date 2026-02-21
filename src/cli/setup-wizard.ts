@@ -8,9 +8,10 @@ import {
   type UserConfig,
   type UserProviderMode,
 } from "../config/user-config";
+import { DAEMON_PORT } from "../config/defaults";
 
-const DAEMON_HEALTH_URL = "http://localhost:7433/health";
-const DAEMON_BASE_URL = "http://localhost:7433";
+const DAEMON_HEALTH_URL = `http://localhost:${DAEMON_PORT}/health`;
+const DAEMON_BASE_URL = `http://localhost:${DAEMON_PORT}`;
 
 export type AuthMethod = "api_key" | "oauth";
 
@@ -129,8 +130,8 @@ export function welcomeStep(state: SetupWizardState): SetupStepResult {
 
 export function daemonCheckStep(state: SetupWizardState, daemonOnline: boolean): SetupStepResult {
   const daemonMessage = daemonOnline
-    ? "Daemon is running at http://localhost:7433."
-    : "Daemon is not reachable at http://localhost:7433.";
+    ? `Daemon is running at http://localhost:${DAEMON_PORT}.`
+    : `Daemon is not reachable at http://localhost:${DAEMON_PORT}.`;
 
   const guidance = daemonOnline
     ? []
@@ -295,7 +296,7 @@ export function toUserConfig(state: SetupWizardState): UserConfig {
     provider: providerConfig,
     daemon: {
       host: "localhost",
-      port: 7433,
+      port: DAEMON_PORT,
     },
     setupComplete: state.provider.connectionVerified === true || state.provider.mode === "none",
   };
@@ -351,7 +352,7 @@ function buildSummary(state: SetupWizardState, configPath: string): string[] {
     `  Name: ${state.name}`,
     `  Provider: ${providerLabel}`,
     `  Connection: ${connectionLabel}`,
-    `  Daemon: localhost:7433 (${state.daemonOnline ? "online" : "offline"})`,
+    `  Daemon: localhost:${DAEMON_PORT} (${state.daemonOnline ? "online" : "offline"})`,
     `  Config path: ${configPath}`,
   ];
 }
