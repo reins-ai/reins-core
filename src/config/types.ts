@@ -6,6 +6,7 @@ export type {
   BillingConfig,
   ConfigValidationIssue,
   ConfigValidationResult,
+  ContextConfig,
   GlobalCredentialsConfig,
   ModelDefaultsConfig,
   ReinsGlobalConfig,

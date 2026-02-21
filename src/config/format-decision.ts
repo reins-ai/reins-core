@@ -16,6 +16,15 @@ export const MAX_TEMPERATURE = 2;
 export const MIN_MAX_TOKENS = 1;
 export const MAX_MAX_TOKENS = 128_000;
 
+export const MIN_AUTO_COMPACT_THRESHOLD = 0.5;
+export const MAX_AUTO_COMPACT_THRESHOLD = 0.99;
+export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.9;
+export const MIN_KEEP_RECENT_MESSAGES = 1;
+export const DEFAULT_KEEP_RECENT_MESSAGES = 20;
+export const MIN_SUMMARY_MAX_TOKENS = 100;
+export const MAX_SUMMARY_MAX_TOKENS = 2000;
+export const DEFAULT_SUMMARY_MAX_TOKENS = 500;
+
 export const PROVIDER_KEY_TARGETS = [
   "anthropic",
   "openai",
@@ -45,6 +54,13 @@ export interface BillingConfig {
   currencyCode: string;
 }
 
+export interface ContextConfig {
+  autoCompact: boolean;
+  autoCompactThreshold: number;
+  keepRecentMessages: number;
+  summaryMaxTokens: number;
+}
+
 export interface ReinsGlobalConfig {
   version: number;
   activeEnvironment: string;
@@ -52,6 +68,7 @@ export interface ReinsGlobalConfig {
   modelDefaults: ModelDefaultsConfig;
   billing: BillingConfig;
   heartbeatIntervalMinutes: number;
+  context: ContextConfig;
 }
 
 export interface ConfigValidationIssue {
@@ -86,6 +103,12 @@ export const DEFAULT_REINS_GLOBAL_CONFIG: ReinsGlobalConfig = {
     currencyCode: "USD",
   },
   heartbeatIntervalMinutes: DEFAULT_HEARTBEAT_INTERVAL_MINUTES,
+  context: {
+    autoCompact: false,
+    autoCompactThreshold: DEFAULT_AUTO_COMPACT_THRESHOLD,
+    keepRecentMessages: DEFAULT_KEEP_RECENT_MESSAGES,
+    summaryMaxTokens: DEFAULT_SUMMARY_MAX_TOKENS,
+  },
 };
 
 interface ConfigRecord extends Record<string, unknown> {
@@ -95,6 +118,7 @@ interface ConfigRecord extends Record<string, unknown> {
   modelDefaults?: unknown;
   billing?: unknown;
   heartbeatIntervalMinutes?: unknown;
+  context?: unknown;
 }
 
 export function validateConfigDraft(input: unknown): ConfigValidationResult {
@@ -107,6 +131,7 @@ export function validateConfigDraft(input: unknown): ConfigValidationResult {
   const modelDefaults = normalizeModelDefaults(source.modelDefaults, issues);
   const billing = normalizeBilling(source.billing, issues);
   const heartbeatIntervalMinutes = normalizeHeartbeatInterval(source.heartbeatIntervalMinutes, issues);
+  const context = normalizeContext(source.context, issues);
 
   const config: ReinsGlobalConfig = {
     version,
@@ -115,6 +140,7 @@ export function validateConfigDraft(input: unknown): ConfigValidationResult {
     modelDefaults,
     billing,
     heartbeatIntervalMinutes,
+    context,
   };
 
   if (
@@ -286,6 +312,57 @@ function normalizeHeartbeatInterval(value: unknown, issues: ConfigValidationIssu
     issues,
     DEFAULT_REINS_GLOBAL_CONFIG.heartbeatIntervalMinutes,
   );
+}
+
+function normalizeContext(value: unknown, issues: ConfigValidationIssue[]): ContextConfig {
+  if (!isRecord(value)) {
+    return DEFAULT_REINS_GLOBAL_CONFIG.context;
+  }
+
+  let autoCompact = DEFAULT_REINS_GLOBAL_CONFIG.context.autoCompact;
+  if (typeof value.autoCompact === "boolean") {
+    autoCompact = value.autoCompact;
+  } else if (value.autoCompact !== undefined) {
+    issues.push({
+      path: "context.autoCompact",
+      rule: "boolean",
+      message: "context.autoCompact must be a boolean.",
+    });
+  }
+
+  const autoCompactThreshold = normalizeNumberInRange(
+    value.autoCompactThreshold,
+    MIN_AUTO_COMPACT_THRESHOLD,
+    MAX_AUTO_COMPACT_THRESHOLD,
+    "context.autoCompactThreshold",
+    issues,
+    DEFAULT_REINS_GLOBAL_CONFIG.context.autoCompactThreshold,
+  );
+
+  const keepRecentMessages = normalizeIntegerInRange(
+    value.keepRecentMessages,
+    MIN_KEEP_RECENT_MESSAGES,
+    Number.MAX_SAFE_INTEGER,
+    "context.keepRecentMessages",
+    issues,
+    DEFAULT_REINS_GLOBAL_CONFIG.context.keepRecentMessages,
+  );
+
+  const summaryMaxTokens = normalizeIntegerInRange(
+    value.summaryMaxTokens,
+    MIN_SUMMARY_MAX_TOKENS,
+    MAX_SUMMARY_MAX_TOKENS,
+    "context.summaryMaxTokens",
+    issues,
+    DEFAULT_REINS_GLOBAL_CONFIG.context.summaryMaxTokens,
+  );
+
+  return {
+    autoCompact,
+    autoCompactThreshold,
+    keepRecentMessages,
+    summaryMaxTokens,
+  };
 }
 
 function normalizeNullableNonEmptyString(
