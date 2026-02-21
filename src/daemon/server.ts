@@ -3350,6 +3350,23 @@ export class DaemonHttpServer implements DaemonManagedService {
           provider: authResult.value.provider,
           model: requestedModel,
         });
+
+        if (this.channelService) {
+          try {
+            await this.channelService.forwardAssistantError(
+              context.conversationId,
+              failure.code,
+              failure.message,
+              context.assistantMessageId,
+            );
+          } catch (forwardError) {
+            log("warn", "Failed to forward auth preflight failure to channel", {
+              conversationId: context.conversationId,
+              assistantMessageId: context.assistantMessageId,
+              error: forwardError instanceof Error ? forwardError.message : String(forwardError),
+            });
+          }
+        }
         return;
       }
 
@@ -3479,8 +3496,9 @@ export class DaemonHttpServer implements DaemonManagedService {
 
       if (this.channelService) {
         try {
-          await this.channelService.forwardAssistantResponse(
+          await this.channelService.forwardAssistantError(
             context.conversationId,
+            failure.code,
             failure.message,
             context.assistantMessageId,
           );

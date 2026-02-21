@@ -8,6 +8,17 @@ import {
   type ChannelMessage,
   type ChannelPlatform,
 } from "../channels";
+import { createLogger } from "../logger";
+
+const log = createLogger("daemon:channels");
+
+const AUTH_REQUIRED_MESSAGE =
+  "⚠️ Authentication required. Please run /connect in the Reins app to reconnect your AI provider.";
+const PROVIDER_UNAVAILABLE_MESSAGE =
+  "⚠️ The AI provider is currently unavailable. Please try again in a moment.";
+const TIMEOUT_MESSAGE = "⚠️ The request timed out. Please try again.";
+const GENERIC_ERROR_MESSAGE = "⚠️ Something went wrong. Please try again.";
+const EMPTY_RESPONSE_MESSAGE = "⚠️ No response generated. Please try again.";
 
 interface ChannelTokenRecord {
   platform: ChannelPlatform;
@@ -145,6 +156,7 @@ export class ChannelDaemonService {
   private readonly inboundUnsubscribers = new Map<string, () => void>();
   private readonly diagnosticsByChannelId = new Map<string, ChannelDiagnostics>();
   private readonly sourceChannelIdByConversationId = new Map<string, string>();
+  private readonly destinationChannelIdByConversationId = new Map<string, string>();
   private started = false;
 
   constructor(options: ChannelDaemonServiceOptions) {
@@ -244,6 +256,7 @@ export class ChannelDaemonService {
     for (const [conversationId, sourceChannelId] of this.sourceChannelIdByConversationId.entries()) {
       if (sourceChannelId === channel.config.id) {
         this.sourceChannelIdByConversationId.delete(conversationId);
+        this.destinationChannelIdByConversationId.delete(conversationId);
       }
     }
     await this.credentialStorage.deleteToken(channel.config.platform);
@@ -269,15 +282,15 @@ export class ChannelDaemonService {
       return false;
     }
 
-    if (assistantText.trim().length === 0) {
-      return false;
-    }
+    const textToSend = assistantText.trim().length === 0
+      ? EMPTY_RESPONSE_MESSAGE
+      : assistantText;
 
     try {
       await this.conversationBridge.routeOutbound(
         {
           conversationId,
-          text: assistantText,
+          text: textToSend,
           assistantMessageId,
         },
         sourceChannel,
@@ -289,6 +302,53 @@ export class ChannelDaemonService {
       this.updateDiagnostics(sourceChannel.config.id, { lastError: errorMessage });
       throw new ChannelError(
         `Failed to forward assistant response for conversation ${conversationId}: ${errorMessage}`,
+      );
+    }
+  }
+
+  public async forwardAssistantError(
+    conversationId: string,
+    errorCode: string,
+    errorMessage: string,
+    assistantMessageId?: string,
+  ): Promise<boolean> {
+    const sourceChannelId = this.sourceChannelIdByConversationId.get(conversationId);
+    if (!sourceChannelId) {
+      return false;
+    }
+
+    const sourceChannel = this.channelRegistry.get(sourceChannelId);
+    if (!sourceChannel || !sourceChannel.config.enabled) {
+      return false;
+    }
+
+    const textToSend = this.toUserFacingErrorMessage(errorCode, errorMessage);
+    const chatId = this.destinationChannelIdByConversationId.get(conversationId);
+
+    try {
+      await this.conversationBridge.routeOutbound(
+        {
+          conversationId,
+          text: textToSend,
+          assistantMessageId,
+          metadata: {
+            daemonErrorCode: errorCode,
+          },
+        },
+        sourceChannel,
+      );
+      this.updateDiagnostics(sourceChannel.config.id, { lastError: undefined });
+      log.error("agent loop error relayed to user", {
+        code: errorCode,
+        message: errorMessage,
+        chatId,
+      });
+      return true;
+    } catch (error) {
+      const resolvedError = error instanceof Error ? error.message : String(error);
+      this.updateDiagnostics(sourceChannel.config.id, { lastError: resolvedError });
+      throw new ChannelError(
+        `Failed to forward assistant error response for conversation ${conversationId}: ${resolvedError}`,
       );
     }
   }
@@ -399,6 +459,10 @@ export class ChannelDaemonService {
             inboundResult.conversationId,
             inboundResult.source.channelId,
           );
+          this.destinationChannelIdByConversationId.set(
+            inboundResult.conversationId,
+            message.channelId,
+          );
           if (this.onInboundAssistantPending) {
             await this.onInboundAssistantPending({
               conversationId: inboundResult.conversationId,
@@ -475,5 +539,27 @@ export class ChannelDaemonService {
       lastMessageAt: diagnostics?.lastMessageAt?.toISOString(),
       checkedAt: this.nowFn().toISOString(),
     };
+  }
+
+  private toUserFacingErrorMessage(code: string, message: string): string {
+    if (code === "UNAUTHORIZED") {
+      return AUTH_REQUIRED_MESSAGE;
+    }
+
+    const normalizedCode = code.toUpperCase();
+    const normalizedMessage = message.toLowerCase();
+    if (
+      normalizedCode === "TIMEOUT"
+      || normalizedMessage.includes("timeout")
+      || normalizedMessage.includes("timed out")
+    ) {
+      return TIMEOUT_MESSAGE;
+    }
+
+    if (normalizedCode === "PROVIDER_UNAVAILABLE" || normalizedCode === "PROVIDER_ERROR") {
+      return PROVIDER_UNAVAILABLE_MESSAGE;
+    }
+
+    return GENERIC_ERROR_MESSAGE;
   }
 }
