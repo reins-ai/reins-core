@@ -1,8 +1,10 @@
 import type { MemoryService, MemoryListOptions } from "../memory/services/memory-service";
 import type { MemoryRecord } from "../memory/types/memory-record";
+import type { MemoryType } from "../memory/types/memory-types";
+import type { MemoryEvent, OnMemoryEvent } from "../memory/types/memory-events";
 import type { Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
 
-type MemoryAction = "remember" | "recall";
+type MemoryAction = "remember" | "recall" | "update" | "delete" | "list";
 
 interface MemoryResultRecord {
   id: string;
@@ -18,26 +20,30 @@ interface MemoryResultRecord {
   accessedAt: string;
 }
 
+export interface MemoryToolOptions {
+  onMemoryEvent?: OnMemoryEvent;
+}
+
 export class MemoryTool implements Tool {
   definition: ToolDefinition = {
     name: "memory",
     description:
-      "Remember user details and recall relevant memories for better continuity across conversations.",
+      "Remember, recall, update, delete, and list user memories for full transparency and continuity across conversations.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
           description: "The action to perform.",
-          enum: ["remember", "recall"],
+          enum: ["remember", "recall", "update", "delete", "list"],
         },
         content: {
           type: "string",
-          description: "Memory content to persist when action is remember.",
+          description: "Memory content to persist when action is remember, or updated content for update action.",
         },
         tags: {
           type: "array",
-          description: "Optional tags to attach to remembered content.",
+          description: "Optional tags to attach to remembered content or updated tags for update action.",
           items: {
             type: "string",
           },
@@ -48,14 +54,38 @@ export class MemoryTool implements Tool {
         },
         limit: {
           type: "number",
-          description: "Maximum number of recall results to return.",
+          description: "Maximum number of results to return for recall or list actions.",
+        },
+        id: {
+          type: "string",
+          description: "Memory ID for update and delete actions.",
+        },
+        importance: {
+          type: "number",
+          description: "Updated importance score (0-1) for update action.",
+        },
+        type: {
+          type: "string",
+          description: "Memory type filter for list action.",
+          enum: [
+            "fact",
+            "preference",
+            "decision",
+            "episode",
+            "skill",
+            "entity",
+            "document_chunk",
+          ],
         },
       },
       required: ["action"],
     },
   };
 
-  constructor(private readonly memoryService: MemoryService) {}
+  constructor(
+    private readonly memoryService: MemoryService,
+    private readonly options: MemoryToolOptions = {},
+  ) {}
 
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const callId = this.readString(args.callId) ?? "unknown-call";
@@ -75,6 +105,12 @@ export class MemoryTool implements Tool {
           return await this.remember(callId, args, context);
         case "recall":
           return await this.recall(callId, args);
+        case "update":
+          return await this.update(callId, args);
+        case "delete":
+          return await this.delete(callId, args);
+        case "list":
+          return await this.list(callId, args);
       }
     } catch (error) {
       return this.errorResult(callId, this.formatError(error));
@@ -97,6 +133,8 @@ export class MemoryTool implements Tool {
     if (!result.ok) {
       return this.errorResult(callId, result.error.message);
     }
+
+    this.emitEvent({ type: "created", record: result.value, timestamp: new Date() });
 
     return this.successResult(callId, {
       action: "remember",
@@ -134,6 +172,82 @@ export class MemoryTool implements Tool {
     });
   }
 
+  private async update(callId: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const id = this.requireString(args.id, "'id' is required for update action.");
+
+    const content = this.readString(args.content) ?? undefined;
+    const tags = args.tags !== undefined
+      ? this.optionalStringArray(args.tags, "'tags' must be an array of non-empty strings.")
+      : undefined;
+    const importance = args.importance !== undefined
+      ? this.optionalScore(args.importance, "'importance' must be a number between 0 and 1.")
+      : undefined;
+
+    if (content === undefined && tags === undefined && importance === undefined) {
+      return this.errorResult(
+        callId,
+        "At least one of 'content', 'tags', or 'importance' is required for update action.",
+      );
+    }
+
+    const result = await this.memoryService.update(id, { content, tags, importance });
+    if (!result.ok) {
+      return this.errorResult(callId, result.error.message);
+    }
+
+    this.emitEvent({ type: "updated", record: result.value, timestamp: new Date() });
+
+    return this.successResult(callId, {
+      action: "update",
+      memory: this.toResultRecord(result.value),
+    });
+  }
+
+  private async delete(callId: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const id = this.requireString(args.id, "'id' is required for delete action.");
+
+    const getResult = await this.memoryService.getById(id);
+    const record = getResult.ok ? getResult.value : null;
+
+    const result = await this.memoryService.forget(id);
+    if (!result.ok) {
+      return this.errorResult(callId, result.error.message);
+    }
+
+    if (record !== null) {
+      this.emitEvent({ type: "deleted", record, timestamp: new Date() });
+    }
+
+    return this.successResult(callId, { action: "delete", id });
+  }
+
+  private async list(callId: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const typeFilter = this.readString(args.type) ?? undefined;
+    const limit = this.optionalPositiveInteger(args.limit, "'limit' must be a positive integer.");
+
+    const options: MemoryListOptions = {
+      limit: limit ?? 50,
+      ...(typeFilter !== undefined && { type: typeFilter as MemoryType }),
+    };
+
+    const result = await this.memoryService.list(options);
+    if (!result.ok) {
+      return this.errorResult(callId, result.error.message);
+    }
+
+    return this.successResult(callId, {
+      action: "list",
+      memories: result.value.map((r) => this.toResultRecord(r)),
+      count: result.value.length,
+    });
+  }
+
+  private emitEvent(event: MemoryEvent): void {
+    if (this.options.onMemoryEvent) {
+      this.options.onMemoryEvent(event);
+    }
+  }
+
   private toResultRecord(record: MemoryRecord): MemoryResultRecord {
     return {
       id: record.id,
@@ -156,7 +270,13 @@ export class MemoryTool implements Tool {
       return null;
     }
 
-    if (action === "remember" || action === "recall") {
+    if (
+      action === "remember" ||
+      action === "recall" ||
+      action === "update" ||
+      action === "delete" ||
+      action === "list"
+    ) {
       return action;
     }
 
@@ -229,6 +349,18 @@ export class MemoryTool implements Tool {
     }
 
     if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+      throw new Error(message);
+    }
+
+    return value;
+  }
+
+  private optionalScore(value: unknown, message: string): number | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
       throw new Error(message);
     }
 

@@ -6,12 +6,29 @@ import type {
   StepResult,
 } from "./types";
 import { getWelcomeCopy, type WelcomeCopy } from "./copy";
+import {
+  DEFAULT_PERSONA as _DEFAULT_PERSONA,
+  type Persona as _Persona,
+} from "../../environment/persona";
+
+/**
+ * Persona identity used for greeting personalization.
+ * Re-exported from `environment/persona` for barrel access via onboarding.
+ */
+export type Persona = _Persona;
+
+/**
+ * Default persona used when no custom persona is configured.
+ */
+export const DEFAULT_PERSONA: Persona = _DEFAULT_PERSONA;
 
 export interface WelcomeStepOptions {
   /** Override for testing — provides a user name without interactive input. */
   readUserName?: () => Promise<string | undefined>;
   /** Personality preset to select copy tone. Defaults to "balanced". */
   personalityPreset?: PersonalityPreset;
+  /** Persona identity for greeting personalization. Falls back to DEFAULT_PERSONA. */
+  persona?: Persona;
 }
 
 /**
@@ -33,10 +50,12 @@ export class WelcomeStep implements OnboardingStepHandler {
 
   private readonly readUserName?: () => Promise<string | undefined>;
   private readonly personalityPreset: PersonalityPreset;
+  private readonly persona: Persona;
 
   constructor(options?: WelcomeStepOptions) {
     this.readUserName = options?.readUserName;
     this.personalityPreset = options?.personalityPreset ?? "balanced";
+    this.persona = options?.persona ?? DEFAULT_PERSONA;
   }
 
   async execute(context: StepExecutionContext): Promise<StepResult> {
@@ -62,13 +81,16 @@ export class WelcomeStep implements OnboardingStepHandler {
    * Checks the execution context's collected data for a personality
    * preset first (in case a previous step set it), then falls back
    * to the preset provided at construction time.
+   *
+   * When a persona is configured, the headline is personalized with
+   * the persona name (e.g. "Hi! I'm Alex, your Reins assistant").
    */
   getCopy(context?: StepExecutionContext): WelcomeCopy {
     const contextPreset = context?.collectedData?.personalityPreset;
     const preset = isPersonalityPreset(contextPreset)
       ? contextPreset
       : this.personalityPreset;
-    return getWelcomeCopy(preset);
+    return getWelcomeCopy(preset, this.persona.name);
   }
 
   private async executeQuickstart(copy: WelcomeCopy): Promise<StepResult> {

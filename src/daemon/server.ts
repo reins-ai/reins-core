@@ -3,7 +3,8 @@
  * Listens on localhost:7433
  */
 
-import { dirname, join, parse } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join, parse, resolve } from "node:path";
 
 import { ConversationManager, type ConversationManagerCompactionOptions } from "../conversation/manager";
 import { CompactionService } from "../conversation/compaction";
@@ -35,18 +36,45 @@ import {
   bootstrapInstallRoot,
   buildInstallPaths,
   resolveInstallRoot,
+  parsePersonaYaml,
+  DEFAULT_PERSONA,
+  exportPersona,
+  importPersona,
 } from "../environment";
+import { generatePersonalityMarkdown } from "../environment/templates/personality.md";
 import { err, ok, type Result } from "../result";
 import type { MemoryService, ExplicitMemoryInput, MemoryListOptions, UpdateMemoryInput } from "../memory/services/memory-service";
+import { MemoryFileSyncService, MemorySummaryGenerator } from "../memory/services";
 import type { MemoryRecord } from "../memory/types/memory-record";
+import type { MemoryEvent, OnMemoryEvent } from "../memory/types/memory-events";
 import { LocalFileMemoryStore } from "../memory/local-store";
 import { SessionExtractor } from "../memory/capture";
+import {
+  exportMemories,
+  importMemoriesFromJson,
+  parse as parseMemoryMarkdown,
+  MemoryFileIngestor,
+  MemoryFileWatcher,
+} from "../memory/io";
+import type { MemoryRepository } from "../memory/storage";
+import {
+  DocumentExtractor,
+  DocumentIndexer,
+  DocumentSourceRegistry,
+  HybridDocumentSearch,
+  MarkdownChunker,
+} from "../memory/rag";
+import type { EmbeddingProvider } from "../memory/embeddings/embedding-provider";
+import { EmbeddingProviderError } from "../memory/embeddings/embedding-provider";
+import { OpenAIEmbeddingProvider } from "../memory/embeddings/openai-embedding-provider";
+import { OllamaEmbeddingProvider } from "../memory/embeddings/ollama-embedding-provider";
 import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
 import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
 import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
+import yaml from "js-yaml";
 import { generateDeviceCode, pollDeviceCode } from "./device-code-auth";
 import { ObsidianIntegration, loadObsidianManifest } from "../integrations/adapters/obsidian";
 import {
@@ -89,6 +117,7 @@ import { AgentLoop } from "../harness/agent-loop";
 import type { SubAgentPool } from "../harness/sub-agent-pool";
 import { ToolExecutor, ToolRegistry } from "../tools";
 import { EDIT_DEFINITION, GLOB_DEFINITION, GREP_DEFINITION, READ_DEFINITION, WRITE_DEFINITION } from "../tools/builtins";
+import { DocumentIndexTool, DocumentSearchTool } from "../tools/document-tools";
 import { MemoryTool } from "../tools/memory-tool";
 import { DelegateTool } from "../tools/delegate-tool";
 import { BashTool } from "../tools/system/bash";
@@ -116,9 +145,11 @@ import { WsStreamRegistry, type StreamRegistrySocketData } from "./ws-stream-reg
 import type { ContentBlock, Provider, TokenUsage, Tool, ToolContext, ToolDefinition, ToolResult } from "../types";
 import {
   MemoryCapabilitiesResolver,
+  readMemoryConfig,
   resolveMemoryCapabilities,
   resolveMemoryConfigPath,
 } from "./memory-capabilities";
+import { PersonalityWatcher } from "../environment/personality-watcher";
 import type { MemoryCapabilities } from "./types/memory-config";
 import type { MemoryConfig } from "./types/memory-config";
 import { createAuthMiddleware } from "./auth-middleware";
@@ -448,6 +479,7 @@ export interface DaemonHttpServerOptions {
   toolDefinitions?: ToolDefinition[];
   toolExecutor?: ToolExecutor;
   memoryService?: MemoryService;
+  memoryRepository?: MemoryRepository;
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
   channelService?: ChannelDaemonService;
   skillService?: SkillDaemonService;
@@ -880,10 +912,26 @@ function createDefaultServices(): DefaultServices {
   };
 }
 
-function createDefaultToolExecutor(
-  memoryService?: MemoryService | null,
-  credentialStore?: EncryptedCredentialStore,
-): ToolExecutor {
+interface DefaultToolExecutorOptions {
+  memoryService?: MemoryService | null;
+  credentialStore?: EncryptedCredentialStore;
+  onMemoryEvent?: OnMemoryEvent;
+}
+
+function createUnavailableEmbeddingProvider(message: string): EmbeddingProvider {
+  return {
+    id: "unavailable",
+    model: "unavailable",
+    dimension: 0,
+    version: "1",
+    embed: async () => err(new EmbeddingProviderError(message, "EMBEDDING_PROVIDER_NOT_CONFIGURED")),
+    embedBatch: async () => err(new EmbeddingProviderError(message, "EMBEDDING_PROVIDER_NOT_CONFIGURED")),
+    isAvailable: async () => false,
+  };
+}
+
+function createDefaultToolExecutor(options: DefaultToolExecutorOptions = {}): ToolExecutor {
+  const { memoryService, credentialStore, onMemoryEvent } = options;
   const sandboxRoot = resolveInstallRoot();
   const toolRegistry = new ToolRegistry();
 
@@ -936,7 +984,7 @@ function createDefaultToolExecutor(
   }));
 
   if (memoryService) {
-    toolRegistry.register(new MemoryTool(memoryService));
+    toolRegistry.register(new MemoryTool(memoryService, onMemoryEvent ? { onMemoryEvent } : undefined));
   }
 
   if (credentialStore) {
@@ -1088,6 +1136,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly toolDefinitions: ToolDefinition[];
   private readonly toolExecutor: ToolExecutor;
   private readonly memoryService: MemoryService | null;
+  private readonly memoryRepository: MemoryRepository | null;
   private readonly memoryCapabilitiesResolver: MemoryCapabilitiesResolver;
   private readonly credentialStore: EncryptedCredentialStore | null;
   private readonly providerRegistry: ProviderRegistry | null;
@@ -1108,6 +1157,13 @@ export class DaemonHttpServer implements DaemonManagedService {
   private readonly skillService: SkillDaemonService | null;
   private readonly browserService: BrowserDaemonService | null;
   private readonly cronScheduler: CronScheduler | null;
+  private readonly memoryEventSubscribers = new Set<OnMemoryEvent>();
+  private memoryFileSyncService: MemoryFileSyncService | null = null;
+  private memorySummaryGenerator: MemorySummaryGenerator | null = null;
+  private personalityWatcher: PersonalityWatcher | null = null;
+  private documentSourceRegistry: DocumentSourceRegistry | null = null;
+  private documentIndexer: DocumentIndexer | null = null;
+  private documentSearch: HybridDocumentSearch | null = null;
   private activeSubAgentPool: SubAgentPool | null = null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
@@ -1123,6 +1179,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.environmentOptions = options.environment ?? {};
     this.toolDefinitions = options.toolDefinitions ?? [];
     this.memoryService = options.memoryService ?? null;
+    this.memoryRepository = options.memoryRepository ?? null;
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
     this.providedChannelService = options.channelService ?? null;
     this.skillService = options.skillService ?? null;
@@ -1158,7 +1215,11 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.credentialStore = credentialStore ?? null;
     this.providerRegistry = providerRegistry ?? null;
 
-    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor(this.memoryService, credentialStore);
+    this.toolExecutor = options.toolExecutor ?? createDefaultToolExecutor({
+      memoryService: this.memoryService,
+      credentialStore,
+      onMemoryEvent: this.handleMemoryEvent.bind(this),
+    });
 
     if (this.providedChannelService) {
       this.channelService = this.providedChannelService;
@@ -1195,6 +1256,18 @@ export class DaemonHttpServer implements DaemonManagedService {
    */
   getMemoryService(): MemoryService | null {
     return this.memoryService;
+  }
+
+  private handleMemoryEvent(event: MemoryEvent): void {
+    for (const subscriber of this.memoryEventSubscribers) {
+      try {
+        subscriber(event);
+      } catch (error) {
+        log("warn", "Memory event subscriber failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   /**
@@ -1253,6 +1326,22 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.initializeConversationServices();
     } catch (error) {
       log("warn", "Conversation services failed to initialize; daemon will start without them", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      await this.initializeDocumentTools();
+    } catch (error) {
+      log("warn", "Document tools failed to initialize; daemon will continue without document runtime", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      await this.initializeEnvironmentSessionRuntime();
+    } catch (error) {
+      log("warn", "Environment session runtime failed to initialize", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -1356,6 +1445,8 @@ export class DaemonHttpServer implements DaemonManagedService {
         this.channelService = null;
         this.channelRouteHandler = null;
       }
+
+      await this.stopEnvironmentSessionRuntime();
 
       this.stopWebSocketHeartbeatLoop();
       this.wsRegistry.clear();
@@ -1499,6 +1590,23 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleScheduleCancel(request, corsHeaders);
       }
 
+      // Persona endpoints
+      if (url.pathname === "/api/persona" && method === "GET") {
+        return this.handleGetPersona(corsHeaders);
+      }
+
+      if (url.pathname === "/api/persona" && method === "PUT") {
+        return this.handlePutPersona(request, corsHeaders);
+      }
+
+      if (url.pathname === "/api/persona/export" && method === "POST") {
+        return this.handleExportPersona(request, corsHeaders);
+      }
+
+      if (url.pathname === "/api/persona/import" && method === "POST") {
+        return this.handleImportPersona(request, corsHeaders);
+      }
+
       const environmentRoute = this.matchEnvironmentRoute(url.pathname);
       if (environmentRoute) {
         return this.handleEnvironmentRequest(environmentRoute, method, request, corsHeaders);
@@ -1547,6 +1655,16 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       const memoryRoute = this.matchMemoryRoute(url.pathname);
+      const documentSourceRoute = this.matchDocumentSourceRoute(url.pathname);
+      if (documentSourceRoute) {
+        return this.handleDocumentSourceRequest(documentSourceRoute, method, corsHeaders);
+      }
+
+      const memoryIoRoute = this.matchMemoryImportExportRoute(url.pathname);
+      if (memoryIoRoute) {
+        return this.handleMemoryImportExportRequest(memoryIoRoute, method, request, corsHeaders);
+      }
+
       if (memoryRoute) {
         return this.handleMemoryRequest(memoryRoute, method, request, corsHeaders);
       }
@@ -2923,6 +3041,17 @@ export class DaemonHttpServer implements DaemonManagedService {
       return this.mapEnvironmentErrorToResponse(switchResult.error, corsHeaders);
     }
 
+    try {
+      const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
+      const nextEnvDir = join(paths.environmentsDir, switchResult.value.activeEnvironment);
+      await this.rebindEnvironmentSessionRuntime(nextEnvDir);
+      await this.refreshEnvironmentSystemPrompts();
+    } catch (error) {
+      log("warn", "Environment switch completed with runtime rebinding issues", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     const response: EnvironmentSwitchResponse = {
       activeEnvironment: switchResult.value.activeEnvironment,
       previousEnvironment: switchResult.value.previousEnvironment,
@@ -4196,6 +4325,484 @@ export class DaemonHttpServer implements DaemonManagedService {
   }
 
   /**
+   * Resolve the active environment directory path.
+   * Returns null if environment services are not initialized.
+   */
+  private async resolveActiveEnvironmentDir(): Promise<string | null> {
+    if (!this.environmentSwitchService) {
+      return null;
+    }
+
+    const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
+    const currentEnvResult = await this.environmentSwitchService.getCurrentEnvironment();
+    if (!currentEnvResult.ok) {
+      return null;
+    }
+
+    return join(paths.environmentsDir, currentEnvResult.value);
+  }
+
+  private async initializeDocumentTools(): Promise<void> {
+    const toolRegistry = this.toolExecutor.getRegistry();
+    if (toolRegistry.has("index_document") && toolRegistry.has("search_documents")) {
+      return;
+    }
+
+    const embeddingProvider = await this.resolveDocumentEmbeddingProvider();
+
+    if (!this.documentSourceRegistry) {
+      this.documentSourceRegistry = new DocumentSourceRegistry();
+    }
+
+    if (!this.documentIndexer) {
+      this.documentIndexer = new DocumentIndexer({
+        chunker: new MarkdownChunker(),
+        embeddingProvider,
+        registry: this.documentSourceRegistry,
+        extractor: new DocumentExtractor(),
+      });
+    }
+
+    if (!this.documentSearch) {
+      this.documentSearch = new HybridDocumentSearch({
+        embeddingProvider,
+      });
+    }
+
+    if (!toolRegistry.has("index_document")) {
+      toolRegistry.register(new DocumentIndexTool({
+        indexer: this.documentIndexer,
+        registry: this.documentSourceRegistry,
+      }));
+    }
+
+    if (!toolRegistry.has("search_documents")) {
+      toolRegistry.register(new DocumentSearchTool({
+        search: this.documentSearch,
+        indexer: this.documentIndexer,
+        registry: this.documentSourceRegistry,
+      }));
+    }
+  }
+
+  private async resolveDocumentEmbeddingProvider(): Promise<EmbeddingProvider> {
+    const configResult = await readMemoryConfig();
+    if (!configResult.ok) {
+      log("warn", "Unable to read memory embedding config for document tools", {
+        error: configResult.error.message,
+      });
+      return createUnavailableEmbeddingProvider("Embedding provider config is unavailable.");
+    }
+
+    const config = configResult.value;
+    if (!config?.embedding) {
+      return createUnavailableEmbeddingProvider("Embedding provider is not configured.");
+    }
+
+    const providerId = config.embedding.provider.trim().toLowerCase();
+    const model = config.embedding.model.trim();
+
+    if (providerId === "openai") {
+      const apiKey = process.env.OPENAI_API_KEY ?? Bun.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        return createUnavailableEmbeddingProvider("OPENAI_API_KEY is not set.");
+      }
+
+      return new OpenAIEmbeddingProvider({
+        apiKey,
+        model,
+      });
+    }
+
+    if (providerId === "ollama") {
+      return new OllamaEmbeddingProvider({
+        model,
+      });
+    }
+
+    return createUnavailableEmbeddingProvider(
+      `Unsupported embedding provider '${config.embedding.provider}'.`,
+    );
+  }
+
+  private async initializeEnvironmentSessionRuntime(): Promise<void> {
+    const activeEnvDir = await this.resolveActiveEnvironmentDir();
+    if (!activeEnvDir) {
+      return;
+    }
+
+    await this.rebindEnvironmentSessionRuntime(activeEnvDir);
+  }
+
+  private async rebindEnvironmentSessionRuntime(envDir: string): Promise<void> {
+    await this.stopEnvironmentSessionRuntime();
+    this.memoryEventSubscribers.clear();
+
+    if (this.memoryRepository) {
+      const memoriesDir = join(envDir, "memories");
+      const quarantineDir = join(memoriesDir, ".quarantine");
+
+      const ingestor = new MemoryFileIngestor({
+        repository: this.memoryRepository,
+        codec: { parse: parseMemoryMarkdown },
+        quarantineDir,
+      });
+      const watcher = new MemoryFileWatcher({
+        dataDir: memoriesDir,
+        ingestor,
+      });
+      const fileSyncService = new MemoryFileSyncService({
+        watcher,
+        ingestor,
+        memoriesDir,
+      });
+
+      const fileSyncStartResult = await fileSyncService.start();
+      if (!fileSyncStartResult.ok) {
+        log("warn", "Memory file sync service failed to start", {
+          error: fileSyncStartResult.error.message,
+        });
+      } else {
+        this.memoryFileSyncService = fileSyncService;
+        this.memoryEventSubscribers.add((event) => {
+          void fileSyncService.handleMemoryEvent(event);
+        });
+      }
+
+      const summaryGenerator = new MemorySummaryGenerator({
+        repository: this.memoryRepository,
+      });
+      this.memorySummaryGenerator = summaryGenerator;
+
+      const summaryResult = await summaryGenerator.generate(envDir);
+      if (!summaryResult.ok) {
+        log("warn", "Memory summary generation failed", {
+          error: summaryResult.error.message,
+        });
+      }
+
+      this.memoryEventSubscribers.add(summaryGenerator.subscribeToEvents(envDir));
+    }
+
+    const personalityPath = join(envDir, "PERSONALITY.md");
+    const personalityWatcher = new PersonalityWatcher(personalityPath, {
+      onChanged: () => {
+        void this.refreshEnvironmentSystemPrompts();
+      },
+    });
+    personalityWatcher.start();
+    this.personalityWatcher = personalityWatcher;
+  }
+
+  private async refreshEnvironmentSystemPrompts(): Promise<void> {
+    if (!this.conversationManager || !this.environmentContextProvider || !this.personaRegistry) {
+      return;
+    }
+
+    try {
+      const conversations = await this.conversationManager.list();
+
+      for (const conversationSummary of conversations) {
+        const conversation = await this.conversationManager.load(conversationSummary.id);
+
+        const persona = conversation.personaId
+          ? this.personaRegistry.get(conversation.personaId)
+          : this.personaRegistry.getDefault();
+        if (!persona) {
+          continue;
+        }
+
+        const promptResult = await this.environmentContextProvider.buildEnvironmentPrompt(persona);
+        if (!promptResult.ok) {
+          continue;
+        }
+
+        const latestSystemMessage = [...conversation.messages]
+          .reverse()
+          .find((message) => message.role === "system");
+        if (latestSystemMessage?.content === promptResult.value) {
+          continue;
+        }
+
+        await this.conversationManager.addMessage(conversation.id, {
+          role: "system",
+          content: promptResult.value,
+        });
+      }
+    } catch (error) {
+      log("warn", "Failed to refresh system prompts after personality change", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async stopEnvironmentSessionRuntime(): Promise<void> {
+    this.personalityWatcher?.stop();
+    this.personalityWatcher = null;
+
+    this.memorySummaryGenerator?.cancelPending();
+    this.memorySummaryGenerator = null;
+
+    if (this.memoryFileSyncService) {
+      const stopResult = await this.memoryFileSyncService.stop();
+      if (!stopResult.ok) {
+        log("warn", "Memory file sync service failed to stop cleanly", {
+          error: stopResult.error.message,
+        });
+      }
+      this.memoryFileSyncService = null;
+    }
+
+    this.memoryEventSubscribers.clear();
+  }
+
+  private async handleGetPersona(
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          {
+            name: DEFAULT_PERSONA.name,
+            avatar: DEFAULT_PERSONA.avatar,
+            language: DEFAULT_PERSONA.language,
+          },
+          { headers: corsHeaders },
+        );
+      }
+
+      const personaPath = join(envDir, "PERSONA.yaml");
+      let content: string;
+      try {
+        content = await readFile(personaPath, "utf-8");
+      } catch {
+        return Response.json(
+          {
+            name: DEFAULT_PERSONA.name,
+            avatar: DEFAULT_PERSONA.avatar,
+            language: DEFAULT_PERSONA.language,
+          },
+          { headers: corsHeaders },
+        );
+      }
+
+      const parseResult = parsePersonaYaml(content);
+      const persona = parseResult.ok ? parseResult.value : DEFAULT_PERSONA;
+
+      return Response.json(
+        {
+          name: persona.name,
+          avatar: persona.avatar,
+          language: persona.language,
+          backstory: persona.backstory,
+        },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to read persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        {
+          name: DEFAULT_PERSONA.name,
+          avatar: DEFAULT_PERSONA.avatar,
+          language: DEFAULT_PERSONA.language,
+        },
+        { headers: corsHeaders },
+      );
+    }
+  }
+
+  private async handlePutPersona(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          { success: false, error: "Environment services not initialized" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      let body: {
+        name?: string;
+        avatar?: string;
+        preset?: string;
+        customInstructions?: string;
+        language?: string;
+      };
+
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return Response.json(
+          { success: false, error: "Invalid JSON in request body" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const personaData: Record<string, string> = {
+        name: typeof body.name === "string" && body.name.trim().length > 0
+          ? body.name.trim()
+          : DEFAULT_PERSONA.name,
+      };
+
+      if (typeof body.avatar === "string" && body.avatar.trim().length > 0) {
+        personaData.avatar = body.avatar.trim();
+      } else {
+        personaData.avatar = DEFAULT_PERSONA.avatar ?? "🤖";
+      }
+
+      if (typeof body.language === "string" && body.language.trim().length > 0) {
+        personaData.language = body.language.trim();
+      } else {
+        personaData.language = DEFAULT_PERSONA.language ?? "en";
+      }
+
+      const personaYaml = yaml.dump(personaData, { lineWidth: -1 });
+      const personaPath = join(envDir, "PERSONA.yaml");
+      await writeFile(personaPath, personaYaml, "utf-8");
+
+      if (typeof body.preset === "string" && body.preset.trim().length > 0) {
+        const preset = body.preset.trim();
+        const validPresets = ["balanced", "concise", "technical", "warm", "custom"];
+        if (validPresets.includes(preset)) {
+          const personalityContent = generatePersonalityMarkdown(
+            preset as "balanced" | "concise" | "technical" | "warm" | "custom",
+            typeof body.customInstructions === "string" ? body.customInstructions : undefined,
+          );
+          const personalityPath = join(envDir, "PERSONALITY.md");
+          await writeFile(personalityPath, personalityContent, "utf-8");
+        }
+      }
+
+      return Response.json(
+        { success: true },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to save persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        { success: false, error: "Operation failed" },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+  }
+
+  private async handleExportPersona(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          { success: false, error: "Environment services not initialized" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      let body: { outputDir?: string } = {};
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        // Empty body is fine — use default output directory
+      }
+
+      const paths = buildInstallPaths(this.environmentOptions.daemonPathOptions);
+      const outputDir = typeof body.outputDir === "string" && body.outputDir.trim().length > 0
+        ? body.outputDir.trim()
+        : paths.environmentsDir;
+
+      const result = await exportPersona(envDir, outputDir);
+      if (!result.ok) {
+        log("error", "Persona export failed", { error: result.error.message });
+        return Response.json(
+          { success: false, error: "Operation failed" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      return Response.json(
+        { success: true, path: result.value.path, exportedAt: result.value.exportedAt },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to export persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        { success: false, error: "Operation failed" },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+  }
+
+  private async handleImportPersona(
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    try {
+      const envDir = await this.resolveActiveEnvironmentDir();
+      if (!envDir) {
+        return Response.json(
+          { success: false, error: "Environment services not initialized" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      let body: { zipPath?: string };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return Response.json(
+          { success: false, error: "Invalid JSON in request body" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const zipPath = typeof body.zipPath === "string" ? body.zipPath.trim() : "";
+      if (zipPath.length === 0) {
+        return Response.json(
+          { success: false, error: "Missing required field: zipPath" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const result = await importPersona(zipPath, envDir);
+      if (!result.ok) {
+        log("error", "Persona import failed", { error: result.error.message });
+        return Response.json(
+          { success: false, error: "Operation failed" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      return Response.json(
+        {
+          success: true,
+          personaName: result.value.personaName,
+          importedAt: result.value.importedAt,
+        },
+        { headers: corsHeaders },
+      );
+    } catch (error) {
+      log("error", "Failed to import persona", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return Response.json(
+        { success: false, error: "Operation failed" },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+  }
+
+  /**
    * Initialize environment services used for prompt context and /api/environments routes.
    */
   private async initializeEnvironmentServices(): Promise<void> {
@@ -4395,29 +5002,315 @@ export class DaemonHttpServer implements DaemonManagedService {
   }
 
   // ---------------------------------------------------------------------------
+  // Document source route matching and handlers
+  // ---------------------------------------------------------------------------
+
+  private matchDocumentSourceRoute(
+    pathname: string,
+  ): { type: "list" } | { type: "reindex"; id: string } | { type: "remove"; id: string } | null {
+    if (pathname === "/api/documents/sources") {
+      return { type: "list" };
+    }
+
+    const reindexMatch = pathname.match(/^\/api\/documents\/sources\/([^/]+)\/reindex$/);
+    if (reindexMatch) {
+      return { type: "reindex", id: decodeURIComponent(reindexMatch[1]) };
+    }
+
+    const removeMatch = pathname.match(/^\/api\/documents\/sources\/([^/]+)$/);
+    if (removeMatch) {
+      return { type: "remove", id: decodeURIComponent(removeMatch[1]) };
+    }
+
+    return null;
+  }
+
+  private async handleDocumentSourceRequest(
+    route: { type: "list" } | { type: "reindex"; id: string } | { type: "remove"; id: string },
+    method: string,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (!this.documentSourceRegistry || !this.documentIndexer) {
+      return Response.json(
+        { error: "Document services are not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    if (route.type === "list") {
+      if (method !== "GET") {
+        return Response.json(
+          { error: `Method ${method} not allowed on document sources` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      const sources = this.documentSourceRegistry
+        .list()
+        .filter((source) => source.status !== "removed")
+        .map((source) => ({
+          id: source.id,
+          path: source.rootPath,
+          status: toDocumentSourceApiStatus(source.status),
+          fileCount: source.fileCount ?? 0,
+          lastIndexed: source.lastIndexedAt ?? null,
+        }));
+
+      return Response.json(sources, { headers: corsHeaders });
+    }
+
+    if (route.type === "reindex") {
+      if (method !== "POST") {
+        return Response.json(
+          { error: `Method ${method} not allowed on source reindex` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      const reindexResult = await this.documentIndexer.indexSource(route.id);
+      if (!reindexResult.ok) {
+        const status = reindexResult.error.message.toLowerCase().includes("not found") ? 404 : 400;
+        return Response.json(
+          { error: reindexResult.error.message },
+          { status, headers: corsHeaders },
+        );
+      }
+
+      return Response.json(
+        {
+          ok: true,
+          sourceId: route.id,
+          jobId: reindexResult.value.id,
+          status: reindexResult.value.status,
+          errors: reindexResult.value.errors,
+        },
+        { headers: corsHeaders },
+      );
+    }
+
+    if (method !== "DELETE") {
+      return Response.json(
+        { error: `Method ${method} not allowed on document source resource` },
+        { status: 405, headers: corsHeaders },
+      );
+    }
+
+    const removeChunksResult = await this.documentIndexer.removeSource(route.id);
+    if (!removeChunksResult.ok) {
+      return Response.json(
+        { error: removeChunksResult.error.message },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    const unregisterResult = this.documentSourceRegistry.unregister(route.id);
+    if (!unregisterResult.ok) {
+      const status = unregisterResult.error.message.toLowerCase().includes("not found") ? 404 : 400;
+      return Response.json(
+        { error: unregisterResult.error.message },
+        { status, headers: corsHeaders },
+      );
+    }
+
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  // ---------------------------------------------------------------------------
   // Memory route matching and handlers
   // ---------------------------------------------------------------------------
 
+  private matchMemoryImportExportRoute(
+    pathname: string,
+  ): { type: "export" } | { type: "import-json" } | { type: "import-directory" } | null {
+    if (pathname === "/api/memories/export") {
+      return { type: "export" };
+    }
+
+    if (pathname === "/api/memories/import/json") {
+      return { type: "import-json" };
+    }
+
+    if (pathname === "/api/memories/import/directory") {
+      return { type: "import-directory" };
+    }
+
+    return null;
+  }
+
+  private async handleMemoryImportExportRequest(
+    route: { type: "export" } | { type: "import-json" } | { type: "import-directory" },
+    method: string,
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (method !== "POST") {
+      return Response.json(
+        { error: `Method ${method} not allowed on memory import/export` },
+        { status: 405, headers: corsHeaders },
+      );
+    }
+
+    if (!this.memoryRepository) {
+      return Response.json(
+        { error: "Memory repository is not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    const body = await this.parseJsonBody(request);
+    if (!body.ok) {
+      return Response.json(
+        { error: body.error },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    if (!isRecord(body.value)) {
+      return Response.json(
+        { error: "Request body must be a JSON object" },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    if (route.type === "export") {
+      const outputPath = typeof body.value.outputPath === "string"
+        ? body.value.outputPath.trim()
+        : "";
+      if (!outputPath) {
+        return Response.json(
+          { error: "outputPath is required" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      if (!isAllowedMemoryIoPath(outputPath)) {
+        return Response.json(
+          { error: "Path is not allowed" },
+          { status: 403, headers: corsHeaders },
+        );
+      }
+
+      const exportResult = await exportMemories(this.memoryRepository, outputPath);
+      if (!exportResult.ok) {
+        log("error", "Memory export failed", { error: exportResult.error.message });
+        return Response.json(
+          { error: "Operation failed" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      return Response.json(
+        {
+          ok: true,
+          path: exportResult.value.path,
+          count: exportResult.value.count,
+        },
+        { headers: corsHeaders },
+      );
+    }
+
+    if (route.type === "import-json") {
+      const filePath = typeof body.value.filePath === "string"
+        ? body.value.filePath.trim()
+        : "";
+      if (!filePath) {
+        return Response.json(
+          { error: "filePath is required" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      if (!isAllowedMemoryIoPath(filePath)) {
+        return Response.json(
+          { error: "Path is not allowed" },
+          { status: 403, headers: corsHeaders },
+        );
+      }
+
+      const importResult = await importMemoriesFromJson(this.memoryRepository, filePath);
+      if (!importResult.ok) {
+        log("error", "Memory JSON import failed", { error: importResult.error.message });
+        return Response.json(
+          { error: "Operation failed" },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      return Response.json(
+        {
+          ok: true,
+          imported: importResult.value.imported,
+          skipped: importResult.value.skipped,
+          errors: importResult.value.errors.length,
+        },
+        { headers: corsHeaders },
+      );
+    }
+
+    const directoryPath = typeof body.value.directoryPath === "string"
+      ? body.value.directoryPath.trim()
+      : "";
+    if (!directoryPath) {
+      return Response.json(
+        { error: "directoryPath is required" },
+        { status: 400, headers: corsHeaders },
+      );
+    }
+
+    if (!isAllowedMemoryIoPath(directoryPath)) {
+      return Response.json(
+        { error: "Path is not allowed" },
+        { status: 403, headers: corsHeaders },
+      );
+    }
+
+    const ingestor = new MemoryFileIngestor({
+      repository: this.memoryRepository,
+      codec: { parse: parseMemoryMarkdown },
+      quarantineDir: join(directoryPath, ".quarantine"),
+    });
+
+    const scanResult = await ingestor.scanDirectory(directoryPath);
+    if (!scanResult.ok) {
+      log("error", "Memory directory import failed", { error: scanResult.error.message });
+      return Response.json(
+        { error: "Operation failed" },
+        { status: 500, headers: corsHeaders },
+      );
+    }
+
+    return Response.json(
+      {
+        ok: true,
+        ingested: scanResult.value.ingested,
+        updated: scanResult.value.updated,
+        skipped: scanResult.value.skipped,
+        quarantined: scanResult.value.quarantined,
+      },
+      { headers: corsHeaders },
+    );
+  }
+
   /**
    * Match memory routes: /api/memory, /api/memory/:id, /api/memory/search,
-   * /api/memory/consolidate.
+   * /api/memory/consolidate and plural aliases under /api/memories.
    */
   private matchMemoryRoute(
     pathname: string,
   ): { type: "list" } | { type: "detail"; id: string } | { type: "search" } | { type: "consolidate" } | null {
-    if (pathname === "/api/memory/search") {
+    if (pathname === "/api/memory/search" || pathname === "/api/memories/search") {
       return { type: "search" };
     }
 
-    if (pathname === "/api/memory/consolidate") {
+    if (pathname === "/api/memory/consolidate" || pathname === "/api/memories/consolidate") {
       return { type: "consolidate" };
     }
 
-    if (pathname === "/api/memory") {
+    if (pathname === "/api/memory" || pathname === "/api/memories") {
       return { type: "list" };
     }
 
-    const detailMatch = pathname.match(/^\/api\/memory\/([^/]+)$/);
+    const detailMatch = pathname.match(/^\/api\/memor(?:y|ies)\/([^/]+)$/);
     if (detailMatch) {
       return { type: "detail", id: decodeURIComponent(detailMatch[1]) };
     }
@@ -4427,7 +5320,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
   /**
    * Handle memory CRUD, search, and consolidation requests.
-   * Routes: POST (create), GET (list/get), PUT (update), DELETE (remove),
+   * Routes: POST (create), GET (list/get), PUT/PATCH (update), DELETE (remove),
    * POST /search, POST /consolidate.
    *
    * CRUD operations are always available when memory service is ready.
@@ -4504,7 +5397,7 @@ export class DaemonHttpServer implements DaemonManagedService {
       if (method === "GET") {
         return this.handleMemoryGet(route.id, corsHeaders);
       }
-      if (method === "PUT") {
+      if (method === "PUT" || method === "PATCH") {
         return this.handleMemoryUpdate(route.id, request, corsHeaders);
       }
       if (method === "DELETE") {
@@ -5007,6 +5900,31 @@ export class DaemonHttpServer implements DaemonManagedService {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function toDocumentSourceApiStatus(status: string): "indexed" | "indexing" | "error" | "pending" {
+  if (status === "indexed" || status === "indexing" || status === "error") {
+    return status;
+  }
+
+  return "pending";
+}
+
+function isAllowedMemoryIoPath(rawPath: string): boolean {
+  const candidate = rawPath.trim();
+  if (!candidate) {
+    return false;
+  }
+
+  const resolvedPath = resolve(candidate);
+  const blockedRoots = ["/etc", "/root", "/proc", "/sys", "/dev"];
+  for (const blockedRoot of blockedRoots) {
+    if (resolvedPath === blockedRoot || resolvedPath.startsWith(`${blockedRoot}/`)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function normalizeOptionalToken(value: string | null | undefined): string | null {

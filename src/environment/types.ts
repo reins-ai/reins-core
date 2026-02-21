@@ -7,7 +7,19 @@ export const ENVIRONMENT_DOCUMENTS = [
   "KNOWLEDGE",
   "TOOLS",
   "BOUNDARIES",
+  "MEMORY",
+  "PERSONA",
 ] as const;
+
+/**
+ * Documents that are not required to exist in every environment.
+ * Missing optional documents are silently omitted during resolution
+ * rather than causing an error.
+ */
+export const OPTIONAL_ENVIRONMENT_DOCUMENTS: ReadonlySet<EnvironmentDocument> = new Set([
+  "MEMORY",
+  "PERSONA",
+]);
 
 export type EnvironmentDocument = (typeof ENVIRONMENT_DOCUMENTS)[number];
 

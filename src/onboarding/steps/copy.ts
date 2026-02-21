@@ -82,10 +82,26 @@ const WELCOME_COPY_MAP: Record<PersonalityPreset, WelcomeCopy> = {
 /**
  * Get welcome step copy for a given personality preset.
  *
+ * When a `personaName` is provided and differs from the default "Reins",
+ * the headline is personalized to introduce the assistant by name
+ * (e.g. "Hi! I'm Alex, your Reins assistant").
+ *
  * Falls back to balanced copy for unknown or custom presets.
  */
-export function getWelcomeCopy(preset: PersonalityPreset = "balanced"): WelcomeCopy {
-  return WELCOME_COPY_MAP[preset] ?? WELCOME_BALANCED;
+export function getWelcomeCopy(
+  preset: PersonalityPreset = "balanced",
+  personaName?: string,
+): WelcomeCopy {
+  const baseCopy = WELCOME_COPY_MAP[preset] ?? WELCOME_BALANCED;
+
+  if (!personaName || personaName === "Reins") {
+    return baseCopy;
+  }
+
+  return {
+    ...baseCopy,
+    headline: `Hi! I'm ${personaName}, your Reins assistant`,
+  };
 }
 
 /**

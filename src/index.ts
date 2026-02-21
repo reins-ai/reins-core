@@ -25,7 +25,6 @@ export * from "./heartbeat";
 export * from "./integrations";
 export * from "./marketplace";
 export * from "./memory";
-export * from "./persona";
 export * from "./plugins";
 export * from "./providers";
 export * from "./result";
@@ -44,6 +43,23 @@ export * from "./tools/schedule";
 export * from "./types";
 export * from "./utils";
 export * from "./voice";
+
+export {
+  DEFAULT_PERSONA as DEFAULT_SYSTEM_PERSONA,
+  DEFAULT_SECTION_BUDGETS,
+  EnvironmentContextProvider,
+  PersonaRegistry,
+  SystemPromptBuilder,
+  TRUNCATION_MARKER,
+  truncateSection,
+} from "./persona";
+export type {
+  ModelPreference,
+  Persona as SystemPersona,
+  PromptBudgetConfig,
+  SectionBudget,
+  ToolPermissionSet,
+} from "./persona";
 
 // Onboarding — explicit re-exports to avoid StepResult collision with harness
 export {

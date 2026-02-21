@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 
 import type { OnboardingConfig, OnboardingMode } from "../../../src/onboarding/types";
 import type { StepExecutionContext } from "../../../src/onboarding/steps/types";
-import { WelcomeStep } from "../../../src/onboarding/steps/welcome";
+import {
+  DEFAULT_PERSONA,
+  WelcomeStep,
+  type Persona,
+} from "../../../src/onboarding/steps/welcome";
 import {
   getWelcomeCopy,
   WELCOME_COPY_VARIANTS,
@@ -347,6 +351,146 @@ describe("getWelcomeCopy", () => {
 
   it("returns balanced copy for 'custom' preset", () => {
     const copy = getWelcomeCopy("custom");
+    expect(copy.headline).toBe("Welcome to Reins");
+  });
+
+  it("personalizes headline when persona name is provided", () => {
+    const copy = getWelcomeCopy("balanced", "Alex");
+    expect(copy.headline).toBe("Hi! I'm Alex, your Reins assistant");
+  });
+
+  it("does not personalize when persona name is 'Reins'", () => {
+    const copy = getWelcomeCopy("balanced", "Reins");
+    expect(copy.headline).toBe("Welcome to Reins");
+  });
+
+  it("does not personalize when persona name is undefined", () => {
+    const copy = getWelcomeCopy("balanced", undefined);
+    expect(copy.headline).toBe("Welcome to Reins");
+  });
+
+  it("personalizes headline with non-default preset", () => {
+    const copy = getWelcomeCopy("warm", "Sage");
+    expect(copy.headline).toBe("Hi! I'm Sage, your Reins assistant");
+    // Non-headline fields should still come from the warm preset
+    expect(copy.subtitle).toContain("excited");
+  });
+});
+
+describe("DEFAULT_PERSONA", () => {
+  it("has name 'Reins'", () => {
+    expect(DEFAULT_PERSONA.name).toBe("Reins");
+  });
+
+  it("has avatar emoji", () => {
+    expect(DEFAULT_PERSONA.avatar).toBe("🤖");
+  });
+});
+
+describe("WelcomeStep persona name injection", () => {
+  it("uses default headline when no persona provided", async () => {
+    const step = new WelcomeStep();
+    const context = createContext("quickstart");
+
+    const result = await step.execute(context);
+
+    const copy = result.data?.copy as Record<string, string>;
+    expect(copy.headline).toBe("Welcome to Reins");
+  });
+
+  it("uses default headline when persona name is 'Reins'", async () => {
+    const step = new WelcomeStep({
+      persona: { name: "Reins", avatar: "🤖" },
+    });
+    const context = createContext("quickstart");
+
+    const result = await step.execute(context);
+
+    const copy = result.data?.copy as Record<string, string>;
+    expect(copy.headline).toBe("Welcome to Reins");
+  });
+
+  it("personalizes headline with custom persona name", async () => {
+    const step = new WelcomeStep({
+      persona: { name: "Alex", avatar: "🧠" },
+    });
+    const context = createContext("quickstart");
+
+    const result = await step.execute(context);
+
+    const copy = result.data?.copy as Record<string, string>;
+    expect(copy.headline).toBe("Hi! I'm Alex, your Reins assistant");
+  });
+
+  it("personalizes headline in advanced mode", async () => {
+    const step = new WelcomeStep({
+      persona: { name: "Nova" },
+    });
+    const context = createContext("advanced");
+
+    const result = await step.execute(context);
+
+    const copy = result.data?.copy as Record<string, string>;
+    expect(copy.headline).toBe("Hi! I'm Nova, your Reins assistant");
+  });
+
+  it("combines persona name with personality preset", async () => {
+    const step = new WelcomeStep({
+      persona: { name: "Sage" },
+      personalityPreset: "warm",
+    });
+    const context = createContext("quickstart");
+
+    const result = await step.execute(context);
+
+    const copy = result.data?.copy as Record<string, string>;
+    expect(copy.headline).toBe("Hi! I'm Sage, your Reins assistant");
+    // Subtitle should still come from the warm preset
+    expect(copy.subtitle).toContain("excited");
+  });
+
+  it("preserves non-headline copy fields when persona is set", async () => {
+    const step = new WelcomeStep({
+      persona: { name: "Buddy" },
+      personalityPreset: "concise",
+    });
+    const context = createContext("quickstart");
+
+    const result = await step.execute(context);
+
+    const copy = result.data?.copy as Record<string, string>;
+    expect(copy.headline).toBe("Hi! I'm Buddy, your Reins assistant");
+    expect(copy.namePrompt).toBe("Your name:");
+    expect(copy.namePlaceholder).toBe("Name");
+  });
+
+  it("persona without avatar still personalizes headline", async () => {
+    const step = new WelcomeStep({
+      persona: { name: "Aria" },
+    });
+    const context = createContext("quickstart");
+
+    const result = await step.execute(context);
+
+    const copy = result.data?.copy as Record<string, string>;
+    expect(copy.headline).toBe("Hi! I'm Aria, your Reins assistant");
+  });
+
+  it("getCopy returns personalized copy when persona is set", () => {
+    const step = new WelcomeStep({
+      persona: { name: "Echo" },
+    });
+    const copy = step.getCopy();
+
+    expect(copy.headline).toBe("Hi! I'm Echo, your Reins assistant");
+  });
+
+  it("getCopy returns default copy when persona is default", () => {
+    const step = new WelcomeStep({
+      persona: DEFAULT_PERSONA,
+    });
+    const copy = step.getCopy();
+
     expect(copy.headline).toBe("Welcome to Reins");
   });
 });

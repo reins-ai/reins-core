@@ -10,6 +10,7 @@ import {
   type DocumentIndexerFileSystem,
   type IndexedChunk,
 } from "../../../src/memory/rag/document-indexer";
+import type { DocumentExtractor, ExtractedDocument } from "../../../src/memory/rag/document-extractor";
 import { DocumentSourceRegistry } from "../../../src/memory/rag/document-source-registry";
 import { MarkdownChunker } from "../../../src/memory/rag/markdown-chunker";
 import { EmbeddingProviderError as ProviderError } from "../../../src/memory/embeddings/embedding-provider";
@@ -107,6 +108,24 @@ class MockFileSystem implements DocumentIndexerFileSystem {
   }
 }
 
+class MockDocumentExtractor implements Pick<DocumentExtractor, "extract"> {
+  private readonly results: Map<string, Result<ExtractedDocument, MemoryError>>;
+  readonly extractCalls: string[] = [];
+
+  constructor(results: Record<string, Result<ExtractedDocument, MemoryError>>) {
+    this.results = new Map(Object.entries(results));
+  }
+
+  async extract(filePath: string): Promise<Result<ExtractedDocument, MemoryError>> {
+    this.extractCalls.push(filePath);
+    const result = this.results.get(filePath);
+    if (!result) {
+      return err(new MemoryError(`No mock result for: ${filePath}`, "MEMORY_DB_ERROR"));
+    }
+    return result;
+  }
+}
+
 function registerSource(
   registry: DocumentSourceRegistry,
   rootPath = "/docs",
@@ -131,6 +150,7 @@ function registerSource(
 function createIndexer(options: {
   fileSystem: MockFileSystem;
   embeddingProvider?: MockEmbeddingProvider;
+  extractor?: MockDocumentExtractor;
   onJobUpdate?: (status: string) => void;
   batchSize?: number;
 }): { indexer: DocumentIndexer; registry: DocumentSourceRegistry; provider: MockEmbeddingProvider } {
@@ -141,6 +161,7 @@ function createIndexer(options: {
     chunker: new MarkdownChunker({ strategy: "fixed", maxChunkSize: 20, overlapSize: 0 }),
     embeddingProvider: provider,
     registry,
+    extractor: options.extractor as DocumentExtractor | undefined,
     config: {
       batchSize: options.batchSize ?? 2,
       maxConcurrent: 3,
@@ -402,5 +423,160 @@ describe("DocumentIndexer", () => {
     expect(result.value.chunksTotal).toBe(0);
     expect(result.value.embeddingsGenerated).toBe(0);
     expect(getSourceChunks(indexer, sourceId)).toHaveLength(0);
+  });
+
+  it("passes non-markdown files through extractor before chunking", async () => {
+    const extractedContent = "# Extracted PDF\n\nThis is extracted text from a PDF.";
+    const extractor = new MockDocumentExtractor({
+      "/docs/report.pdf": ok({
+        content: extractedContent,
+        format: "pdf",
+        metadata: { pageCount: 3, wordCount: 9 },
+      }),
+    });
+
+    const fileSystem = new MockFileSystem({
+      files: {
+        "/docs/report.pdf": "binary pdf data",
+      },
+    });
+
+    const { indexer } = createIndexer({ fileSystem, extractor });
+    const result = await indexer.indexFile("/docs/report.pdf", "source-1");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    expect(result.value.length).toBeGreaterThan(0);
+    expect(extractor.extractCalls).toContain("/docs/report.pdf");
+
+    const chunks = indexer.getChunksBySource("source-1");
+    const allContent = chunks.map((c) => c.content).join(" ");
+    expect(allContent).toContain("Extracted PDF");
+  });
+
+  it("bypasses extractor for markdown files", async () => {
+    const extractor = new MockDocumentExtractor({});
+
+    const fileSystem = new MockFileSystem({
+      files: {
+        "/docs/readme.md": "# Readme\n\nMarkdown content here.",
+      },
+    });
+
+    const { indexer } = createIndexer({ fileSystem, extractor });
+    const result = await indexer.indexFile("/docs/readme.md", "source-1");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    expect(extractor.extractCalls).toHaveLength(0);
+    expect(result.value.length).toBeGreaterThan(0);
+
+    const chunks = indexer.getChunksBySource("source-1");
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(indexer.searchByContent("readme").length).toBeGreaterThan(0);
+  });
+
+  it("reports extraction errors without crashing indexing", async () => {
+    const extractor = new MockDocumentExtractor({
+      "/docs/corrupt.pdf": err(
+        new MemoryError("PDF parsing failed: corrupt header", "MEMORY_DB_ERROR"),
+      ),
+    });
+
+    const fileSystem = new MockFileSystem({
+      files: {
+        "/docs/good.md": "# Good\n\nGood markdown content.",
+        "/docs/corrupt.pdf": "corrupt binary data",
+      },
+    });
+
+    const { indexer, registry } = createIndexer({ fileSystem, extractor });
+    const sourceId = registerSource(registry, "/docs", {
+      includePaths: ["**/*"],
+    });
+
+    const result = await indexer.indexSource(sourceId);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    expect(result.value.status).toBe("complete");
+    expect(result.value.errors.length).toBe(1);
+    expect(result.value.errors[0]).toContain("Extraction failed");
+
+    const chunks = getSourceChunks(indexer, sourceId);
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(indexer.searchByContent("good").length).toBeGreaterThan(0);
+  });
+
+  it("indexes non-markdown files as plain text when no extractor is provided", async () => {
+    const fileSystem = new MockFileSystem({
+      files: {
+        "/docs/notes.txt": "plain text notes content",
+      },
+    });
+
+    const { indexer } = createIndexer({ fileSystem });
+    const result = await indexer.indexFile("/docs/notes.txt", "source-1");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    expect(result.value.length).toBeGreaterThan(0);
+    const chunks = indexer.getChunksBySource("source-1");
+    const allContent = chunks.map((c) => c.content).join(" ");
+    expect(allContent).toContain("plain text notes");
+  });
+
+  it("uses extractor for multiple non-markdown formats in a source", async () => {
+    const extractor = new MockDocumentExtractor({
+      "/docs/doc.docx": ok({
+        content: "Word document extracted text",
+        format: "docx",
+        metadata: { wordCount: 4 },
+      }),
+      "/docs/data.csv": ok({
+        content: "| Name | Value |\n|---|---|\n| A | 1 |",
+        format: "csv",
+        metadata: { wordCount: 5 },
+      }),
+    });
+
+    const fileSystem = new MockFileSystem({
+      files: {
+        "/docs/readme.md": "# Readme\n\nMarkdown stays direct.",
+        "/docs/doc.docx": "binary docx",
+        "/docs/data.csv": "Name,Value\nA,1",
+      },
+    });
+
+    const { indexer, registry } = createIndexer({ fileSystem, extractor });
+    const sourceId = registerSource(registry, "/docs", {
+      includePaths: ["**/*"],
+    });
+
+    const result = await indexer.indexSource(sourceId);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw result.error;
+    }
+
+    expect(extractor.extractCalls).toContain("/docs/doc.docx");
+    expect(extractor.extractCalls).toContain("/docs/data.csv");
+    expect(extractor.extractCalls).not.toContain("/docs/readme.md");
+
+    const chunks = getSourceChunks(indexer, sourceId);
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(indexer.searchByContent("word document").length).toBeGreaterThan(0);
+    expect(indexer.searchByContent("readme").length).toBeGreaterThan(0);
   });
 });

@@ -1,3 +1,63 @@
+/**
+ * Structured extraction examples that teach the LLM how to use
+ * `search_documents` for extract-to-table, find-all-mentions,
+ * and compare-documents tasks.
+ */
+export const STRUCTURED_EXTRACTION_EXAMPLES = `
+## Structured Extraction with Documents
+
+When users want structured data from their indexed documents, use \`search_documents\` with structured output formatting.
+
+### Extract to Table
+
+**User:** "Extract all dates and amounts from my invoices"
+
+1. Call \`search_documents({ query: "invoice date amount total", top_k: 10 })\`
+2. Parse each returned chunk for date and monetary values
+3. Format results as a Markdown table:
+
+| Date | Invoice # | Amount | Source |
+|------|-----------|--------|--------|
+| 2026-01-15 | INV-001 | $1,200.00 | invoices/january.pdf |
+| 2026-02-01 | INV-002 | $850.00 | invoices/february.pdf |
+
+Always include the source document so the user can verify.
+
+### Find All Mentions
+
+**User:** "Find every mention of 'ACME Corp' in my contracts"
+
+1. Call \`search_documents({ query: "ACME Corp", top_k: 20 })\`
+2. List each occurrence with its source file and surrounding context:
+
+**contracts/service-agreement.pdf** (3 mentions)
+- Section 2.1: "...ACME Corp shall provide quarterly reports..."
+- Section 5.3: "...liability of ACME Corp is limited to..."
+- Exhibit A: "...ACME Corp, a Delaware corporation..."
+
+**contracts/nda.pdf** (1 mention)
+- Preamble: "...between User and ACME Corp ('Disclosing Party')..."
+
+Group by source document and include section references when available.
+
+### Compare Documents
+
+**User:** "Compare the payment terms in contract A vs contract B"
+
+1. Call \`search_documents({ query: "payment terms", source: "contract-a.pdf" })\`
+2. Call \`search_documents({ query: "payment terms", source: "contract-b.pdf" })\`
+3. Present as a side-by-side comparison table:
+
+| Aspect | Contract A | Contract B |
+|--------|-----------|-----------|
+| Payment deadline | Net 30 | Net 60 |
+| Late fee | 1.5% monthly | 2% monthly |
+| Currency | USD | EUR |
+| Early payment discount | 2% if paid in 10 days | None |
+
+Highlight key differences and flag any terms that may conflict.
+`;
+
 export const TOOLS_TEMPLATE = `# TOOLS
 
 <!-- This document controls how your assistant uses available tools and capabilities. -->
@@ -171,6 +231,48 @@ Your assistant has access to various tools (calendar, reminders, notes, voice, e
 
 ---
 
+### Memory
+
+**Status:** enabled
+**Aggressiveness:** moderate
+
+**Permissions:**
+- ✅ Remember user details, preferences, and important facts
+- ✅ Recall memories when relevant to the conversation
+- ✅ Update or correct existing memories when user clarifies
+- ✅ Delete memories when user asks to forget something
+- ✅ List memories by type when user wants to review what's remembered
+
+**Natural Language → Action Mapping:**
+- "Remember that..." → \`memory({ action: "remember", content: "..." })\`
+- "Recall my preferences for X" → \`memory({ action: "recall", query: "preferences X" })\`
+- "Update my X to Y" → first recall to find id, then \`memory({ action: "update", id: "...", content: "Y" })\`
+- "Forget that I X" → first recall to find id, then \`memory({ action: "delete", id: "..." })\`
+- "What have you remembered about me?" → \`memory({ action: "list" })\`
+- "Show my preferences" → \`memory({ action: "list", type: "preference" })\`
+- "Show my decisions" → \`memory({ action: "list", type: "decision" })\`
+
+**When to Remember Proactively:**
+- User states a preference explicitly ("I prefer X", "I like Y", "I always...")
+- User shares an important personal fact (job title, family, location, health)
+- A key decision is made ("we decided to...", "going forward I'll...")
+- User corrects the assistant about a fact they've shared before
+
+**Memory Types to Use:**
+- \`fact\` — general facts about the user
+- \`preference\` — user preferences and style choices
+- \`decision\` — decisions made during conversations
+- \`episode\` — notable events or experiences shared
+- \`skill\` — skills or expertise the user has mentioned
+- \`entity\` — people, places, or organizations important to the user
+
+**Notes:**
+- Always confirm after remembering: "Got it, I'll remember that [brief summary]"
+- Do not store sensitive financial or medical data
+- When unsure if something is worth remembering, remember it anyway — the user can delete it
+
+---
+
 ## Disabled Tools
 
 <!-- List any tools you want to explicitly disable -->
@@ -242,4 +344,4 @@ Your assistant has access to various tools (calendar, reminders, notes, voice, e
 - Aggressiveness levels are guidelines, not strict rules
 - Your assistant will always prioritize your explicit instructions over these defaults
 - Review and update these settings as your needs change
-`;
+` + STRUCTURED_EXTRACTION_EXAMPLES;

@@ -21,3 +21,22 @@ export {
   type RescanReport,
   type MemoryFileWatcherOptions,
 } from "./memory-file-watcher";
+export {
+  exportMemories,
+  type ExportResult,
+  type ExportedMemoryRecord,
+  type MemoryExportFile,
+} from "./memory-export";
+export {
+  importMemoriesFromJson,
+  importMemoriesFromDirectory,
+  type ImportResult,
+} from "./memory-import";
+export {
+  validateExportedMemoryRecord,
+  validateMemoryExportFile,
+  type SchemaError,
+  type SchemaResult,
+  type ValidatedExportedMemoryRecord,
+  type ValidatedMemoryExportFile,
+} from "./memory-schemas";

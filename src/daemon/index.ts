@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { MemoryError } from "../memory/services";
 import { MemoryService } from "../memory/services/memory-service";
 import { SqliteMemoryDb, SqliteMemoryRepository } from "../memory/storage";
+import type { MemoryRepository } from "../memory/storage";
 import { MemoryConsolidationJob } from "../cron/jobs/memory-consolidation-job";
 import { MorningBriefingJob } from "../cron/jobs/morning-briefing-job";
 import { registerMemoryCronJobs, type MemoryCronHandle } from "./memory-cron-registration";
@@ -34,6 +35,7 @@ import { LocalCronStore } from "../cron/store";
 
 interface InitializedMemoryRuntime {
   memoryService: MemoryService;
+  memoryRepository: MemoryRepository;
   checkStorageHealth: () => Promise<Result<boolean, MemoryError>>;
   closeStorage: () => Promise<Result<void, MemoryError>>;
 }
@@ -68,6 +70,7 @@ function initializeMemoryRuntime(dbPath: string, dataDir: string): Result<Initia
 
     return ok({
       memoryService,
+      memoryRepository: repository,
       checkStorageHealth: async () => {
         try {
           db.getDb().query("SELECT 1").get();
@@ -227,6 +230,7 @@ async function main() {
   const httpServer = new DaemonHttpServer({
     toolDefinitions: getBuiltinToolDefinitions(),
     memoryService: memoryRuntime.memoryService,
+    memoryRepository: memoryRuntime.memoryRepository,
     memoryCapabilitiesResolver,
     skillService,
     browserService,

@@ -1,10 +1,11 @@
 export {
+  bootstrapEnvironmentDocuments,
   bootstrapInstallRoot,
   buildInstallPaths,
   generateDefaultConfigContent,
   resolveInstallRoot,
 } from "./bootstrap";
-export type { BootstrapResult, InstallPaths } from "./bootstrap";
+export type { BootstrapOptions, BootstrapResult, InstallPaths } from "./bootstrap";
 
 export {
   DocumentNotFoundError,
@@ -63,6 +64,7 @@ export type { SettingScope } from "./scope";
 
 export {
   ENVIRONMENT_DOCUMENTS,
+  OPTIONAL_ENVIRONMENT_DOCUMENTS,
 } from "./types";
 export type {
   DocumentResolutionResult,
@@ -73,3 +75,16 @@ export type {
   EnvironmentDocumentMap,
   OverlayResolution,
 } from "./types";
+
+export {
+  DEFAULT_PERSONA,
+  generateDefaultPersonaYaml,
+  parsePersonaYaml,
+} from "./persona";
+export type { Persona } from "./persona";
+
+export { exportPersona, importPersona } from "./persona-io";
+export type { PersonaExportResult, PersonaImportResult } from "./persona-io";
+
+export { PersonalityWatcher } from "./personality-watcher";
+export type { PersonalityWatcherOptions } from "./personality-watcher";

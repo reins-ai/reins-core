@@ -246,22 +246,22 @@ export const VOICE_DEFINITION: ToolDefinition = {
 export const MEMORY_DEFINITION: ToolDefinition = {
   name: "memory",
   description:
-    "Remember user details and recall relevant memories for better continuity across conversations.",
+    "Remember, recall, update, delete, and list user memories for full transparency and continuity across conversations.",
   parameters: {
     type: "object",
     properties: {
       action: {
         type: "string",
         description: "The action to perform.",
-        enum: ["remember", "recall"],
+        enum: ["remember", "recall", "update", "delete", "list"],
       },
       content: {
         type: "string",
-        description: "Memory content to persist when action is remember.",
+        description: "Memory content to persist when action is remember, or updated content for update action.",
       },
       tags: {
         type: "array",
-        description: "Optional tags to attach to remembered content.",
+        description: "Optional tags to attach to remembered content or updated tags for update action.",
         items: {
           type: "string",
         },
@@ -272,10 +272,83 @@ export const MEMORY_DEFINITION: ToolDefinition = {
       },
       limit: {
         type: "number",
-        description: "Maximum number of recall results to return.",
+        description: "Maximum number of results to return for recall or list actions.",
+      },
+      id: {
+        type: "string",
+        description: "Memory ID for update and delete actions.",
+      },
+      importance: {
+        type: "number",
+        description: "Updated importance score (0-1) for update action.",
+      },
+      type: {
+        type: "string",
+        description: "Memory type filter for list action.",
+        enum: [
+          "fact",
+          "preference",
+          "decision",
+          "episode",
+          "skill",
+          "entity",
+          "document_chunk",
+        ],
       },
     },
     required: ["action"],
+  },
+};
+
+export const INDEX_DOCUMENT_DEFINITION: ToolDefinition = {
+  name: "index_document",
+  description:
+    "Index a document file for semantic search. " +
+    "Registers the file's directory as a source if needed, " +
+    "then indexes the file into searchable chunks.",
+  parameters: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Absolute path to the document file to index.",
+      },
+      source_name: {
+        type: "string",
+        description:
+          "Optional human-readable name for the document source. " +
+          "Defaults to the filename.",
+      },
+    },
+    required: ["path"],
+  },
+};
+
+export const SEARCH_DOCUMENTS_DEFINITION: ToolDefinition = {
+  name: "search_documents",
+  description:
+    "Search indexed documents using semantic and keyword matching. " +
+    "Returns ranked results with content previews, relevance scores, " +
+    "and source metadata.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "The search query to find relevant document chunks.",
+      },
+      top_k: {
+        type: "number",
+        description:
+          "Maximum number of results to return. Defaults to 5.",
+      },
+      source: {
+        type: "string",
+        description:
+          "Optional source path filter to restrict search to a specific document or directory.",
+      },
+    },
+    required: ["query"],
   },
 };
 
@@ -493,6 +566,8 @@ export function getBuiltinToolDefinitions(): ToolDefinition[] {
     REMINDERS_DEFINITION,
     VOICE_DEFINITION,
     MEMORY_DEFINITION,
+    INDEX_DOCUMENT_DEFINITION,
+    SEARCH_DOCUMENTS_DEFINITION,
     WEB_SEARCH_DEFINITION,
     ...SYSTEM_TOOL_DEFINITIONS.map(toToolDefinition),
   ];

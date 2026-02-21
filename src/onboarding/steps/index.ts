@@ -50,7 +50,9 @@ export type {
 } from "./types";
 
 export {
+  DEFAULT_PERSONA,
   WelcomeStep,
+  type Persona,
   type WelcomeStepOptions,
 } from "./welcome";
 

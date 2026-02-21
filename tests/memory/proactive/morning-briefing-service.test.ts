@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { ok, err, type Result } from "../../../src/result";
 import { ReinsError } from "../../../src/errors";
 import type { MemoryType } from "../../../src/memory/types/index";
+import type { MemoryRecord } from "../../../src/memory/types/memory-record";
+import type { MemoryRepository } from "../../../src/memory/storage/memory-repository";
 import {
   MorningBriefingService,
   MorningBriefingError,
@@ -19,6 +21,8 @@ import {
   BriefingJobError,
   DEFAULT_BRIEFING_SCHEDULE,
 } from "../../../src/cron/jobs/morning-briefing-job";
+
+type MockMemoryRepository = MemoryRepository;
 
 const BASE_TIME = new Date("2026-02-13T08:00:00.000Z");
 
@@ -703,7 +707,276 @@ describe("MorningBriefingService", () => {
       expect(BRIEFING_SECTION_TYPES).toContain("high_importance");
       expect(BRIEFING_SECTION_TYPES).toContain("recent_decisions");
       expect(BRIEFING_SECTION_TYPES).toContain("upcoming");
-      expect(BRIEFING_SECTION_TYPES).toHaveLength(4);
+      expect(BRIEFING_SECTION_TYPES).toContain("health_check");
+      expect(BRIEFING_SECTION_TYPES).toHaveLength(5);
+    });
+  });
+
+  describe("health_check section", () => {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+    function createStaleMemoryRecord(overrides?: Partial<MemoryRecord>): MemoryRecord {
+      const realNow = Date.now();
+      const staleDate = new Date(realNow - 100 * MS_PER_DAY);
+      return {
+        id: overrides?.id ?? crypto.randomUUID(),
+        content: overrides?.content ?? "Some old memory content",
+        type: overrides?.type ?? "fact",
+        layer: overrides?.layer ?? "ltm",
+        tags: overrides?.tags ?? [],
+        entities: overrides?.entities ?? [],
+        importance: overrides?.importance ?? 0.5,
+        confidence: overrides?.confidence ?? 1.0,
+        provenance: overrides?.provenance ?? { sourceType: "conversation" },
+        createdAt: overrides?.createdAt ?? staleDate,
+        updatedAt: overrides?.updatedAt ?? staleDate,
+        accessedAt: overrides?.accessedAt ?? staleDate,
+      };
+    }
+
+    function createMockRepository(records: MemoryRecord[]): MockMemoryRepository {
+      return {
+        list: async () => ok(records),
+        create: async () => ok(records[0]!),
+        getById: async () => ok(null),
+        update: async () => ok(records[0]!),
+        delete: async () => ok(undefined),
+        findByType: async () => ok([]),
+        findByLayer: async () => ok([]),
+        count: async () => ok(records.length),
+        reconcile: async () => ok({
+          totalFiles: 0,
+          totalDbRecords: 0,
+          orphanedFiles: [],
+          missingFiles: [],
+          contentMismatches: [],
+          isConsistent: true,
+        }),
+      };
+    }
+
+    function createServiceWithRepo(
+      retrieval: BriefingRetrievalProvider,
+      repository: MockMemoryRepository,
+      config?: Partial<BriefingConfig>,
+    ): MorningBriefingService {
+      return new MorningBriefingService({
+        retrieval,
+        repository,
+        config,
+        now: () => BASE_TIME,
+      });
+    }
+
+    test("health_check section included when stale memories exist", async () => {
+      const staleRecord = createStaleMemoryRecord({
+        content: "Old preference about dark mode",
+        accessedAt: new Date(Date.now() - 100 * MS_PER_DAY),
+      });
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository([staleRecord]);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeDefined();
+      expect(healthCheck!.title).toBe("Memory Health Check");
+      expect(healthCheck!.items).toHaveLength(1);
+      expect(healthCheck!.items[0].content).toContain("🧠 Memory Health Check");
+    });
+
+    test("health_check section omitted when no stale memories", async () => {
+      const freshRecord = createStaleMemoryRecord({
+        accessedAt: new Date(Date.now() - 10 * MS_PER_DAY),
+      });
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository([freshRecord]);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeUndefined();
+    });
+
+    test("correct stale count shown in output", async () => {
+      const staleRecords = [
+        createStaleMemoryRecord({
+          id: "stale-1",
+          content: "First stale memory",
+          accessedAt: new Date(Date.now() - 120 * MS_PER_DAY),
+        }),
+        createStaleMemoryRecord({
+          id: "stale-2",
+          content: "Second stale memory",
+          accessedAt: new Date(Date.now() - 100 * MS_PER_DAY),
+        }),
+        createStaleMemoryRecord({
+          id: "stale-3",
+          content: "Third stale memory",
+          accessedAt: new Date(Date.now() - 95 * MS_PER_DAY),
+        }),
+      ];
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository(staleRecords);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeDefined();
+      expect(healthCheck!.itemCount).toBe(3);
+      expect(healthCheck!.items[0].content).toContain("You have 3 memories");
+    });
+
+    test("oldest stale memory content preview shown", async () => {
+      const oldestRecord = createStaleMemoryRecord({
+        id: "oldest",
+        content: "I prefer using dark mode in all applications",
+        accessedAt: new Date(Date.now() - 200 * MS_PER_DAY),
+      });
+
+      const newerStaleRecord = createStaleMemoryRecord({
+        id: "newer-stale",
+        content: "Some other stale memory",
+        accessedAt: new Date(Date.now() - 100 * MS_PER_DAY),
+      });
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository([newerStaleRecord, oldestRecord]);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeDefined();
+      expect(healthCheck!.items[0].content).toContain(
+        "I prefer using dark mode in all applications",
+      );
+      expect(healthCheck!.items[0].content).toContain("last accessed");
+    });
+
+    test("health_check omitted when no repository provided in constructor options", async () => {
+      const retrieval = createMockRetrieval();
+      const service = createService(retrieval);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeUndefined();
+    });
+
+    test("section only generates for records older than 90 days", async () => {
+      const exactlyStale = createStaleMemoryRecord({
+        id: "exactly-90",
+        content: "Exactly 90 days old",
+        accessedAt: new Date(Date.now() - 90 * MS_PER_DAY),
+      });
+
+      const notStale = createStaleMemoryRecord({
+        id: "not-stale",
+        content: "Only 89 days old",
+        accessedAt: new Date(Date.now() - 89 * MS_PER_DAY),
+      });
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository([exactlyStale, notStale]);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeDefined();
+      expect(healthCheck!.itemCount).toBe(1);
+      expect(healthCheck!.items[0].content).toContain("You have 1 memory");
+    });
+
+    test("singular 'memory' used when only one stale record", async () => {
+      const staleRecord = createStaleMemoryRecord({
+        content: "Single stale memory",
+        accessedAt: new Date(Date.now() - 100 * MS_PER_DAY),
+      });
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository([staleRecord]);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeDefined();
+      expect(healthCheck!.items[0].content).toContain("You have 1 memory that");
+      expect(healthCheck!.items[0].content).not.toContain("memories that");
+    });
+
+    test("health_check stale count contributes to totalItems", async () => {
+      const staleRecords = [
+        createStaleMemoryRecord({
+          id: "s1",
+          accessedAt: new Date(Date.now() - 100 * MS_PER_DAY),
+        }),
+        createStaleMemoryRecord({
+          id: "s2",
+          accessedAt: new Date(Date.now() - 110 * MS_PER_DAY),
+        }),
+      ];
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository(staleRecords);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.value.totalItems).toBe(2);
+    });
+
+    test("health_check includes review suggestion", async () => {
+      const staleRecord = createStaleMemoryRecord({
+        accessedAt: new Date(Date.now() - 100 * MS_PER_DAY),
+      });
+
+      const retrieval = createMockRetrieval();
+      const repository = createMockRepository([staleRecord]);
+      const service = createServiceWithRepo(retrieval, repository);
+
+      const result = await service.generateBriefing();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const healthCheck = result.value.sections.find((s) => s.type === "health_check");
+      expect(healthCheck).toBeDefined();
+      expect(healthCheck!.items[0].content).toContain(
+        "Consider reviewing your stored memories to keep them current.",
+      );
     });
   });
 });

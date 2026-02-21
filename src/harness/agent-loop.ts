@@ -10,8 +10,10 @@ import { PermissionChecker } from "./permissions";
 import type { ToolPipeline, ToolPipelineResult } from "./tool-pipeline";
 import type { ToolExecutor } from "../tools";
 import type { AgentLoopFactory } from "./sub-agent-pool";
+import type { RagContextInjector } from "../memory/services/rag-context-injector";
 
 const DEFAULT_MAX_STEPS = 25;
+const DEFAULT_RAG_CONTEXT_MAX_TOKENS = 2000;
 const STEP_LIMIT_MESSAGE = "Step limit reached. Tools are now disabled. Please provide a final response.";
 const ABORTED_MESSAGE = "Agent loop aborted";
 
@@ -30,6 +32,7 @@ export interface AgentLoopOptions {
   doomLoopGuard?: DoomLoopGuard;
   signal?: AbortSignal;
   nudgeInjector?: NudgeInjector;
+  ragContextInjector?: RagContextInjector;
   agentLoopFactory?: AgentLoopFactory;
 }
 
@@ -704,17 +707,48 @@ export class AgentLoop {
     baseSystemPrompt: string | undefined,
     messages: Message[],
   ): Promise<string | undefined> {
+    let systemPrompt = baseSystemPrompt;
+
+    const ragContextInjector = this.options.ragContextInjector;
+    if (ragContextInjector) {
+      const userMessage = this.extractLatestUserMessage(messages);
+      if (userMessage.length > 0) {
+        try {
+          const ragContext = await ragContextInjector.getRelevantContext(userMessage, DEFAULT_RAG_CONTEXT_MAX_TOKENS);
+          if (ragContext) {
+            systemPrompt = appendRelevantDocumentContext(systemPrompt, ragContext);
+          }
+        } catch {}
+      }
+    }
+
     const nudgeInjector = this.options.nudgeInjector;
     if (!nudgeInjector) {
-      return baseSystemPrompt;
+      return systemPrompt;
     }
 
     const conversationContext = this.buildConversationContext(messages);
     try {
-      return await nudgeInjector.injectNudges(conversationContext, baseSystemPrompt ?? "");
+      return await nudgeInjector.injectNudges(conversationContext, systemPrompt ?? "");
     } catch {
-      return baseSystemPrompt;
+      return systemPrompt;
     }
+  }
+
+  private extractLatestUserMessage(messages: Message[]): string {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== "user") {
+        continue;
+      }
+
+      const userMessage = extractUserPromptText(message.content).trim();
+      if (userMessage.length > 0) {
+        return userMessage;
+      }
+    }
+
+    return "";
   }
 
   private buildConversationContext(messages: Message[]): ConversationContext {
@@ -830,4 +864,24 @@ function extractMessageText(content: Message["content"]): string {
     })
     .join("\n")
     .trim();
+}
+
+function extractUserPromptText(content: Message["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("\n")
+    .trim();
+}
+
+function appendRelevantDocumentContext(systemPrompt: string | undefined, context: string): string {
+  const contextSection = `---\n**Relevant context from your documents:**\n${context}\n---`;
+  if (!systemPrompt || systemPrompt.length === 0) {
+    return contextSection;
+  }
+
+  return `${systemPrompt}\n\n${contextSection}`;
 }
