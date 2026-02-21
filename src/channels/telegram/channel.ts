@@ -211,7 +211,8 @@ export class TelegramChannel implements Channel {
       throw new ChannelError("Cannot send Telegram message without text, voice, or attachment");
     }
 
-    await this.client.sendMessage(chatId, message.text);
+    const parseMode = message.formatting?.mode === "markdown_v2" ? "MarkdownV2" : undefined;
+    await this.client.sendMessage(chatId, message.text, parseMode !== undefined ? { parseMode } : undefined);
   }
 
   private scheduleNextPoll(delayMs: number): void {

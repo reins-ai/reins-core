@@ -263,7 +263,7 @@ export class ChannelRouter {
 
       for (const chunk of chunks) {
         const outbound = this.toOutboundChannelMessage(
-          { ...agentResponse, text: chunk },
+          { ...agentResponse, text: chunk, formatting: { mode: "markdown_v2" } },
           channel,
           destinationChannelId,
         );

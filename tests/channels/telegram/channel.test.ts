@@ -286,6 +286,31 @@ describe("TelegramChannel", () => {
     expect(client.sendVoiceCalls[0]).toEqual({ chatId: 42, value: "voice-file", options: undefined });
   });
 
+  it("passes MarkdownV2 parse mode when formatting is markdown_v2", async () => {
+    const scheduler = new PollScheduler();
+    const client = new MockTelegramClient();
+    const channel = new TelegramChannel({
+      config: createConfig(),
+      client,
+      schedulePollFn: scheduler.schedule,
+      clearScheduledPollFn: scheduler.clear,
+    });
+
+    await channel.connect();
+
+    await channel.send(createOutboundMessage({
+      text: "Hey\\! How can I help you today?",
+      formatting: { mode: "markdown_v2" },
+    }));
+
+    expect(client.sendMessageCalls).toHaveLength(1);
+    expect(client.sendMessageCalls[0]).toEqual({
+      chatId: 42,
+      value: "Hey\\! How can I help you today?",
+      options: { parseMode: "MarkdownV2" },
+    });
+  });
+
   it("emits typing indicator for the destination chat", async () => {
     const client = new MockTelegramClient();
     const channel = new TelegramChannel({
