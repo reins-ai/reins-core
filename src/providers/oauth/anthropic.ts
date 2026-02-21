@@ -41,6 +41,9 @@ import {
   createStrippingStream,
 } from "./claude-code-transform";
 import { thinkingLevelToBudget } from "../byok/thinking-utils";
+import { createLogger } from "../../logger";
+
+const log = createLogger("providers:anthropic");
 
 interface AnthropicContentBlock {
   type: "text" | "tool_use" | "tool_result" | "thinking";
@@ -77,7 +80,7 @@ function debugThinking(event: string, details: Record<string, unknown>): void {
     return;
   }
 
-  console.log("[thinking-debug]", event, details);
+  log.debug(event, details);
 }
 
 interface PendingOAuthSession {
