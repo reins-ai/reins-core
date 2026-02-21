@@ -23,6 +23,7 @@ import { AnthropicApiKeyStrategy } from "../providers/byok/anthropic-auth-strate
 import { EncryptedCredentialStore, resolveCredentialEncryptionSecret } from "../providers/credentials/store";
 import type { CredentialRecord } from "../providers/credentials/types";
 import { AnthropicOAuthProvider } from "../providers/oauth/anthropic";
+import { OAuthTokenKeepaliveService } from "../providers/oauth/keepalive";
 import { OAuthProviderRegistry } from "../providers/oauth/provider";
 import { CredentialBackedOAuthTokenStore } from "../providers/oauth/token-store";
 import { ProviderRegistry } from "../providers/registry";
@@ -382,6 +383,7 @@ interface DefaultServices {
   modelRouter: ModelRouter;
   credentialStore: EncryptedCredentialStore;
   providerRegistry: ProviderRegistry;
+  tokenStore: CredentialBackedOAuthTokenStore;
 }
 
 interface StoredApiKeyPayload {
@@ -912,6 +914,7 @@ function createDefaultServices(): DefaultServices {
     modelRouter,
     credentialStore: store,
     providerRegistry: registry,
+    tokenStore,
   };
 }
 
@@ -1168,6 +1171,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private documentIndexer: DocumentIndexer | null = null;
   private documentSearch: HybridDocumentSearch | null = null;
   private activeSubAgentPool: SubAgentPool | null = null;
+  private oauthKeepalive: OAuthTokenKeepaliveService | null = null;
   private integrationHealth: HealthResponse["integrations"] = {
     initialized: false,
     registeredCount: 0,
@@ -1213,6 +1217,15 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.modelRouter = services.modelRouter;
       credentialStore = services.credentialStore;
       providerRegistry = services.providerRegistry;
+
+      // Wire up Anthropic OAuth keepalive using the auth service as single source of truth.
+      // authService.getOAuthAccessToken() updates BOTH storage paths (oauth_anthropic and
+      // auth_anthropic_oauth) making it the correct function to use for keepalive refresh.
+      this.oauthKeepalive = new OAuthTokenKeepaliveService({
+        provider: "anthropic",
+        getOrRefreshToken: () => this.authService.getOAuthAccessToken("anthropic"),
+        loadCurrentTokens: () => services.tokenStore.load("anthropic"),
+      });
     }
 
     this.credentialStore = credentialStore ?? null;
@@ -1401,6 +1414,17 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
       this.startWebSocketHeartbeatLoop();
 
+      // Start OAuth token keepalive to proactively refresh before expiry
+      if (this.oauthKeepalive) {
+        try {
+          await this.oauthKeepalive.start();
+        } catch (error) {
+          log("warn", "OAuth keepalive failed to start; tokens will be refreshed on-demand only", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       const capabilities = this.conversationManager
         ? "with conversation services"
         : "without conversation services";
@@ -1450,6 +1474,10 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       await this.stopEnvironmentSessionRuntime();
+
+      if (this.oauthKeepalive) {
+        this.oauthKeepalive.stop();
+      }
 
       this.stopWebSocketHeartbeatLoop();
       this.wsRegistry.clear();
