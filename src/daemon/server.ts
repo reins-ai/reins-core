@@ -156,7 +156,7 @@ import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
-import { ANTHROPIC_CLIENT_ID, DAEMON_PORT as CONFIG_DAEMON_PORT } from "../config/defaults";
+import { ANTHROPIC_CLIENT_ID, DAEMON_PORT as CONFIG_DAEMON_PORT, DEFAULT_MODEL } from "../config/defaults";
 
 interface ActiveExecution {
   conversationId: string;
@@ -4194,7 +4194,7 @@ export class DaemonHttpServer implements DaemonManagedService {
 
     const conversation = await this.conversationManager!.create({
       title: body.title,
-      model: body.model ?? "claude-sonnet-4-20250514",
+      model: body.model ?? DEFAULT_MODEL,
       provider: body.provider ?? "anthropic",
     });
 

@@ -4,6 +4,7 @@ import type {
   CreateOptions,
   SendMessageResult,
 } from "../conversation/manager";
+import { DEFAULT_MODEL_WITH_PROVIDER } from "../config";
 import { ChannelError } from "./errors";
 import {
   chunkTelegramMessage,
@@ -20,7 +21,6 @@ import type {
 } from "./types";
 
 const DEFAULT_PROVIDER = "anthropic";
-const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5";
 
 /**
  * Map a MIME type to a short file extension for transcription file names.
@@ -120,7 +120,7 @@ export class ChannelRouter {
     this.channelRegistry = options.channelRegistry;
     this.broadcastResponses = options.broadcastResponses ?? false;
     this.defaultProvider = options.defaultProvider ?? DEFAULT_PROVIDER;
-    this.defaultModel = options.defaultModel ?? DEFAULT_MODEL;
+    this.defaultModel = options.defaultModel ?? DEFAULT_MODEL_WITH_PROVIDER;
     this.nowFn = options.nowFn ?? (() => new Date());
     this.transcribeFn = options.transcribeFn;
   }

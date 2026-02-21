@@ -16,3 +16,11 @@ export const CDP_PORT = parseInt(process.env.REINS_CDP_PORT ?? "9222", 10);
 /** Anthropic OAuth client ID for device-code auth flow */
 export const ANTHROPIC_CLIENT_ID =
   process.env.ANTHROPIC_CLIENT_ID ?? "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+/** Default model for conversations (short model ID, no provider prefix). Override with REINS_DEFAULT_MODEL env var. */
+export const DEFAULT_MODEL =
+  process.env.REINS_DEFAULT_MODEL ?? "claude-sonnet-4-20250514";
+
+/** Default model with provider prefix for channel router and provider-aware contexts. Override with REINS_DEFAULT_MODEL_WITH_PROVIDER env var. */
+export const DEFAULT_MODEL_WITH_PROVIDER =
+  process.env.REINS_DEFAULT_MODEL_WITH_PROVIDER ?? "anthropic/claude-sonnet-4-5";

@@ -1,4 +1,5 @@
 import { ConversationError } from "../errors";
+import { DEFAULT_MODEL } from "../config";
 import { readUserConfig } from "../config/user-config";
 import type { MemoryStore } from "../memory";
 import { getPresetPromptModifier } from "../onboarding/personality-prompts";
@@ -371,7 +372,7 @@ export class ConversationManager {
    * Returns IDs and timestamp immediately — no provider invocation happens here.
    */
   async sendMessage(options: SendMessageOptions): Promise<SendMessageResult> {
-    const model = options.model ?? "claude-sonnet-4-20250514";
+    const model = options.model ?? DEFAULT_MODEL;
     const provider = options.provider ?? "anthropic";
     const now = new Date();
 
