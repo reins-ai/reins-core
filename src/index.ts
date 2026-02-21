@@ -25,6 +25,8 @@ export * from "./heartbeat";
 export * from "./integrations";
 export * from "./marketplace";
 export * from "./memory";
+export { createLogger } from "./logger";
+export type { Logger, LogLevel } from "./logger";
 export * from "./plugins";
 export * from "./providers";
 export * from "./result";
