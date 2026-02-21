@@ -156,7 +156,7 @@ import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
-import { DAEMON_PORT as CONFIG_DAEMON_PORT } from "../config/defaults";
+import { ANTHROPIC_CLIENT_ID, DAEMON_PORT as CONFIG_DAEMON_PORT } from "../config/defaults";
 
 interface ActiveExecution {
   conversationId: string;
@@ -368,7 +368,6 @@ const DEFAULT_PORT = CONFIG_DAEMON_PORT;
 const DEFAULT_HOST = "localhost";
 
 // Anthropic OAuth configuration (matches claude.ai OAuth flow)
-const ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const ANTHROPIC_OAUTH_CONFIG = {
   clientId: ANTHROPIC_CLIENT_ID,
   authorizationUrl: "https://claude.ai/oauth/authorize",

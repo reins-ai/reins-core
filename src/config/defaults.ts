@@ -12,3 +12,7 @@ export const DAEMON_HOST = "localhost";
 
 /** Port for Chrome DevTools Protocol (CDP) debugging. Override with REINS_CDP_PORT env var. */
 export const CDP_PORT = parseInt(process.env.REINS_CDP_PORT ?? "9222", 10);
+
+/** Anthropic OAuth client ID for device-code auth flow */
+export const ANTHROPIC_CLIENT_ID =
+  process.env.ANTHROPIC_CLIENT_ID ?? "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
