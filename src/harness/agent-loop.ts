@@ -6,6 +6,7 @@ import type { NudgeInjector } from "../memory/proactive/nudge-injector";
 import type { ContextManager } from "../context/manager";
 import type { TypedEventBus } from "./event-bus";
 import type { CompactionEventPayload, HarnessEventMap } from "./events";
+import { createLogger } from "../logger";
 import { SummarisationStrategy } from "../context/strategies";
 import { DoomLoopGuard } from "./doom-loop-guard";
 import { PermissionChecker } from "./permissions";
@@ -13,6 +14,8 @@ import type { ToolPipeline, ToolPipelineResult } from "./tool-pipeline";
 import type { ToolExecutor } from "../tools";
 import type { AgentLoopFactory } from "./sub-agent-pool";
 import type { RagContextInjector } from "../memory/services/rag-context-injector";
+
+const log = createLogger("harness");
 
 const DEFAULT_MAX_STEPS = 25;
 const DEFAULT_RAG_CONTEXT_MAX_TOKENS = 2000;
@@ -772,7 +775,7 @@ export class AgentLoop {
       await this.emitCompaction(payload);
 
       if (after.utilization > TARGET_POST_COMPACTION_UTILIZATION) {
-        console.warn("Auto-compaction completed but context utilization remains above target.", {
+        log.warn("Auto-compaction completed but context utilization remains above target", {
           utilization: after.utilization,
           target: TARGET_POST_COMPACTION_UTILIZATION,
         });
@@ -780,7 +783,9 @@ export class AgentLoop {
 
       return payload;
     } catch (error) {
-      console.warn("Auto-compaction failed; continuing without compaction.", error);
+      log.warn("Auto-compaction failed; continuing without compaction", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   }

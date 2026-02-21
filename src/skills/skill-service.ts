@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { createLogger } from "../logger";
 import { err, ok } from "../result";
 import { DaemonError, type DaemonManagedService, type DaemonResult } from "../daemon/types";
 
@@ -34,15 +35,17 @@ export interface SkillDaemonServiceOptions {
   ensureSkillsDirectory?: (skillsDir: string) => Promise<void>;
 }
 
+const moduleLogger = createLogger("skills");
+
 const defaultLogger: SkillDaemonServiceLogger = {
-  info: (...args) => {
-    console.info(...args);
+  info: (message, ...args) => {
+    moduleLogger.info(message, args.length > 0 ? { args } : undefined);
   },
-  warn: (...args) => {
-    console.warn(...args);
+  warn: (message, ...args) => {
+    moduleLogger.warn(message, args.length > 0 ? { args } : undefined);
   },
-  error: (...args) => {
-    console.error(...args);
+  error: (message, ...args) => {
+    moduleLogger.error(message, args.length > 0 ? { args } : undefined);
   },
 };
 
