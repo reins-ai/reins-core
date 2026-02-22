@@ -1,4 +1,6 @@
 export * from "./attachments";
+export * from "./auth-storage";
+export * from "./memory-auth-storage";
 export * from "./discord";
 export * from "./conversation-bridge";
 export * from "./errors";
