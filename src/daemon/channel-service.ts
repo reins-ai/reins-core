@@ -8,6 +8,7 @@ import {
   type ChannelMessage,
   type ChannelPlatform,
 } from "../channels";
+import { ChannelAuthService } from "../channels";
 import { createLogger } from "../logger";
 
 const log = createLogger("daemon:channels");
@@ -19,6 +20,7 @@ const PROVIDER_UNAVAILABLE_MESSAGE =
 const TIMEOUT_MESSAGE = "⚠️ The request timed out. Please try again.";
 const GENERIC_ERROR_MESSAGE = "⚠️ Something went wrong. Please try again.";
 const EMPTY_RESPONSE_MESSAGE = "⚠️ No response generated. Please try again.";
+const UNAUTHORIZED_MESSAGE = "⛔ You're not authorized to use this bot.";
 
 interface ChannelTokenRecord {
   platform: ChannelPlatform;
@@ -91,6 +93,7 @@ export interface ChannelDaemonServiceOptions {
   channelRegistry: ChannelRegistryLike;
   conversationBridge: ConversationBridgeLike;
   credentialStorage: ChannelCredentialStorageLike;
+  authService: ChannelAuthService;
   onInboundAssistantPending?: (context: {
     conversationId: string;
     assistantMessageId: string;
@@ -144,6 +147,7 @@ export class ChannelDaemonService {
   private readonly channelRegistry: ChannelRegistryLike;
   private readonly conversationBridge: ConversationBridgeLike;
   private readonly credentialStorage: ChannelCredentialStorageLike;
+  private readonly authService: ChannelAuthService;
   private readonly channelFactory: (platform: ChannelPlatform, channelId: string, token: string) => Channel;
   private readonly onInboundAssistantPending?: (context: {
     conversationId: string;
@@ -163,6 +167,7 @@ export class ChannelDaemonService {
     this.channelRegistry = options.channelRegistry;
     this.conversationBridge = options.conversationBridge;
     this.credentialStorage = options.credentialStorage;
+    this.authService = options.authService;
     this.channelFactory = options.channelFactory ?? createDefaultChannel;
     this.onInboundAssistantPending = options.onInboundAssistantPending;
     this.nowFn = options.nowFn ?? (() => new Date());
@@ -488,6 +493,29 @@ export class ChannelDaemonService {
         this.updateDiagnostics(channel.config.id, {
           lastMessageAt: this.nowFn(),
         });
+
+        const senderId = message.sender.id;
+        const authorized = await this.authService.isAuthorized(channel.config.id, senderId);
+        if (!authorized) {
+          const hasSenderId = senderId && senderId.trim() !== "" && senderId !== "0";
+          const rejectionText = hasSenderId
+            ? `⛔ You're not authorized to use this bot. Ask the bot owner to run:\n/auth ${channel.config.id} ${senderId}`
+            : UNAUTHORIZED_MESSAGE;
+          try {
+            await channel.send({
+              id: crypto.randomUUID(),
+              platform: channel.config.platform,
+              channelId: message.channelId,
+              sender: { id: "bot" },
+              timestamp: this.nowFn(),
+              text: rejectionText,
+            });
+          } catch (sendError) {
+            const errMsg = sendError instanceof Error ? sendError.message : String(sendError);
+            this.updateDiagnostics(channel.config.id, { lastError: `Rejection send failed: ${errMsg}` });
+          }
+          return;
+        }
 
         if (typeof channel.sendTypingIndicator === "function") {
           try {

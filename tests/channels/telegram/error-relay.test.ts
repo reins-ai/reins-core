@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import { ChannelAuthService, InMemoryChannelAuthStorage } from "../../../src/channels";
 import { ChannelRegistry } from "../../../src/channels/registry";
 import type {
   Channel,
@@ -128,10 +129,16 @@ async function createServiceHarness(): Promise<{
     enabled: true,
   });
 
+  // Pre-authorise the default test sender so error-relay tests reach the bridge.
+  const authService = new ChannelAuthService(
+    new InMemoryChannelAuthStorage({ telegram: ["user-1"] }),
+  );
+
   const service = new ChannelDaemonService({
     channelRegistry,
     conversationBridge: bridge,
     credentialStorage,
+    authService,
     channelFactory: () => channel,
   });
 
