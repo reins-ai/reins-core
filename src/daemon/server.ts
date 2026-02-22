@@ -3568,7 +3568,9 @@ export class DaemonHttpServer implements DaemonManagedService {
         },
       });
 
-      if (this.channelService) {
+      // When paragraphs were already streamed live to the channel during
+      // generation, skip the post-completion forward to avoid duplicate messages.
+      if (this.channelService && !generation.channelChunksSent) {
         try {
           await this.channelService.forwardAssistantResponse(
             context.conversationId,
@@ -3634,6 +3636,8 @@ export class DaemonHttpServer implements DaemonManagedService {
     content: string | ContentBlock[];
     finishReason?: string;
     usage?: TokenUsage;
+    /** True when paragraphs were already streamed to channels live. */
+    channelChunksSent?: boolean;
   }> {
     const useHarness = this.shouldUseHarness(options.providerId, options.modelCapabilities);
 
@@ -3678,9 +3682,46 @@ export class DaemonHttpServer implements DaemonManagedService {
     content: string | ContentBlock[];
     finishReason?: string;
     usage?: TokenUsage;
+    channelChunksSent?: boolean;
   }> {
     const loop = new AgentLoop({ signal: options.abortSignal });
     let didEmitStart = false;
+
+    // --- Channel live-streaming state ---
+    // Accumulate tokens and flush complete paragraphs (split at \n\n) to the
+    // source channel as they arrive, so Telegram/Discord users see incremental
+    // messages rather than one wall of text after the full response completes.
+    let channelTextBuffer = "";
+    let channelChunksSent = false;
+    const hasChannelService = !!this.channelService;
+
+    const flushChannelBuffer = async (): Promise<void> => {
+      if (!hasChannelService || channelTextBuffer.length === 0) {
+        return;
+      }
+
+      const trimmed = channelTextBuffer.trim();
+      channelTextBuffer = "";
+      if (trimmed.length === 0) {
+        return;
+      }
+
+      try {
+        const sent = await this.channelService!.forwardAssistantChunk(
+          options.context.conversationId,
+          trimmed,
+          options.context.assistantMessageId,
+        );
+        if (sent) {
+          channelChunksSent = true;
+        }
+      } catch (error) {
+        log("warn", "Failed to flush channel buffer", {
+          conversationId: options.context.conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
 
     for await (const event of loop.runWithProvider({
       provider: options.provider,
@@ -3723,6 +3764,11 @@ export class DaemonHttpServer implements DaemonManagedService {
             timestamp: new Date().toISOString(),
           },
         });
+
+        // Accumulate for channel delivery. The buffer is only flushed at
+        // semantic boundaries (tool_call_start, done) — not at \n\n — so
+        // each coherent text segment arrives as a single channel message.
+        channelTextBuffer += event.content;
         continue;
       }
 
@@ -3742,6 +3788,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       if (event.type === "tool_call_start") {
+        // Flush any accumulated text before the tool call so it reaches
+        // the channel promptly rather than being held until after the tool
+        // finishes executing.
+        await flushChannelBuffer();
+
         this.publishStreamLifecycleEvent({
           type: "stream-event",
           event: {
@@ -3793,17 +3844,25 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       if (event.type === "done") {
+        // Flush any remaining buffered text to the channel.
+        await flushChannelBuffer();
+
         return {
           content: event.content,
           finishReason: event.finishReason,
           usage: event.usage,
+          channelChunksSent,
         };
       }
     }
 
+    // Loop ended without a done event — flush anything remaining.
+    await flushChannelBuffer();
+
     return {
       content: "",
       finishReason: "stop",
+      channelChunksSent,
     };
   }
 
