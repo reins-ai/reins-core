@@ -1,13 +1,21 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  CONVERSION_PROGRESS_STREAM,
   createConversionRouteHandler,
+  isConversionWebSocketMessage,
   type ConversionRouteHandler,
 } from "../../src/daemon/conversion-routes";
 import type { ConversionService } from "../../src/conversion/service";
 import type { ReportGenerator } from "../../src/conversion/report";
-import type { ConversionResult, DetectionResult } from "../../src/conversion/types";
+import type {
+  ConversionProgressEvent,
+  ConversionResult,
+  DetectionResult,
+} from "../../src/conversion/types";
 import type { OpenClawDetector } from "../../src/conversion/detector";
+import type { ProgressEmitter } from "../../src/conversion/progress";
+import type { StreamRegistrySocketData, WsStreamRegistry } from "../../src/daemon/ws-stream-registry";
 import { ok, err } from "../../src/result";
 import { ReinsError } from "../../src/errors";
 
@@ -518,5 +526,105 @@ describe("ConversionRouteHandler", () => {
     expect(statusData.status).toBe("complete");
     expect(statusData.conversionId).toBe(startData.conversionId);
     expect(statusData.result.totalConverted).toBe(3);
+  });
+
+  // ── Conversion progress streaming ───────────────────────────
+
+  describe("Conversion progress streaming", () => {
+    it("publishes progress events to wsRegistry when ProgressEmitter fires", () => {
+      const listeners = new Set<(e: ConversionProgressEvent) => void>();
+      const mockEmitter = {
+        on: (listener: (e: ConversionProgressEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      };
+
+      const published: unknown[] = [];
+      const mockRegistry = {
+        publish: (_target: unknown, payload: unknown) => {
+          published.push(payload);
+          return 1;
+        },
+      };
+
+      createConversionRouteHandler({
+        conversionService: createMockConversionService(),
+        reportGenerator: createMockReportGenerator(),
+        progressEmitter: mockEmitter as unknown as ProgressEmitter,
+        wsRegistry: mockRegistry as unknown as WsStreamRegistry<StreamRegistrySocketData>,
+      });
+
+      const event: ConversionProgressEvent = {
+        category: "agents",
+        processed: 1,
+        total: 5,
+        elapsedMs: 100,
+        status: "started",
+      };
+      for (const listener of listeners) listener(event);
+
+      expect(published).toHaveLength(1);
+      const envelope = published[0] as {
+        type: string;
+        event: ConversionProgressEvent;
+        timestamp: string;
+      };
+      expect(envelope.type).toBe("conversion-progress");
+      expect(envelope.event).toEqual(event);
+      expect(typeof envelope.timestamp).toBe("string");
+    });
+
+    it("does not wire streaming when progressEmitter is absent", () => {
+      const published: unknown[] = [];
+      const mockRegistry = {
+        publish: (_target: unknown, payload: unknown) => {
+          published.push(payload);
+          return 1;
+        },
+      };
+
+      createConversionRouteHandler({
+        conversionService: createMockConversionService(),
+        reportGenerator: createMockReportGenerator(),
+        wsRegistry: mockRegistry as unknown as WsStreamRegistry<StreamRegistrySocketData>,
+      });
+
+      expect(published).toHaveLength(0);
+    });
+
+    it("does not wire streaming when wsRegistry is absent", () => {
+      const listeners = new Set<(e: ConversionProgressEvent) => void>();
+      const mockEmitter = {
+        on: (listener: (e: ConversionProgressEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      };
+
+      createConversionRouteHandler({
+        conversionService: createMockConversionService(),
+        reportGenerator: createMockReportGenerator(),
+        progressEmitter: mockEmitter as unknown as ProgressEmitter,
+      });
+
+      // Emitter registered but no crash when wsRegistry is absent
+      expect(listeners.size).toBe(0);
+    });
+
+    it("exports CONVERSION_PROGRESS_STREAM constant with correct shape", () => {
+      expect(CONVERSION_PROGRESS_STREAM.conversationId).toBe("conversion");
+      expect(CONVERSION_PROGRESS_STREAM.assistantMessageId).toBe("progress");
+    });
+
+    it("isConversionWebSocketMessage recognizes subscribe/unsubscribe messages", () => {
+      expect(isConversionWebSocketMessage({ type: "conversion.subscribe" })).toBe(true);
+      expect(isConversionWebSocketMessage({ type: "conversion.unsubscribe" })).toBe(true);
+      expect(isConversionWebSocketMessage({ type: "stream.subscribe" })).toBe(false);
+      expect(isConversionWebSocketMessage(null)).toBe(false);
+      expect(isConversionWebSocketMessage(undefined)).toBe(false);
+      expect(isConversionWebSocketMessage("string")).toBe(false);
+      expect(isConversionWebSocketMessage(42)).toBe(false);
+    });
   });
 });

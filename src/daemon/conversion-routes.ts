@@ -1,8 +1,49 @@
 import { ALL_CONVERSION_CATEGORIES, type ConversionCategory } from "../agents/types";
 import { OpenClawDetector } from "../conversion/detector";
+import type { ProgressEmitter } from "../conversion/progress";
 import type { ReportGenerator } from "../conversion/report";
 import type { ConversionService } from "../conversion/service";
-import type { ConversionResult, DetectionResult } from "../conversion/types";
+import type { ConversionProgressEvent, ConversionResult, DetectionResult } from "../conversion/types";
+import type { StreamRegistrySocketData, WsStreamRegistry } from "./ws-stream-registry";
+
+/**
+ * Fixed stream target for conversion progress events.
+ * Clients subscribe to this target via WsStreamRegistry to receive
+ * real-time conversion progress updates.
+ */
+export const CONVERSION_PROGRESS_STREAM = {
+  conversationId: "conversion",
+  assistantMessageId: "progress",
+} as const;
+
+/** Client → daemon: subscribe to conversion progress */
+export interface ConversionSubscribeMessage {
+  type: "conversion.subscribe";
+}
+
+/** Client → daemon: unsubscribe from conversion progress */
+export interface ConversionUnsubscribeMessage {
+  type: "conversion.unsubscribe";
+}
+
+/** daemon → client: conversion progress event envelope */
+export interface ConversionProgressEnvelope {
+  type: "conversion-progress";
+  event: ConversionProgressEvent;
+  timestamp: string;
+}
+
+export type ConversionWebSocketInboundMessage =
+  | ConversionSubscribeMessage
+  | ConversionUnsubscribeMessage;
+
+export function isConversionWebSocketMessage(
+  payload: unknown,
+): payload is ConversionWebSocketInboundMessage {
+  if (typeof payload !== "object" || payload === null) return false;
+  const msg = payload as { type?: unknown };
+  return msg.type === "conversion.subscribe" || msg.type === "conversion.unsubscribe";
+}
 
 export interface ConversionRouteHandler {
   handle(
@@ -17,6 +58,8 @@ export interface ConversionRouteHandlerOptions {
   conversionService: ConversionService;
   reportGenerator: ReportGenerator;
   detector?: OpenClawDetector;
+  progressEmitter?: ProgressEmitter;
+  wsRegistry?: WsStreamRegistry<StreamRegistrySocketData>;
 }
 
 interface StartConversionRequest {
@@ -136,6 +179,18 @@ export function createConversionRouteHandler(
     string,
     (resolution: "overwrite" | "merge" | "skip") => void
   >();
+
+  if (options.progressEmitter && options.wsRegistry) {
+    const registry = options.wsRegistry;
+    options.progressEmitter.on((event) => {
+      const envelope: ConversionProgressEnvelope = {
+        type: "conversion-progress",
+        event,
+        timestamp: new Date().toISOString(),
+      };
+      registry.publish(CONVERSION_PROGRESS_STREAM, envelope);
+    });
+  }
 
   return {
     async handle(url, method, request, corsHeaders): Promise<Response | null> {
