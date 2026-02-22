@@ -68,6 +68,106 @@ const defaultFileOps: ConflictDetectorFileOps = {
   readChannelsFile: defaultReadChannelsFile,
 };
 
+export type ConflictStrategy = "overwrite" | "merge" | "skip";
+
+export interface ResolutionRecord {
+  conflict: Conflict;
+  strategy: ConflictStrategy;
+  outcome: "applied" | "skipped" | "merged";
+  mergedValue?: unknown;
+}
+
+/**
+ * Applies a conflict resolution strategy (overwrite, merge, skip) to detected
+ * conflicts and records the outcome for the conversion report.
+ */
+export class ConflictResolver {
+  resolve(conflict: Conflict, strategy: ConflictStrategy): ResolutionRecord {
+    switch (strategy) {
+      case "overwrite":
+        return {
+          conflict,
+          strategy,
+          outcome: "applied",
+          mergedValue: conflict.incomingValue,
+        };
+
+      case "skip":
+        return {
+          conflict,
+          strategy,
+          outcome: "skipped",
+          mergedValue: conflict.existingValue,
+        };
+
+      case "merge":
+        return this.mergeConflict(conflict);
+    }
+  }
+
+  resolveAll(
+    conflicts: Conflict[],
+    strategy: ConflictStrategy,
+  ): ResolutionRecord[] {
+    return conflicts.map((c) => this.resolve(c, strategy));
+  }
+
+  async resolveWithCallback(
+    conflicts: Conflict[],
+    onConflict: (conflict: Conflict) => Promise<ConflictStrategy>,
+  ): Promise<ResolutionRecord[]> {
+    const records: ResolutionRecord[] = [];
+    for (const conflict of conflicts) {
+      const strategy = await onConflict(conflict);
+      records.push(this.resolve(conflict, strategy));
+    }
+    return records;
+  }
+
+  private mergeConflict(conflict: Conflict): ResolutionRecord {
+    const { existingValue, incomingValue } = conflict;
+
+    if (Array.isArray(existingValue) && Array.isArray(incomingValue)) {
+      const merged = [...new Set([...existingValue, ...incomingValue])];
+      return {
+        conflict,
+        strategy: "merge",
+        outcome: "merged",
+        mergedValue: merged,
+      };
+    }
+
+    if (
+      this.isPlainObject(existingValue) &&
+      this.isPlainObject(incomingValue)
+    ) {
+      const merged = { ...existingValue, ...incomingValue };
+      return {
+        conflict,
+        strategy: "merge",
+        outcome: "merged",
+        mergedValue: merged,
+      };
+    }
+
+    // Scalar or incompatible types: fall back to overwrite
+    return {
+      conflict,
+      strategy: "merge",
+      outcome: "applied",
+      mergedValue: incomingValue,
+    };
+  }
+
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value)
+    );
+  }
+}
+
 /**
  * Detects existing Reins data that would collide with a conversion plan.
  *
