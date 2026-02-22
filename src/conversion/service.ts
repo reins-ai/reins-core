@@ -27,6 +27,7 @@ import {
   type WorkspaceMapping,
 } from "./mappers";
 import { OpenClawParser } from "./parser";
+import type { ProgressEmitter } from "./progress";
 import type {
   CategoryResult,
   ConversionOptions,
@@ -59,6 +60,7 @@ export interface ConversionServiceOptions {
   openClawDetector?: OpenClawDetector;
   detectedPath?: string;
   parser?: OpenClawParser;
+  progressEmitter?: ProgressEmitter;
   mapperRunners?: Partial<Record<ConversionCategory, ConversionCategoryRunner>>;
 }
 
@@ -125,13 +127,15 @@ export class ConversionService implements DaemonService {
         }
 
         const categoryStartedAt = Date.now();
-        options.onProgress?.({
+        const startEvent = {
           category,
           processed: 0,
           total: 1,
           elapsedMs: 0,
-          status: "started",
-        });
+          status: "started" as const,
+        };
+        options.onProgress?.(startEvent);
+        this.options.progressEmitter?.emit(startEvent);
 
         try {
           const mapperOptions: MapperOptions = {
@@ -147,13 +151,15 @@ export class ConversionService implements DaemonService {
             errors: mapResult.errors,
           });
 
-          options.onProgress?.({
+          const completeEvent = {
             category,
             processed: 1,
             total: 1,
             elapsedMs: categoryElapsed,
-            status: "complete",
-          });
+            status: "complete" as const,
+          };
+          options.onProgress?.(completeEvent);
+          this.options.progressEmitter?.emit(completeEvent);
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           const categoryElapsed = Date.now() - categoryStartedAt;
@@ -165,13 +171,15 @@ export class ConversionService implements DaemonService {
             errors: [{ item: category, reason }],
           });
 
-          options.onProgress?.({
+          const errorEvent = {
             category,
             processed: 0,
             total: 1,
             elapsedMs: categoryElapsed,
-            status: "error",
-          });
+            status: "error" as const,
+          };
+          options.onProgress?.(errorEvent);
+          this.options.progressEmitter?.emit(errorEvent);
         }
       }
 
