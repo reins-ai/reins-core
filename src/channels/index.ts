@@ -1,5 +1,7 @@
 export * from "./attachments";
+export * from "./auth-service";
 export * from "./auth-storage";
+export * from "./file-auth-storage";
 export * from "./memory-auth-storage";
 export * from "./discord";
 export * from "./conversation-bridge";
