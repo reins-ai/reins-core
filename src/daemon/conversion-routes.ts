@@ -1,7 +1,8 @@
 import { ALL_CONVERSION_CATEGORIES, type ConversionCategory } from "../agents/types";
+import { OpenClawDetector } from "../conversion/detector";
 import type { ReportGenerator } from "../conversion/report";
 import type { ConversionService } from "../conversion/service";
-import type { ConversionResult } from "../conversion/types";
+import type { ConversionResult, DetectionResult } from "../conversion/types";
 
 export interface ConversionRouteHandler {
   handle(
@@ -15,6 +16,7 @@ export interface ConversionRouteHandler {
 export interface ConversionRouteHandlerOptions {
   conversionService: ConversionService;
   reportGenerator: ReportGenerator;
+  detector?: OpenClawDetector;
 }
 
 interface StartConversionRequest {
@@ -122,7 +124,9 @@ export function createConversionRouteHandler(
   options: ConversionRouteHandlerOptions,
 ): ConversionRouteHandler {
   const { conversionService, reportGenerator } = options;
+  const detector = options.detector ?? new OpenClawDetector();
 
+  let cachedDetectionResult: DetectionResult | null = null;
   let currentConversionId: string | null = null;
   let conversionStatus: ConversionStatus = "idle";
   let conversionResult: ConversionResult | null = null;
@@ -277,6 +281,14 @@ export function createConversionRouteHandler(
           { report: reportResult.value, path },
           { headers: withJsonHeaders(corsHeaders) },
         );
+      }
+
+      // GET /api/openclaw/detect
+      if (url.pathname === "/api/openclaw/detect" && method === "GET") {
+        if (!cachedDetectionResult) {
+          cachedDetectionResult = await detector.detect();
+        }
+        return Response.json(cachedDetectionResult, { headers: withJsonHeaders(corsHeaders) });
       }
 
       // 405 for unmatched /api/convert/* paths

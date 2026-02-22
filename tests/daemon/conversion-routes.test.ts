@@ -6,7 +6,8 @@ import {
 } from "../../src/daemon/conversion-routes";
 import type { ConversionService } from "../../src/conversion/service";
 import type { ReportGenerator } from "../../src/conversion/report";
-import type { ConversionResult } from "../../src/conversion/types";
+import type { ConversionResult, DetectionResult } from "../../src/conversion/types";
+import type { OpenClawDetector } from "../../src/conversion/detector";
 import { ok, err } from "../../src/result";
 import { ReinsError } from "../../src/errors";
 
@@ -49,13 +50,23 @@ function createMockReportGenerator(
   } as unknown as ReportGenerator;
 }
 
+function createMockDetector(
+  result: DetectionResult = { found: true, path: "/home/user/.openclaw", platform: "linux" },
+): OpenClawDetector {
+  return {
+    detect: async () => result,
+  } as unknown as OpenClawDetector;
+}
+
 function createHandler(
   serviceOverrides: Partial<Record<string, unknown>> = {},
   reportOverrides: Partial<Record<string, unknown>> = {},
+  detector?: OpenClawDetector,
 ): ConversionRouteHandler {
   return createConversionRouteHandler({
     conversionService: createMockConversionService(serviceOverrides),
     reportGenerator: createMockReportGenerator(reportOverrides),
+    detector,
   });
 }
 
@@ -428,6 +439,44 @@ describe("ConversionRouteHandler", () => {
 
     expect(response).not.toBeNull();
     expect(response!.headers.get("content-type")).toBe("application/json");
+  });
+
+  // ── GET /api/openclaw/detect ─────────────────────────────────
+
+  it("GET /api/openclaw/detect returns DetectionResult from mock detector", async () => {
+    const detectionResult: DetectionResult = {
+      found: true,
+      path: "/home/user/.openclaw",
+      platform: "linux",
+    };
+    const handler = createHandler({}, {}, createMockDetector(detectionResult));
+    const response = await sendRequest(handler, "/api/openclaw/detect", "GET");
+
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+
+    const data = (await readJson(response!)) as DetectionResult;
+    expect(data.found).toBe(true);
+    expect(data.path).toBe("/home/user/.openclaw");
+    expect(data.platform).toBe("linux");
+  });
+
+  it("GET /api/openclaw/detect caches result across multiple requests", async () => {
+    let callCount = 0;
+    const mockDetector = {
+      detect: async (): Promise<DetectionResult> => {
+        callCount++;
+        return { found: true, path: "/home/user/.openclaw", platform: "linux" };
+      },
+    } as unknown as OpenClawDetector;
+
+    const handler = createHandler({}, {}, mockDetector);
+
+    await sendRequest(handler, "/api/openclaw/detect", "GET");
+    await sendRequest(handler, "/api/openclaw/detect", "GET");
+    await sendRequest(handler, "/api/openclaw/detect", "GET");
+
+    expect(callCount).toBe(1);
   });
 
   // ── Lifecycle integration ────────────────────────────────────
