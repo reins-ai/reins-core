@@ -94,6 +94,17 @@ export interface OpenClawConfig {
 }
 
 /**
+ * Tool-level configuration from an OpenClaw install (search providers, etc.).
+ */
+export interface OpenClawToolConfig {
+  search?: {
+    provider?: string;
+    apiKey?: string;
+    settings?: Record<string, unknown>;
+  };
+}
+
+/**
  * Result of parsing an OpenClaw config, including discovered subdirectory paths.
  */
 export interface ParsedOpenClawInstall {
