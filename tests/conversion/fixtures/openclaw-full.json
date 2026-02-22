@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.3-1",
+    "lastTouchedAt": "2026-02-21T10:00:00.000Z"
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:api_key": {
+        "provider": "anthropic",
+        "mode": "api_key",
+        "key": "sk-ant-fixture-key-FAKE"
+      },
+      "openai:api_key": {
+        "provider": "openai",
+        "mode": "api_key",
+        "key": "sk-fixture-openai-FAKE"
+      },
+      "google:oauth": {
+        "provider": "google",
+        "mode": "oauth",
+        "token": "ya29-fixture-FAKE"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "anthropic/claude-sonnet-4-5" },
+      "workspace": "/tmp/fixture-openclaw/workspace",
+      "maxConcurrent": 4
+    },
+    "named": {
+      "eleanor": {
+        "id": "eleanor",
+        "workspacePath": "/tmp/fixture-openclaw/workspaces/eleanor",
+        "modelOverride": "anthropic/claude-opus-4-5",
+        "skills": ["web-search"],
+        "identityFiles": {
+          "SOUL.md": "You are Eleanor, Chief of Staff.",
+          "MEMORY.md": "# Memory\nNo entries yet.",
+          "IDENTITY.md": "# Eleanor\nRole: Chief of Staff\nModel: claude-opus-4-5"
+        }
+      },
+      "max": {
+        "id": "max",
+        "workspacePath": "/tmp/fixture-openclaw/workspaces/max",
+        "modelOverride": "openai/gpt-4o",
+        "skills": []
+      },
+      "cfo": {
+        "id": "cfo",
+        "workspacePath": "/tmp/fixture-openclaw/workspaces/cfo",
+        "modelOverride": "anthropic/claude-sonnet-4-5",
+        "skills": ["spreadsheet"],
+        "identityFiles": {
+          "SOUL.md": "You are the CFO, a financial advisor.",
+          "IDENTITY.md": "# CFO\nRole: Financial Advisor"
+        }
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "type": "telegram",
+      "token": "9876543210:TELEGRAM-FIXTURE-FAKE",
+      "chatId": "-100987654321"
+    },
+    "discord": {
+      "type": "discord",
+      "token": "DISCORD.FIXTURE.TOKEN.FAKE",
+      "guildId": "123456789012345678",
+      "channelId": "987654321098765432"
+    }
+  },
+  "skills": {
+    "web-search": {
+      "name": "web-search",
+      "description": "Search the web",
+      "version": "1.0.0"
+    },
+    "spreadsheet": {
+      "name": "spreadsheet",
+      "description": "Work with spreadsheets",
+      "version": "0.9.0"
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "headless": false,
+    "defaultProfile": "default"
+  },
+  "gateway": {
+    "port": 8080,
+    "authMode": "token",
+    "authToken": "rmtest-fixture-gateway-token-FAKE",
+    "tailscale": { "enabled": false }
+  },
+  "customPlugin": {
+    "enabled": true,
+    "config": { "key": "value" }
+  },
+  "legacyField": "should-end-up-in-unknownFields"
+}

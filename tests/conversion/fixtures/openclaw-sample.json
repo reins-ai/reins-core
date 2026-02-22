@@ -20,6 +20,24 @@
       "model": { "primary": "anthropic/claude-sonnet-4-5" },
       "workspace": "/home/testuser/.openclaw/workspace",
       "maxConcurrent": 4
+    },
+    "named": {
+      "eleanor": {
+        "id": "eleanor",
+        "workspacePath": "/home/testuser/.openclaw/workspaces/eleanor",
+        "modelOverride": "anthropic/claude-opus-4-5",
+        "skills": ["web-search", "calendar"],
+        "identityFiles": {
+          "SOUL.md": "You are Eleanor, Chief of Staff.",
+          "IDENTITY.md": "# Eleanor\nRole: Chief of Staff"
+        }
+      },
+      "max": {
+        "id": "max",
+        "workspacePath": "/home/testuser/.openclaw/workspaces/max",
+        "modelOverride": "openai/gpt-4o",
+        "skills": ["web-search"]
+      }
     }
   },
   "channels": {
@@ -27,6 +45,18 @@
       "type": "telegram",
       "token": "1234567890:FAKE_TOKEN_FOR_TESTING",
       "chatId": "-100123456789"
+    }
+  },
+  "skills": {
+    "web-search": {
+      "name": "web-search",
+      "description": "Search the web for information",
+      "version": "1.0.0"
+    },
+    "calendar": {
+      "name": "calendar",
+      "description": "Read and write calendar events",
+      "version": "1.0.0"
     }
   },
   "gateway": {
