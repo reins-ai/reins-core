@@ -145,6 +145,7 @@ describe("FirstRunDetector", () => {
         "welcome",
         "daemon-install",
         "provider-keys",
+        "openclaw-migration",
         "model-select",
         "workspace",
         "personality",

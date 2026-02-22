@@ -42,6 +42,11 @@ export {
   type ProviderSetupStepOptions,
 } from "./provider-setup";
 
+export {
+  OpenClawMigrationStep,
+  type OpenClawMigrationStepOptions,
+} from "./openclaw-migration";
+
 export type {
   OnboardingStepHandler,
   StepDefaults,

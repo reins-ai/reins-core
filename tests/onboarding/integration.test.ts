@@ -17,11 +17,13 @@ import {
 import { WelcomeStep } from "../../src/onboarding/steps/welcome";
 import { DaemonInstallStep } from "../../src/onboarding/steps/daemon-install";
 import { ProviderSetupStep } from "../../src/onboarding/steps/provider-setup";
+import { OpenClawMigrationStep } from "../../src/onboarding/steps/openclaw-migration";
 import { ModelSelectionStep } from "../../src/onboarding/steps/model-selection";
 import { WorkspaceStep } from "../../src/onboarding/steps/workspace";
 import { PersonalityStep } from "../../src/onboarding/steps/personality";
 import { FeatureDiscoveryStep } from "../../src/onboarding/steps/feature-discovery";
 import { detectProviderFromKey } from "../../src/onboarding/key-detect";
+import type { OpenClawDetector } from "../../src/conversion/detector";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,6 +65,16 @@ function createRealStepHandlers(overrides?: {
     validateKey: overrides?.validateKey ?? (() => Promise.resolve(true)),
   });
 
+  const openClawMigration = new OpenClawMigrationStep({
+    detector: {
+      detect: async () => ({
+        found: false,
+        path: "",
+        platform: "linux",
+      }),
+    } as unknown as OpenClawDetector,
+  });
+
   const modelSelection = new ModelSelectionStep({
     listModels: overrides?.listModels ?? (() => Promise.resolve([
       { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", provider: "anthropic" },
@@ -76,7 +88,16 @@ function createRealStepHandlers(overrides?: {
   const personality = new PersonalityStep();
   const featureDiscovery = new FeatureDiscoveryStep();
 
-  return [welcome, daemonInstall, providerSetup, modelSelection, workspace, personality, featureDiscovery];
+  return [
+    welcome,
+    daemonInstall,
+    providerSetup,
+    openClawMigration,
+    modelSelection,
+    workspace,
+    personality,
+    featureDiscovery,
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -134,31 +155,38 @@ describe("Onboarding Integration", () => {
       });
       expect(step3.ok).toBe(true);
       if (!step3.ok) return;
-      expect(step3.value.currentStep).toBe("model-select");
+      expect(step3.value.currentStep).toBe("openclaw-migration");
 
-      // Step 4: Model select — auto-selects first available model
+      // Step 4: OpenClaw migration — auto-skips when not detected
       const step4 = await engine.completeCurrentStep();
       expect(step4.ok).toBe(true);
       if (!step4.ok) return;
-      expect(step4.value.currentStep).toBe("workspace");
+      expect(step4.value.currentStep).toBe("model-select");
 
-      // Step 5: Workspace — uses default path
+      // Step 5: Model select — auto-selects first available model
       const step5 = await engine.completeCurrentStep();
       expect(step5.ok).toBe(true);
       if (!step5.ok) return;
-      expect(step5.value.currentStep).toBe("personality");
+      expect(step5.value.currentStep).toBe("workspace");
 
-      // Step 6: Personality — auto-selects balanced
+      // Step 6: Workspace — uses default path
       const step6 = await engine.completeCurrentStep();
       expect(step6.ok).toBe(true);
       if (!step6.ok) return;
-      expect(step6.value.currentStep).toBe("feature-discovery");
+      expect(step6.value.currentStep).toBe("personality");
 
-      // Step 7: Feature discovery — informational, auto-completes
+      // Step 7: Personality — auto-selects balanced
       const step7 = await engine.completeCurrentStep();
       expect(step7.ok).toBe(true);
       if (!step7.ok) return;
-      expect(step7.value.isComplete).toBe(true);
+
+      expect(step7.value.currentStep).toBe("feature-discovery");
+
+      // Step 8: Feature discovery — informational, auto-completes
+      const step8 = await engine.completeCurrentStep();
+      expect(step8.ok).toBe(true);
+      if (!step8.ok) return;
+      expect(step8.value.isComplete).toBe(true);
 
       // Verify wizard completion
       expect(engine.isComplete()).toBe(true);
@@ -182,6 +210,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep({ userName: "Alice" });
       await engine.completeCurrentStep();
       await engine.completeCurrentStep({ apiKey: "sk-ant-key-abc" });
+      await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
@@ -224,6 +253,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep();
       await engine.completeCurrentStep(); // feature-discovery
 
       // Verify stepEnter events for all 7 steps
@@ -232,7 +262,7 @@ describe("Onboarding Integration", () => {
 
       // Verify stepComplete events for all 7 steps
       const completeEvents = events.filter((e) => e.type === "stepComplete");
-      expect(completeEvents.length).toBe(ONBOARDING_STEPS.length);
+      expect(completeEvents.length).toBe(ONBOARDING_STEPS.length - 1);
 
       // Verify wizardComplete event
       const wizardComplete = events.find((e) => e.type === "wizardComplete");
@@ -263,6 +293,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep();
       await engine.completeCurrentStep(); // feature-discovery
 
       // Verify checkpoint file
@@ -279,7 +310,9 @@ describe("Onboarding Integration", () => {
 
       // All 7 steps recorded in order
       const stepNames = config.completedSteps.map((s) => s.step);
-      expect(stepNames).toEqual([...ONBOARDING_STEPS]);
+      expect(stepNames).toEqual(
+        ONBOARDING_STEPS.filter((step) => step !== "openclaw-migration"),
+      );
     });
 
     it("provider key auto-detection works within the flow", async () => {
@@ -364,24 +397,28 @@ describe("Onboarding Integration", () => {
       });
       expect(step3.ok).toBe(true);
 
-      // Step 4: Model select — advanced mode shows full model list
+      // Step 4: OpenClaw migration
       const step4 = await engine.completeCurrentStep();
       expect(step4.ok).toBe(true);
 
-      // Step 5: Workspace — advanced mode allows custom path
+      // Step 5: Model select — advanced mode shows full model list
       const step5 = await engine.completeCurrentStep();
       expect(step5.ok).toBe(true);
 
-      // Step 6: Personality — advanced mode shows all preset cards
+      // Step 6: Workspace — advanced mode allows custom path
       const step6 = await engine.completeCurrentStep();
       expect(step6.ok).toBe(true);
 
-      // Step 7: Feature discovery — informational
+      // Step 7: Personality — advanced mode shows all preset cards
       const step7 = await engine.completeCurrentStep();
       expect(step7.ok).toBe(true);
       if (!step7.ok) return;
 
-      expect(step7.value.isComplete).toBe(true);
+      const step8 = await engine.completeCurrentStep();
+      expect(step8.ok).toBe(true);
+      if (!step8.ok) return;
+
+      expect(step8.value.isComplete).toBe(true);
       expect(engine.isComplete()).toBe(true);
     });
 
@@ -443,8 +480,9 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep({ apiKey: "sk-test" });
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep();
 
-      // Step 6: Personality — should return card data
+      // Step 7: Personality — should return card data
       const step6 = await engine.completeCurrentStep();
       expect(step6.ok).toBe(true);
 
@@ -497,7 +535,7 @@ describe("Onboarding Integration", () => {
       await engine1.completeCurrentStep({ apiKey: "sk-ant-key-xyz" });
 
       const state1 = engine1.getState();
-      expect(state1.currentStep).toBe("model-select");
+      expect(state1.currentStep).toBe("openclaw-migration");
       expect(state1.completedSteps).toHaveLength(3);
 
       // Simulate crash — engine1 is discarded
@@ -515,8 +553,8 @@ describe("Onboarding Integration", () => {
       expect(resumeResult.ok).toBe(true);
       if (!resumeResult.ok) return;
 
-      // Should resume at step 4 (model-select)
-      expect(resumeResult.value.currentStep).toBe("model-select");
+      // Should resume at step 4 (openclaw-migration)
+      expect(resumeResult.value.currentStep).toBe("openclaw-migration");
       expect(resumeResult.value.currentStepIndex).toBe(3);
       expect(resumeResult.value.completedSteps).toEqual([
         "welcome",
@@ -560,8 +598,8 @@ describe("Onboarding Integration", () => {
 
       await engine2.initialize();
 
-      // Complete remaining 6 steps (daemon-install through feature-discovery)
-      for (let i = 0; i < 6; i++) {
+      // Complete remaining 7 steps (daemon-install through feature-discovery)
+      for (let i = 0; i < 7; i++) {
         const data: Record<string, unknown> = {};
         if (i === 1) data.apiKey = "sk-ant-key";
         const result = await engine2.completeCurrentStep(
@@ -626,16 +664,18 @@ describe("Onboarding Integration", () => {
 
       await engine2.initialize();
 
-      // Complete remaining 5 steps
+      // Complete remaining 6 steps
       await engine2.completeCurrentStep({ apiKey: "sk-ant-key" });
+      await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep(); // feature-discovery
 
-      // Only steps 3-7 should have been executed in session 2
+      // Only steps 3-8 should have been executed in session 2
       expect(executionLog).toEqual([
         "provider-keys",
+        "openclaw-migration",
         "model-select",
         "workspace",
         "personality",
@@ -675,9 +715,9 @@ describe("Onboarding Integration", () => {
       expect(e2.getState().currentStep).toBe("provider-keys");
       await e2.completeCurrentStep({ apiKey: "sk-ant-key" });
       await e2.completeCurrentStep();
-      expect(e2.getState().currentStep).toBe("workspace");
+      expect(e2.getState().currentStep).toBe("model-select");
 
-      // --- Session 3: Complete steps 5-7 ---
+      // --- Session 3: Complete steps 5-8 ---
       const cp3 = new OnboardingCheckpointService({ dataRoot });
       const e3 = new OnboardingEngine({
         checkpoint: cp3,
@@ -687,7 +727,8 @@ describe("Onboarding Integration", () => {
       });
 
       await e3.initialize();
-      expect(e3.getState().currentStep).toBe("workspace");
+      expect(e3.getState().currentStep).toBe("model-select");
+      await e3.completeCurrentStep();
       await e3.completeCurrentStep();
       await e3.completeCurrentStep();
       await e3.completeCurrentStep(); // feature-discovery
@@ -754,6 +795,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
+      await engine.completeCurrentStep();
       await engine.completeCurrentStep(); // feature-discovery
 
       // Verify wizardComplete config has userName
@@ -789,6 +831,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep({ apiKey: "sk-ant-key" });
+      await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
       await engine.completeCurrentStep();
@@ -862,6 +905,7 @@ describe("Onboarding Integration", () => {
       await engine.completeCurrentStep({ userName: "Pat" });
       await engine.completeCurrentStep();
       await engine.completeCurrentStep({ apiKey: "sk-ant-key" });
+      await engine.completeCurrentStep();
 
       // Model select with no models — should still complete
       const step4 = await engine.completeCurrentStep();

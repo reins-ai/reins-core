@@ -8,6 +8,7 @@ import {
   ONBOARDING_CHECKPOINT_VERSION,
   ONBOARDING_STEPS,
   type CompletedStepRecord,
+  type MigrationState,
   type OnboardingConfig,
   type OnboardingMode,
   type OnboardingStep,
@@ -238,6 +239,9 @@ function normalizeCheckpoint(value: unknown): OnboardingConfig {
     completedAt: typeof value.completedAt === "string" ? value.completedAt : null,
     userName: typeof value.userName === "string" ? value.userName : undefined,
     personality: isRecord(value.personality) ? normalizePersonality(value.personality) : undefined,
+    migrationState: isRecord(value.migrationState)
+      ? normalizeMigrationState(value.migrationState)
+      : undefined,
   };
 }
 
@@ -274,4 +278,16 @@ function normalizePersonality(
     : undefined;
 
   return { preset, customPrompt };
+}
+
+function normalizeMigrationState(value: Record<string, unknown>): MigrationState {
+  return {
+    detected: value.detected === true,
+    detectedPath: typeof value.detectedPath === "string" ? value.detectedPath : null,
+    selectedCategories: Array.isArray(value.selectedCategories)
+      ? value.selectedCategories.filter((c): c is string => typeof c === "string")
+      : [],
+    conversionStarted: value.conversionStarted === true,
+    conversionComplete: value.conversionComplete === true,
+  };
 }
