@@ -159,10 +159,14 @@ import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
 import { AgentStore } from "../agents/store";
+import { AgentWorkspaceManager } from "../agents/workspace";
+import { IdentityFileManager } from "../agents/identity";
 import { createAgentRouteHandler, type AgentRouteHandler } from "./agent-routes";
 import { ConversionService } from "../conversion/service";
 import { ProgressEmitter } from "../conversion/progress";
 import { ReportGenerator } from "../conversion/report";
+import { ImportLogWriter } from "../conversion/import-log";
+import { createKeychainProvider } from "../security/keychain-provider";
 import {
   createConversionRouteHandler,
   isConversionWebSocketMessage,
@@ -1192,9 +1196,9 @@ export class DaemonHttpServer implements DaemonManagedService {
     activeCount: 0,
     metaToolRegistered: false,
   };
-  private readonly conversionService: ConversionService | null;
+  private readonly conversionService: ConversionService;
   private readonly conversionProgressEmitter: ProgressEmitter;
-  private conversionRouteHandler: ConversionRouteHandler | null = null;
+  private readonly conversionRouteHandler: ConversionRouteHandler;
 
   constructor(options: DaemonHttpServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
@@ -1261,21 +1265,25 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
     }
 
-    this.agentRouteHandler = createAgentRouteHandler({
-      agentStore: options.agentStore ?? new AgentStore(),
+    const agentStore = options.agentStore ?? new AgentStore();
+
+    this.agentRouteHandler = createAgentRouteHandler({ agentStore });
+
+    this.conversionProgressEmitter = new ProgressEmitter();
+    this.conversionService = options.conversionService ?? new ConversionService({
+      keychainProvider: createKeychainProvider(),
+      agentStore,
+      workspaceManager: new AgentWorkspaceManager(),
+      identityManager: new IdentityFileManager(),
+      importLogWriter: new ImportLogWriter(),
     });
 
-    this.conversionService = options.conversionService ?? null;
-    this.conversionProgressEmitter = new ProgressEmitter();
-
-    if (this.conversionService) {
-      this.conversionRouteHandler = createConversionRouteHandler({
-        conversionService: this.conversionService,
-        reportGenerator: new ReportGenerator(),
-        progressEmitter: this.conversionProgressEmitter,
-        wsRegistry: this.wsRegistry,
-      });
-    }
+    this.conversionRouteHandler = createConversionRouteHandler({
+      conversionService: this.conversionService,
+      reportGenerator: new ReportGenerator(),
+      progressEmitter: this.conversionProgressEmitter,
+      wsRegistry: this.wsRegistry,
+    });
   }
 
   /**
@@ -1424,14 +1432,12 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.initializeSkillTools();
     this.initializeBrowserTools();
 
-    if (this.conversionService) {
-      try {
-        await this.conversionService.start();
-      } catch (error) {
-        log("warn", "ConversionService failed to start; conversion features unavailable", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    try {
+      await this.conversionService.start();
+    } catch (error) {
+      log("warn", "ConversionService failed to start; conversion features unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     try {
@@ -1516,14 +1522,12 @@ export class DaemonHttpServer implements DaemonManagedService {
         this.channelRouteHandler = null;
       }
 
-      if (this.conversionService) {
-        try {
-          await this.conversionService.stop();
-        } catch (error) {
-          log("warn", "ConversionService failed to stop cleanly", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+      try {
+        await this.conversionService.stop();
+      } catch (error) {
+        log("warn", "ConversionService failed to stop cleanly", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
 
       await this.stopEnvironmentSessionRuntime();
@@ -1721,11 +1725,9 @@ export class DaemonHttpServer implements DaemonManagedService {
         return channelResponse;
       }
 
-      if (this.conversionRouteHandler) {
-        const conversionResponse = await this.conversionRouteHandler.handle(url, method, request, corsHeaders);
-        if (conversionResponse !== null) {
-          return conversionResponse;
-        }
+      const conversionResponse = await this.conversionRouteHandler.handle(url, method, request, corsHeaders);
+      if (conversionResponse !== null) {
+        return conversionResponse;
       }
 
       // Message ingest endpoint — canonical (/api/messages) and compatibility (/messages)
