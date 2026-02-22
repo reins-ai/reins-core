@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.3-1",
+    "lastTouchedAt": "2026-02-16T07:12:57.432Z"
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:manual": {
+        "provider": "anthropic",
+        "mode": "token"
+      },
+      "google:oauth": {
+        "provider": "google",
+        "mode": "oauth"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "anthropic/claude-sonnet-4-5" },
+      "workspace": "/home/testuser/.openclaw/workspace",
+      "maxConcurrent": 4
+    }
+  },
+  "channels": {
+    "telegram": {
+      "type": "telegram",
+      "token": "1234567890:FAKE_TOKEN_FOR_TESTING",
+      "chatId": "-100123456789"
+    }
+  },
+  "gateway": {
+    "port": 8080,
+    "authMode": "token",
+    "authToken": "fake-gateway-token"
+  },
+  "unknownPlugin": {
+    "someField": "someValue"
+  }
+}
