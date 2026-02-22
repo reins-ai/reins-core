@@ -1,4 +1,5 @@
 import { ReinsError } from "../errors";
+import type { ConversionCategory } from "../agents/types";
 
 /**
  * Platform identifier for OpenClaw detection.
@@ -116,4 +117,46 @@ export interface ParsedOpenClawInstall {
   skillDirs: string[];
   sharedReferenceDirs: string[];
   credentialFiles: string[];
+}
+
+export interface ConversionOptions {
+  selectedCategories: ConversionCategory[];
+  conflictStrategy?: "overwrite" | "merge" | "skip";
+  onProgress?: (event: ConversionProgressEvent) => void;
+  onConflict?: (conflict: ConflictInfo) => Promise<"overwrite" | "merge" | "skip">;
+  dryRun?: boolean;
+}
+
+export interface ConversionProgressEvent {
+  category: ConversionCategory;
+  processed: number;
+  total: number;
+  elapsedMs: number;
+  status: "started" | "complete" | "error";
+}
+
+export interface ConflictInfo {
+  category: ConversionCategory;
+  itemName: string;
+  existingValue: unknown;
+  incomingValue: unknown;
+  path: string;
+}
+
+export interface CategoryResult {
+  category: ConversionCategory;
+  converted: number;
+  skipped: number;
+  errors: Array<{ item: string; reason: string }>;
+  skippedReason?: string;
+}
+
+export interface ConversionResult {
+  success: boolean;
+  categories: CategoryResult[];
+  totalConverted: number;
+  totalSkipped: number;
+  totalErrors: number;
+  elapsedMs: number;
+  reportPath?: string;
 }
