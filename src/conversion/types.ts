@@ -79,6 +79,7 @@ export interface OpenClawConfig {
   agents?: {
     defaults?: OpenClawAgentDefaults;
     named?: Record<string, Partial<OpenClawAgentConfig>>;
+    list?: Array<Partial<OpenClawAgentConfig> & { id?: string; name?: string }>;
   };
   channels?: Record<string, OpenClawChannelConfig>;
   gateway?: {

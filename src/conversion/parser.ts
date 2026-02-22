@@ -174,6 +174,10 @@ function buildConfig(parsed: Record<string, unknown>): OpenClawConfig {
       agentsConfig.named = parsed.agents.named as NonNullable<OpenClawConfig["agents"]>["named"];
     }
 
+    if (Array.isArray(parsed.agents.list)) {
+      agentsConfig.list = parsed.agents.list as NonNullable<OpenClawConfig["agents"]>["list"];
+    }
+
     config.agents = agentsConfig;
   }
 

@@ -414,7 +414,20 @@ export class ConversionService implements DaemonService {
           identityManager: this.options.identityManager,
         });
 
-        return mapper.map(context.parsedInstall.config.agents?.named ?? {}, mapperOptions);
+        // Support both agents.named (Record) and agents.list (Array) formats.
+        // agents.list entries use `id` as the key; fall back to slugified `name`.
+        const namedAgents = context.parsedInstall.config.agents?.named ?? {};
+        const listAgents = context.parsedInstall.config.agents?.list ?? [];
+
+        const allAgents: Record<string, Partial<import("./types").OpenClawAgentConfig>> = { ...namedAgents };
+        for (const entry of listAgents) {
+          const key = (entry.id ?? entry.name ?? "").trim();
+          if (key.length > 0 && !(key in allAgents)) {
+            allAgents[key] = entry;
+          }
+        }
+
+        return mapper.map(allAgents, mapperOptions);
       },
       "workspace-memory": async (mapperOptions) => {
         const mapper = new MemoryMapper(this.options.workspaceManager);
@@ -428,7 +441,14 @@ export class ConversionService implements DaemonService {
       "channel-credentials": async (mapperOptions) => {
         const mapper = new ChannelMapper(this.options.keychainProvider);
         const channels = Object.entries(context.parsedInstall.config.channels ?? {}).map(
-          ([channelType, config]) => ({ ...config, type: channelType }),
+          ([channelType, config]) => ({
+            ...config,
+            type: channelType,
+            // Inject name from the map key if the value doesn't have one.
+            name: typeof (config as Record<string, unknown>).name === "string"
+              ? (config as Record<string, unknown>).name as string
+              : channelType,
+          }),
         );
         return mapper.map(channels, mapperOptions);
       },
@@ -465,9 +485,9 @@ export class ConversionService implements DaemonService {
 }
 
 function buildWorkspaceMappings(parsedInstall: ParsedOpenClawInstall): WorkspaceMapping[] {
-  const namedAgents = parsedInstall.config.agents?.named ?? {};
   const mappings: WorkspaceMapping[] = [];
 
+  const namedAgents = parsedInstall.config.agents?.named ?? {};
   for (const [name, config] of Object.entries(namedAgents)) {
     const openClawPath = typeof config.workspacePath === "string"
       ? config.workspacePath
@@ -478,6 +498,23 @@ function buildWorkspaceMappings(parsedInstall: ParsedOpenClawInstall): Workspace
 
     const reinsAgentId = config.id ?? slugify(name);
     mappings.push({ openClawPath, reinsAgentId });
+  }
+
+  // Also handle the agents.list format (uses `workspace` field, not `workspacePath`).
+  const listAgents = parsedInstall.config.agents?.list ?? [];
+  for (const entry of listAgents) {
+    const raw = entry as unknown as Record<string, unknown>;
+    const openClawPath = typeof raw.workspace === "string" ? raw.workspace : undefined;
+    if (!openClawPath) {
+      continue;
+    }
+
+    const agentId = (entry.id ?? entry.name ?? "").trim();
+    if (agentId.length === 0) {
+      continue;
+    }
+
+    mappings.push({ openClawPath, reinsAgentId: slugify(agentId) });
   }
 
   return mappings;
@@ -491,10 +528,19 @@ function buildConversionPlan(
 
   if (selected.has("agents")) {
     const namedAgents = parsedInstall.config.agents?.named ?? {};
-    plan.agents = Object.entries(namedAgents).map(([name, config]) => ({
+    const listAgents = parsedInstall.config.agents?.list ?? [];
+
+    const fromNamed = Object.entries(namedAgents).map(([name, config]) => ({
       name,
       ...config,
     }));
+
+    const fromList = listAgents.map((entry) => ({
+      name: entry.name ?? entry.id ?? "",
+      ...entry,
+    }));
+
+    plan.agents = [...fromNamed, ...fromList];
   }
 
   if (selected.has("auth-profiles")) {
