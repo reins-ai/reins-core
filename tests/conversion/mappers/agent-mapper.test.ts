@@ -204,6 +204,27 @@ describe("AgentMapper", () => {
       expect(listResult.value[0].role).toBe("assistant");
     });
 
+    it("maps OpenClaw role when provided", async () => {
+      const fileCopier = makeMockFileCopier();
+      const mapper = new AgentMapper(
+        { agentStore: store, workspaceManager, identityManager },
+        fileCopier,
+      );
+
+      const agents = makeAgents({
+        "Coordinator": {
+          role: "chief-of-staff",
+        },
+      });
+
+      await mapper.map(agents);
+
+      const listResult = await store.list();
+      expect(listResult.ok).toBe(true);
+      if (!listResult.ok) return;
+      expect(listResult.value[0].role).toBe("chief-of-staff");
+    });
+
     it("sets empty skills array when none provided", async () => {
       const fileCopier = makeMockFileCopier();
       const mapper = new AgentMapper(

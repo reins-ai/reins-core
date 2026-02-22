@@ -1,3 +1,5 @@
+import type { ConflictResolution, ConflictStrategy } from "../types";
+
 /**
  * Shared types for all OpenClaw → Reins data mappers.
  */
@@ -25,4 +27,6 @@ export interface MapResult {
 export interface MapperOptions {
   dryRun?: boolean;
   onProgress?: (processed: number, total: number) => void;
+  conflictStrategy?: ConflictStrategy;
+  conflicts?: ConflictResolution[];
 }

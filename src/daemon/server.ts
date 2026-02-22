@@ -158,6 +158,8 @@ import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
+import { AgentStore } from "../agents/store";
+import { createAgentRouteHandler, type AgentRouteHandler } from "./agent-routes";
 import { ConversionService } from "../conversion/service";
 import { ProgressEmitter } from "../conversion/progress";
 import { ReportGenerator } from "../conversion/report";
@@ -495,6 +497,7 @@ export interface DaemonHttpServerOptions {
   memoryRepository?: MemoryRepository;
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
   channelService?: ChannelDaemonService;
+  agentStore?: AgentStore;
   conversionService?: ConversionService;
   skillService?: SkillDaemonService;
   browserService?: BrowserDaemonService;
@@ -1163,6 +1166,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   };
   private channelService: ChannelDaemonService | null = null;
   private channelRouteHandler: ChannelRouteHandler | null = null;
+  private readonly agentRouteHandler: AgentRouteHandler;
   private configStore: ConfigStore | null = null;
   private environmentResolver: FileEnvironmentResolver | null = null;
   private environmentSwitchService: EnvironmentSwitchService | null = null;
@@ -1256,6 +1260,10 @@ export class DaemonHttpServer implements DaemonManagedService {
         channelService: this.providedChannelService,
       });
     }
+
+    this.agentRouteHandler = createAgentRouteHandler({
+      agentStore: options.agentStore ?? new AgentStore(),
+    });
 
     this.conversionService = options.conversionService ?? null;
     this.conversionProgressEmitter = new ProgressEmitter();
@@ -1557,7 +1565,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     // CORS headers for local development
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Expose-Headers": "X-Reins-Token",
     };
@@ -1659,6 +1667,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Agent status endpoint
       if (url.pathname === "/api/agents/status" && method === "GET") {
         return this.handleAgentsStatus(corsHeaders);
+      }
+
+      const agentResponse = await this.agentRouteHandler.handle(url, method, request, corsHeaders);
+      if (agentResponse !== null) {
+        return agentResponse;
       }
 
       // Schedule list endpoint

@@ -124,8 +124,11 @@ export class AgentMapper {
     }
   }
 
-  private extractRole(_config: Partial<OpenClawAgentConfig>): string {
-    // OpenClawAgentConfig doesn't have a role field — derive from id or default
+  private extractRole(config: Partial<OpenClawAgentConfig>): string {
+    if (typeof config.role === "string" && config.role.trim().length > 0) {
+      return config.role;
+    }
+
     return "assistant";
   }
 

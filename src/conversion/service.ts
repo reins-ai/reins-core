@@ -11,6 +11,12 @@ import { ReinsError } from "../errors";
 import { err, ok, type Result } from "../result";
 import type { KeychainProvider } from "../security/keychain-provider";
 import { OpenClawDetector } from "./detector";
+import {
+  ConflictDetector,
+  ConflictResolver,
+  type Conflict,
+  type ConversionPlan,
+} from "./conflict";
 import { ImportLogWriter } from "./import-log";
 import {
   AgentMapper,
@@ -27,12 +33,16 @@ import {
   type WorkspaceMapping,
 } from "./mappers";
 import { OpenClawParser } from "./parser";
-import type { ProgressEmitter } from "./progress";
 import type {
   CategoryResult,
+  ConflictResolution,
+  ConflictStrategy,
   ConversionOptions,
   ConversionResult,
+  ConversionProgressEvent,
   OpenClawConfig,
+  OpenClawAuthProfile,
+  OpenClawChannelConfig,
   OpenClawToolConfig,
   ParsedOpenClawInstall,
 } from "./types";
@@ -51,6 +61,30 @@ interface ConversionExecutionContext {
   parsedInstall: ParsedOpenClawInstall;
 }
 
+interface ConflictDetectionContext {
+  resolutions: ConflictResolution[];
+  skippedCategories: Set<ConversionCategory>;
+  strategyByCategory: Map<ConversionCategory, ConflictStrategy>;
+}
+
+interface ProgressEmitterLike {
+  emit(event: ConversionProgressEvent): void;
+  emitThrottled(event: ConversionProgressEvent): void;
+}
+
+interface ConflictDetectorLike {
+  detect(plan: ConversionPlan): Promise<Conflict[]>;
+}
+
+interface ConflictResolverLike {
+  resolve(conflict: Conflict, strategy: ConflictStrategy): {
+    conflict: Conflict;
+    strategy: ConflictStrategy;
+    outcome: "applied" | "skipped" | "merged";
+    mergedValue?: unknown;
+  };
+}
+
 export interface ConversionServiceOptions {
   keychainProvider: KeychainProvider;
   agentStore: AgentStore;
@@ -60,7 +94,9 @@ export interface ConversionServiceOptions {
   openClawDetector?: OpenClawDetector;
   detectedPath?: string;
   parser?: OpenClawParser;
-  progressEmitter?: ProgressEmitter;
+  progressEmitter?: ProgressEmitterLike;
+  conflictDetector?: ConflictDetectorLike;
+  conflictResolver?: ConflictResolverLike;
   mapperRunners?: Partial<Record<ConversionCategory, ConversionCategoryRunner>>;
 }
 
@@ -75,12 +111,19 @@ export class ConversionService implements DaemonService {
   private readonly options: ConversionServiceOptions;
   private readonly detector: OpenClawDetector;
   private readonly parser: OpenClawParser;
+  private readonly conflictDetector: ConflictDetectorLike;
+  private readonly conflictResolver: ConflictResolverLike;
   private running = false;
 
   constructor(options: ConversionServiceOptions) {
     this.options = options;
     this.detector = options.openClawDetector ?? new OpenClawDetector();
     this.parser = options.parser ?? new OpenClawParser();
+    this.conflictDetector = options.conflictDetector ?? new ConflictDetector({
+      agentStore: options.agentStore,
+      keychainProvider: options.keychainProvider,
+    });
+    this.conflictResolver = options.conflictResolver ?? new ConflictResolver();
   }
 
   async start(): Promise<void> {
@@ -99,6 +142,7 @@ export class ConversionService implements DaemonService {
     const startedAt = Date.now();
     const selected = new Set(options.selectedCategories);
     const categoryResults: CategoryResult[] = [];
+    let conflictResolutions: ConflictResolution[] = [];
 
     try {
       const needsDefaultContext = ALL_CONVERSION_CATEGORIES.some(
@@ -114,6 +158,17 @@ export class ConversionService implements DaemonService {
         context = contextResult.value;
       }
 
+      const conflictsResult = await this.detectAndResolveConflicts(
+        options,
+        selected,
+        context,
+      );
+      if (!conflictsResult.ok) {
+        return err(conflictsResult.error);
+      }
+
+      conflictResolutions = conflictsResult.value.resolutions;
+
       for (const category of ALL_CONVERSION_CATEGORIES) {
         if (!selected.has(category)) {
           categoryResults.push({
@@ -122,6 +177,17 @@ export class ConversionService implements DaemonService {
             skipped: 0,
             errors: [],
             skippedReason: "not selected",
+          });
+          continue;
+        }
+
+        if (conflictsResult.value.skippedCategories.has(category)) {
+          categoryResults.push({
+            category,
+            converted: 0,
+            skipped: 0,
+            errors: [],
+            skippedReason: "conflict strategy: skip",
           });
           continue;
         }
@@ -140,6 +206,21 @@ export class ConversionService implements DaemonService {
         try {
           const mapperOptions: MapperOptions = {
             dryRun: options.dryRun,
+            conflictStrategy:
+              conflictsResult.value.strategyByCategory.get(category) ??
+              options.conflictStrategy,
+            conflicts: conflictResolutions.filter((resolution) => resolution.conflict.category === category),
+            onProgress: (processed, total) => {
+              const progressEvent: ConversionProgressEvent = {
+                category,
+                processed,
+                total,
+                elapsedMs: Date.now() - categoryStartedAt,
+                status: "progress",
+              };
+              options.onProgress?.(progressEvent);
+              this.options.progressEmitter?.emitThrottled(progressEvent);
+            },
           };
           const mapResult = await this.runCategory(category, mapperOptions, context);
           const categoryElapsed = Date.now() - categoryStartedAt;
@@ -203,6 +284,7 @@ export class ConversionService implements DaemonService {
         totalSkipped,
         totalErrors,
         elapsedMs: Date.now() - startedAt,
+        conflicts: conflictResolutions,
       });
     } catch (cause) {
       return err(
@@ -212,6 +294,63 @@ export class ConversionService implements DaemonService {
         ),
       );
     }
+  }
+
+  private async detectAndResolveConflicts(
+    options: ConversionOptions,
+    selected: Set<ConversionCategory>,
+    context: ConversionExecutionContext | undefined,
+  ): Promise<Result<ConflictDetectionContext>> {
+    const plan = context
+      ? buildConversionPlan(context.parsedInstall, selected)
+      : {};
+    const conflicts = await this.conflictDetector.detect(plan);
+    if (conflicts.length === 0) {
+      return ok({
+        resolutions: [],
+        skippedCategories: new Set<ConversionCategory>(),
+        strategyByCategory: new Map<ConversionCategory, ConflictStrategy>(),
+      });
+    }
+
+    const resolved: ConflictResolution[] = [];
+    const skippedCategories = new Set<ConversionCategory>();
+    const strategyByCategory = new Map<ConversionCategory, ConflictStrategy>();
+
+    for (const conflict of conflicts) {
+      let strategy: ConflictStrategy = options.conflictStrategy ?? "skip";
+      if (options.onConflict) {
+        try {
+          strategy = await options.onConflict(conflict);
+        } catch (cause) {
+          return err(
+            new ConversionServiceError(
+              "Conflict resolution callback failed",
+              cause instanceof Error ? cause : undefined,
+            ),
+          );
+        }
+      }
+
+      const record = this.conflictResolver.resolve(conflict, strategy);
+      resolved.push({
+        conflict: record.conflict,
+        strategy: record.strategy,
+        outcome: record.outcome,
+        mergedValue: record.mergedValue,
+      });
+
+      strategyByCategory.set(conflict.category, strategy);
+      if (strategy === "skip") {
+        skippedCategories.add(conflict.category);
+      }
+    }
+
+    return ok({
+      resolutions: resolved,
+      skippedCategories,
+      strategyByCategory,
+    });
   }
 
   private async runCategory(
@@ -340,6 +479,43 @@ function buildWorkspaceMappings(parsedInstall: ParsedOpenClawInstall): Workspace
   }
 
   return mappings;
+}
+
+function buildConversionPlan(
+  parsedInstall: ParsedOpenClawInstall,
+  selected: Set<ConversionCategory>,
+): ConversionPlan {
+  const plan: ConversionPlan = {};
+
+  if (selected.has("agents")) {
+    const namedAgents = parsedInstall.config.agents?.named ?? {};
+    plan.agents = Object.entries(namedAgents).map(([name, config]) => ({
+      name,
+      ...config,
+    }));
+  }
+
+  if (selected.has("auth-profiles")) {
+    const profiles = Object.values(parsedInstall.config.auth?.profiles ?? {});
+    plan.providerKeys = profiles
+      .filter((profile): profile is OpenClawAuthProfile => typeof profile.provider === "string")
+      .map((profile) => ({
+        provider: profile.provider,
+        mode: profile.mode,
+      }));
+  }
+
+  if (selected.has("channel-credentials")) {
+    plan.channels = Object.entries(parsedInstall.config.channels ?? {}).map(([name, config]) => {
+      const channelConfig = config as OpenClawChannelConfig & { name?: string };
+      return {
+        name: typeof channelConfig.name === "string" ? channelConfig.name : name,
+        type: channelConfig.type,
+      };
+    });
+  }
+
+  return plan;
 }
 
 function extractToolConfig(config: OpenClawConfig): OpenClawToolConfig {

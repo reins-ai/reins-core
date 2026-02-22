@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   CONVERSION_PROGRESS_STREAM,
@@ -9,6 +12,7 @@ import {
 import type { ConversionService } from "../../src/conversion/service";
 import type { ReportGenerator } from "../../src/conversion/report";
 import type {
+  ConflictInfo,
   ConversionProgressEvent,
   ConversionResult,
   DetectionResult,
@@ -338,11 +342,14 @@ describe("ConversionRouteHandler", () => {
 
   it("GET /api/convert/report returns report when available", async () => {
     const reportContent = "# Reins Conversion Report\n**Status:** Success";
+    const tempDir = await mkdtemp(join(tmpdir(), "reins-conversion-report-"));
+    const reportPath = join(tempDir, "report.md");
+    await Bun.write(reportPath, reportContent);
+
     const handler = createHandler(
       {},
       {
-        readLastReport: async () => ok(reportContent),
-        getLastReportPath: () => "/home/user/.reins/conversion-report-2026.md",
+        getLastReportPath: () => reportPath,
       },
     );
 
@@ -355,20 +362,119 @@ describe("ConversionRouteHandler", () => {
       path: string;
     };
     expect(data.report).toBe(reportContent);
-    expect(data.path).toBe("/home/user/.reins/conversion-report-2026.md");
+    expect(data.path).toBe(reportPath);
+
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("generates report after successful conversion and stores reportPath in status", async () => {
+    const result = makeConversionResult();
+    let generatedReportPath: string | null = null;
+
+    const handler = createHandler(
+      {
+        convert: async () => ok(result),
+      },
+      {
+        generate: async () => {
+          generatedReportPath = "/tmp/generated-report.md";
+          return ok(generatedReportPath);
+        },
+      },
+    );
+
+    const startResponse = await sendRequest(handler, "/api/convert/start", "POST", {
+      selectedCategories: ["agents"],
+    });
+
+    expect(startResponse).not.toBeNull();
+    expect(startResponse!.status).toBe(201);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const statusResponse = await sendRequest(handler, "/api/convert/status", "GET");
+    expect(statusResponse).not.toBeNull();
+
+    const data = (await readJson(statusResponse!)) as {
+      status: string;
+      result?: ConversionResult;
+    };
+
+    expect(generatedReportPath).toBe("/tmp/generated-report.md");
+    expect(data.status).toBe("complete");
+    expect(data.result?.reportPath).toBe("/tmp/generated-report.md");
   });
 
   // ── POST /api/convert/resolve-conflict ───────────────────────
 
-  it("POST /api/convert/resolve-conflict returns 404 for unknown conflictId", async () => {
+  it("GET /api/convert/status returns conflict payload when resolution is pending", async () => {
+    const pendingConflict: ConflictInfo = {
+      category: "agents",
+      itemName: "Eleanor",
+      existingValue: { id: "existing-agent" },
+      incomingValue: { id: "incoming-agent" },
+      path: "agents",
+    };
+
+    const handler = createHandler({
+      convert: async (options: {
+        onConflict?: (conflict: ConflictInfo) => Promise<"overwrite" | "merge" | "skip">;
+      }) => {
+        if (options.onConflict) {
+          await options.onConflict(pendingConflict);
+        }
+        return ok(makeConversionResult());
+      },
+    });
+
+    await sendRequest(handler, "/api/convert/start", "POST", {
+      selectedCategories: ["agents"],
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    const conflictStatusResponse = await sendRequest(handler, "/api/convert/status", "GET");
+    const conflictStatus = (await readJson(conflictStatusResponse!)) as {
+      status: string;
+      conflict?: {
+        id: string;
+        type: string;
+        description: string;
+        strategies: string[];
+      };
+    };
+
+    expect(conflictStatus.status).toBe("conflict");
+    expect(conflictStatus.conflict).toBeDefined();
+    expect(conflictStatus.conflict?.id).toBeDefined();
+    expect(conflictStatus.conflict?.type).toBe("agent");
+    expect(conflictStatus.conflict?.description).toContain("Eleanor");
+    expect(conflictStatus.conflict?.strategies).toEqual(["overwrite", "merge", "skip"]);
+
+    const resolveResponse = await sendRequest(
+      handler,
+      "/api/convert/resolve-conflict",
+      "POST",
+      { strategy: "skip" },
+    );
+    expect(resolveResponse).not.toBeNull();
+    expect(resolveResponse!.status).toBe(200);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    const finalStatusResponse = await sendRequest(handler, "/api/convert/status", "GET");
+    const finalStatus = (await readJson(finalStatusResponse!)) as { status: string };
+    expect(finalStatus.status).toBe("complete");
+  });
+
+  it("POST /api/convert/resolve-conflict returns 404 when no conflict is pending", async () => {
     const handler = createHandler();
     const response = await sendRequest(
       handler,
       "/api/convert/resolve-conflict",
       "POST",
       {
-        conflictId: "nonexistent-id",
-        resolution: "skip",
+        strategy: "skip",
       },
     );
 
@@ -376,42 +482,41 @@ describe("ConversionRouteHandler", () => {
     expect(response!.status).toBe(404);
 
     const data = (await readJson(response!)) as { error: string };
-    expect(data.error).toContain("nonexistent-id");
+    expect(data.error).toContain("No pending conflict");
   });
 
-  it("POST /api/convert/resolve-conflict returns 400 on missing conflictId", async () => {
+  it("POST /api/convert/resolve-conflict returns 400 on missing strategy", async () => {
     const handler = createHandler();
     const response = await sendRequest(
       handler,
       "/api/convert/resolve-conflict",
       "POST",
       {
-        resolution: "skip",
+        conflictId: "legacy-id",
       },
     );
 
     expect(response!.status).toBe(400);
 
     const data = (await readJson(response!)) as { error: string };
-    expect(data.error).toContain("conflictId");
+    expect(data.error).toContain("strategy");
   });
 
-  it("POST /api/convert/resolve-conflict returns 400 on invalid resolution", async () => {
+  it("POST /api/convert/resolve-conflict returns 400 on invalid strategy", async () => {
     const handler = createHandler();
     const response = await sendRequest(
       handler,
       "/api/convert/resolve-conflict",
       "POST",
       {
-        conflictId: "some-id",
-        resolution: "invalid",
+        strategy: "invalid",
       },
     );
 
     expect(response!.status).toBe(400);
 
     const data = (await readJson(response!)) as { error: string };
-    expect(data.error).toContain("resolution");
+    expect(data.error).toContain("strategy");
   });
 
   // ── Unknown routes ───────────────────────────────────────────

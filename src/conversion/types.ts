@@ -42,6 +42,7 @@ export interface OpenClawAgentDefaults {
 
 export interface OpenClawAgentConfig {
   id: string;
+  role?: string;
   workspacePath?: string;
   modelOverride?: string;
   identityFiles?: Record<string, string>;
@@ -121,18 +122,20 @@ export interface ParsedOpenClawInstall {
 
 export interface ConversionOptions {
   selectedCategories: ConversionCategory[];
-  conflictStrategy?: "overwrite" | "merge" | "skip";
+  conflictStrategy?: ConflictStrategy;
   onProgress?: (event: ConversionProgressEvent) => void;
-  onConflict?: (conflict: ConflictInfo) => Promise<"overwrite" | "merge" | "skip">;
+  onConflict?: (conflict: ConflictInfo) => Promise<ConflictStrategy>;
   dryRun?: boolean;
 }
+
+export type ConflictStrategy = "overwrite" | "merge" | "skip";
 
 export interface ConversionProgressEvent {
   category: ConversionCategory;
   processed: number;
   total: number;
   elapsedMs: number;
-  status: "started" | "complete" | "error";
+  status: "started" | "progress" | "complete" | "error";
 }
 
 export interface ConflictInfo {
@@ -151,6 +154,13 @@ export interface CategoryResult {
   skippedReason?: string;
 }
 
+export interface ConflictResolution {
+  conflict: ConflictInfo;
+  strategy: ConflictStrategy;
+  outcome: "applied" | "skipped" | "merged";
+  mergedValue?: unknown;
+}
+
 export interface ConversionResult {
   success: boolean;
   categories: CategoryResult[];
@@ -158,5 +168,6 @@ export interface ConversionResult {
   totalSkipped: number;
   totalErrors: number;
   elapsedMs: number;
+  conflicts?: ConflictResolution[];
   reportPath?: string;
 }

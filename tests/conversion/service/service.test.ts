@@ -8,6 +8,7 @@ import {
 import { IdentityFileManager } from "../../../src/agents/identity";
 import { AgentWorkspaceManager } from "../../../src/agents/workspace";
 import { ImportLogWriter } from "../../../src/conversion/import-log";
+import type { Conflict } from "../../../src/conversion/conflict";
 import {
   ConversionService,
   type ConversionServiceOptions,
@@ -173,5 +174,122 @@ describe("ConversionService", () => {
     expect(service.isRunning()).toBe(true);
     await service.stop();
     expect(service.isRunning()).toBe(false);
+  });
+
+  it("detects conflicts, invokes onConflict per item, and records resolutions", async () => {
+    const conflicts: Conflict[] = [
+      {
+        category: "agents",
+        itemName: "assistant",
+        existingValue: { id: "existing" },
+        incomingValue: { id: "incoming" },
+        path: "agents",
+      },
+      {
+        category: "auth-profiles",
+        itemName: "anthropic",
+        existingValue: "[keychain:reins-byok/anthropic]",
+        incomingValue: { provider: "anthropic" },
+        path: "keychain/reins-byok/anthropic",
+      },
+    ];
+
+    const seenPlan: Array<{ agents?: number; providerKeys?: number; channels?: number }> = [];
+    const seenCallbacks: string[] = [];
+
+    const service = new ConversionService({
+      ...createServiceOptions(),
+      conflictDetector: {
+        async detect(plan) {
+          seenPlan.push({
+            agents: plan.agents?.length,
+            providerKeys: plan.providerKeys?.length,
+            channels: plan.channels?.length,
+          });
+          return conflicts;
+        },
+      },
+      conflictResolver: {
+        resolve(conflict, strategy) {
+          return {
+            conflict,
+            strategy,
+            outcome: strategy === "skip" ? "skipped" : "applied",
+          };
+        },
+      },
+    });
+
+    const result = await service.convert({
+      selectedCategories: [...ALL_CONVERSION_CATEGORIES],
+      dryRun: true,
+      onConflict: async (conflict) => {
+        seenCallbacks.push(conflict.itemName);
+        return conflict.category === "agents" ? "merge" : "skip";
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(seenPlan).toHaveLength(1);
+    expect(seenCallbacks).toEqual(["assistant", "anthropic"]);
+    expect(result.value.conflicts).toBeDefined();
+    expect(result.value.conflicts).toHaveLength(2);
+    expect(result.value.conflicts?.map((record) => record.strategy)).toEqual(["merge", "skip"]);
+  });
+
+  it("wires mapper onProgress callback through conversion progress events", async () => {
+    const events: Array<{ category: ConversionCategory; status: string; processed: number }> = [];
+
+    const service = new ConversionService({
+      ...createServiceOptions({
+        agents: () => ({
+          converted: 1,
+          skipped: 0,
+          errors: [],
+        }),
+      }),
+      progressEmitter: {
+        emit(event) {
+          events.push({
+            category: event.category,
+            status: event.status,
+            processed: event.processed,
+          });
+        },
+        emitThrottled(event) {
+          events.push({
+            category: event.category,
+            status: event.status,
+            processed: event.processed,
+          });
+        },
+      },
+      mapperRunners: {
+        agents: async (options) => {
+          options.onProgress?.(1, 3);
+          options.onProgress?.(2, 3);
+          return { converted: 1, skipped: 0, errors: [] };
+        },
+      },
+    });
+
+    const result = await service.convert({
+      selectedCategories: ["agents"],
+      dryRun: true,
+      onProgress: (event) => {
+        events.push({
+          category: event.category,
+          status: event.status,
+          processed: event.processed,
+        });
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(events.some((event) => event.status === "progress")).toBe(true);
   });
 });

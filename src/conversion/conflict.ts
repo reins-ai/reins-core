@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ConversionCategory } from "../agents/types";
 import type { AgentStore } from "../agents/store";
 import type { KeychainProvider } from "../security/keychain-provider";
+import type { ConflictStrategy } from "./types";
 
 const BYOK_SERVICE = "reins-byok";
 
@@ -67,8 +68,6 @@ async function defaultReadChannelsFile(
 const defaultFileOps: ConflictDetectorFileOps = {
   readChannelsFile: defaultReadChannelsFile,
 };
-
-export type ConflictStrategy = "overwrite" | "merge" | "skip";
 
 export interface ResolutionRecord {
   conflict: Conflict;

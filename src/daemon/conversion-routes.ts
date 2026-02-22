@@ -3,7 +3,12 @@ import { OpenClawDetector } from "../conversion/detector";
 import type { ProgressEmitter } from "../conversion/progress";
 import type { ReportGenerator } from "../conversion/report";
 import type { ConversionService } from "../conversion/service";
-import type { ConversionProgressEvent, ConversionResult, DetectionResult } from "../conversion/types";
+import type {
+  ConflictInfo,
+  ConversionProgressEvent,
+  ConversionResult,
+  DetectionResult,
+} from "../conversion/types";
 import type { StreamRegistrySocketData, WsStreamRegistry } from "./ws-stream-registry";
 
 /**
@@ -69,11 +74,23 @@ interface StartConversionRequest {
 }
 
 interface ResolveConflictRequest {
-  conflictId: string;
-  resolution: "overwrite" | "merge" | "skip";
+  strategy: "overwrite" | "merge" | "skip";
 }
 
-type ConversionStatus = "idle" | "running" | "complete" | "error";
+type ConversionStatus = "idle" | "running" | "complete" | "error" | "conflict";
+
+interface PendingConflict {
+  id: string;
+  conflict: ConflictInfo;
+  resolve: (resolution: "overwrite" | "merge" | "skip") => void;
+}
+
+interface ConflictStatusPayload {
+  id: string;
+  type: "agent" | "provider" | "channel";
+  description: string;
+  strategies: Array<"overwrite" | "merge" | "skip">;
+}
 
 const VALID_CONFLICT_STRATEGIES = new Set(["overwrite", "merge", "skip"]);
 
@@ -143,17 +160,43 @@ function validateResolveConflictRequest(body: unknown): ResolveConflictRequest {
 
   const data = body as Partial<ResolveConflictRequest>;
 
-  if (typeof data.conflictId !== "string" || data.conflictId.trim().length === 0) {
-    throw new Error("conflictId is required");
-  }
-
-  if (typeof data.resolution !== "string" || !VALID_CONFLICT_STRATEGIES.has(data.resolution)) {
-    throw new Error("resolution must be 'overwrite', 'merge', or 'skip'");
+  if (typeof data.strategy !== "string" || !VALID_CONFLICT_STRATEGIES.has(data.strategy)) {
+    throw new Error("strategy must be 'overwrite', 'merge', or 'skip'");
   }
 
   return {
-    conflictId: data.conflictId,
-    resolution: data.resolution!,
+    strategy: data.strategy,
+  };
+}
+
+function toConflictType(category: ConflictInfo["category"]): "agent" | "provider" | "channel" {
+  switch (category) {
+    case "agents":
+      return "agent";
+    case "channel-credentials":
+      return "channel";
+    default:
+      return "provider";
+  }
+}
+
+function toConflictDescription(conflict: ConflictInfo): string {
+  const type = toConflictType(conflict.category);
+  if (type === "agent") {
+    return `Agent '${conflict.itemName}' already exists`;
+  }
+  if (type === "channel") {
+    return `Channel '${conflict.itemName}' already exists`;
+  }
+  return `Provider credentials for '${conflict.itemName}' already exist`;
+}
+
+function toConflictStatusPayload(conflict: PendingConflict): ConflictStatusPayload {
+  return {
+    id: conflict.id,
+    type: toConflictType(conflict.conflict.category),
+    description: toConflictDescription(conflict.conflict),
+    strategies: ["overwrite", "merge", "skip"],
   };
 }
 
@@ -175,10 +218,7 @@ export function createConversionRouteHandler(
   let conversionResult: ConversionResult | null = null;
   let conversionError: string | null = null;
   let conversionStartedAt: string | null = null;
-  const pendingConflicts = new Map<
-    string,
-    (resolution: "overwrite" | "merge" | "skip") => void
-  >();
+  let pendingConflict: PendingConflict | null = null;
 
   if (options.progressEmitter && options.wsRegistry) {
     const registry = options.wsRegistry;
@@ -200,7 +240,7 @@ export function createConversionRouteHandler(
           const body = await parseJsonBody(request);
           const payload = validateStartRequest(body);
 
-          if (conversionStatus === "running") {
+          if (conversionStatus === "running" || conversionStatus === "conflict") {
             return Response.json(
               { error: "A conversion is already running" },
               { status: 409, headers: withJsonHeaders(corsHeaders) },
@@ -213,6 +253,7 @@ export function createConversionRouteHandler(
           conversionResult = null;
           conversionError = null;
           conversionStartedAt = new Date().toISOString();
+          pendingConflict = null;
 
           // Start conversion asynchronously — do NOT await
           conversionService
@@ -223,21 +264,47 @@ export function createConversionRouteHandler(
               onConflict: (_conflict) => {
                 const conflictId = crypto.randomUUID();
                 return new Promise<"overwrite" | "merge" | "skip">((resolve) => {
-                  pendingConflicts.set(conflictId, resolve);
+                  pendingConflict = {
+                    id: conflictId,
+                    conflict: _conflict,
+                    resolve,
+                  };
+                  conversionStatus = "conflict";
                 });
               },
             })
             .then((result) => {
               if (result.ok) {
-                conversionResult = result.value;
-                conversionStatus = "complete";
+                reportGenerator
+                  .generate(result.value)
+                  .then((reportResult) => {
+                    if (!reportResult.ok) {
+                      conversionError = reportResult.error.message;
+                      conversionStatus = "error";
+                      return;
+                    }
+
+                    conversionResult = {
+                      ...result.value,
+                      reportPath: reportResult.value,
+                    };
+                    pendingConflict = null;
+                    conversionStatus = "complete";
+                  })
+                  .catch((error: unknown) => {
+                    conversionError = error instanceof Error ? error.message : String(error);
+                    pendingConflict = null;
+                    conversionStatus = "error";
+                  });
               } else {
                 conversionError = result.error.message;
+                pendingConflict = null;
                 conversionStatus = "error";
               }
             })
             .catch((error: unknown) => {
               conversionError = error instanceof Error ? error.message : String(error);
+              pendingConflict = null;
               conversionStatus = "error";
             });
 
@@ -260,8 +327,9 @@ export function createConversionRouteHandler(
 
       // GET /api/convert/status
       if (url.pathname === "/api/convert/status" && method === "GET") {
+        const effectiveStatus: ConversionStatus = pendingConflict ? "conflict" : conversionStatus;
         const response: Record<string, unknown> = {
-          status: conversionStatus,
+          status: effectiveStatus,
         };
 
         if (currentConversionId !== null) {
@@ -280,8 +348,8 @@ export function createConversionRouteHandler(
           response.error = conversionError;
         }
 
-        if (pendingConflicts.size > 0) {
-          response.pendingConflicts = pendingConflicts.size;
+        if (pendingConflict !== null) {
+          response.conflict = toConflictStatusPayload(pendingConflict);
         }
 
         return Response.json(response, {
@@ -295,16 +363,16 @@ export function createConversionRouteHandler(
           const body = await parseJsonBody(request);
           const payload = validateResolveConflictRequest(body);
 
-          const resolver = pendingConflicts.get(payload.conflictId);
-          if (!resolver) {
+          if (!pendingConflict) {
             return Response.json(
-              { error: `Conflict not found: ${payload.conflictId}` },
+              { error: "No pending conflict found" },
               { status: 404, headers: withJsonHeaders(corsHeaders) },
             );
           }
 
-          resolver(payload.resolution);
-          pendingConflicts.delete(payload.conflictId);
+          pendingConflict.resolve(payload.strategy);
+          pendingConflict = null;
+          conversionStatus = "running";
 
           return Response.json(
             { resolved: true },
@@ -321,19 +389,26 @@ export function createConversionRouteHandler(
 
       // GET /api/convert/report
       if (url.pathname === "/api/convert/report" && method === "GET") {
-        const reportResult = await reportGenerator.readLastReport();
-
-        if (!reportResult.ok) {
+        const path = conversionResult?.reportPath ?? reportGenerator.getLastReportPath();
+        if (!path) {
           return Response.json(
             { error: "No conversion report found" },
             { status: 404, headers: withJsonHeaders(corsHeaders) },
           );
         }
 
-        const path = reportGenerator.getLastReportPath();
+        const file = Bun.file(path);
+        if (!(await file.exists())) {
+          return Response.json(
+            { error: "No conversion report found" },
+            { status: 404, headers: withJsonHeaders(corsHeaders) },
+          );
+        }
+
+        const report = await file.text();
 
         return Response.json(
-          { report: reportResult.value, path },
+          { report, path },
           { headers: withJsonHeaders(corsHeaders) },
         );
       }
