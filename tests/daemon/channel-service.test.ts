@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import { ChannelAuthService, InMemoryChannelAuthStorage } from "../../src/channels";
 import { ChannelRegistry } from "../../src/channels/registry";
 import type {
   Channel,
@@ -158,11 +159,16 @@ function createHarness() {
   const credentialStorage = new InMemoryChannelCredentialStorage();
   const channelsById = new Map<string, MockChannel>();
   const pendingExecutions: Array<{ conversationId: string; assistantMessageId: string }> = [];
+  // Pre-authorise the default test sender on all channels used in tests.
+  const authService = new ChannelAuthService(
+    new InMemoryChannelAuthStorage({ telegram: ["user-1"], discord: ["user-1"] }),
+  );
 
   const service = new ChannelDaemonService({
     channelRegistry: registry,
     conversationBridge: bridge,
     credentialStorage,
+    authService,
     onInboundAssistantPending: ({ conversationId, assistantMessageId }) => {
       pendingExecutions.push({ conversationId, assistantMessageId });
     },
