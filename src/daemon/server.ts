@@ -72,7 +72,7 @@ import { OllamaEmbeddingProvider } from "../memory/embeddings/ollama-embedding-p
 import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
-import { ChannelCredentialStorage, ChannelRegistry, ConversationBridge } from "../channels";
+import { ChannelAuthService, ChannelCredentialStorage, ChannelRegistry, ConversationBridge, FileChannelAuthStorage } from "../channels";
 import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
 import yaml from "js-yaml";
@@ -157,6 +157,7 @@ import type { MemoryConfig } from "./types/memory-config";
 import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
+import { createAuthRouteHandler, type AuthRouteHandler } from "./auth-routes";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
 import { AgentStore } from "../agents/store";
 import { AgentWorkspaceManager } from "../agents/workspace";
@@ -501,6 +502,7 @@ export interface DaemonHttpServerOptions {
   memoryRepository?: MemoryRepository;
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
   channelService?: ChannelDaemonService;
+  channelAuthService?: ChannelAuthService;
   agentStore?: AgentStore;
   conversionService?: ConversionService;
   skillService?: SkillDaemonService;
@@ -1170,6 +1172,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   };
   private channelService: ChannelDaemonService | null = null;
   private channelRouteHandler: ChannelRouteHandler | null = null;
+  private authRouteHandler: AuthRouteHandler | null = null;
   private readonly agentRouteHandler: AgentRouteHandler;
   private configStore: ConfigStore | null = null;
   private environmentResolver: FileEnvironmentResolver | null = null;
@@ -1262,6 +1265,12 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.channelService = this.providedChannelService;
       this.channelRouteHandler = createChannelRouteHandler({
         channelService: this.providedChannelService,
+      });
+    }
+
+    if (options.channelAuthService) {
+      this.authRouteHandler = createAuthRouteHandler({
+        authService: options.channelAuthService,
       });
     }
 
@@ -1521,6 +1530,7 @@ export class DaemonHttpServer implements DaemonManagedService {
         this.channelService = null;
         this.channelRouteHandler = null;
       }
+      this.authRouteHandler = null;
 
       try {
         await this.conversionService.stop();
@@ -1723,6 +1733,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       const channelResponse = await this.handleChannelRequest(url, method, request, corsHeaders);
       if (channelResponse) {
         return channelResponse;
+      }
+
+      const channelAuthResponse = await this.handleChannelAuthRequest(url, method, request, corsHeaders);
+      if (channelAuthResponse) {
+        return channelAuthResponse;
       }
 
       const conversionResponse = await this.conversionRouteHandler.handle(url, method, request, corsHeaders);
@@ -3025,6 +3040,31 @@ export class DaemonHttpServer implements DaemonManagedService {
     }
 
     return await this.channelRouteHandler.handle(url, method, request, corsHeaders);
+  }
+
+  private async handleChannelAuthRequest(
+    url: URL,
+    method: string,
+    request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response | null> {
+    if (!url.pathname.startsWith("/auth")) {
+      return null;
+    }
+
+    if (!this.authRouteHandler) {
+      return Response.json(
+        { error: "Auth services are not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    return await this.authRouteHandler.handle(
+      url,
+      method,
+      request,
+      corsHeaders,
+    );
   }
 
   /**
@@ -5121,10 +5161,14 @@ export class DaemonHttpServer implements DaemonManagedService {
         channelRegistry,
       });
 
+      const authStorage = new FileChannelAuthStorage();
+      const authService = new ChannelAuthService(authStorage);
+
       this.channelService = new ChannelDaemonService({
         channelRegistry,
         conversationBridge,
         credentialStorage,
+        authService,
         onInboundAssistantPending: (context) => {
           this.scheduleProviderExecution({
             conversationId: context.conversationId,
@@ -5134,6 +5178,9 @@ export class DaemonHttpServer implements DaemonManagedService {
       });
       this.channelRouteHandler = createChannelRouteHandler({
         channelService: this.channelService,
+      });
+      this.authRouteHandler = createAuthRouteHandler({
+        authService,
       });
     }
 

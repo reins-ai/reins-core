@@ -1,4 +1,4 @@
-import type { ChannelAuthStorage } from "./auth-storage";
+import type { ChannelAuthData, ChannelAuthStorage } from "./auth-storage";
 
 /**
  * Service layer for per-channel user authentication.
@@ -77,5 +77,15 @@ export class ChannelAuthService {
    */
   async listUsers(channelId: string): Promise<string[]> {
     return this.storage.listUsers(channelId);
+  }
+
+  /**
+   * Return all channels' allow-list data.
+   *
+   * Used by the daemon HTTP API to expose the full allow-list
+   * for admin inspection.
+   */
+  async getAllChannelsData(): Promise<ChannelAuthData> {
+    return this.storage.getAllData();
   }
 }

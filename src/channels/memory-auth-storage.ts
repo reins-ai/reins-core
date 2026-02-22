@@ -49,4 +49,12 @@ export class InMemoryChannelAuthStorage implements ChannelAuthStorage {
   listUsers(channelId: string): Promise<string[]> {
     return Promise.resolve([...this.data.get(channelId) ?? []]);
   }
+
+  getAllData(): Promise<ChannelAuthData> {
+    const result: ChannelAuthData = {};
+    for (const [channelId, users] of this.data.entries()) {
+      result[channelId] = [...users];
+    }
+    return Promise.resolve(result);
+  }
 }
