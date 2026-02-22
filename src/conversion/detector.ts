@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -152,7 +153,12 @@ export class OpenClawDetector {
 }
 
 async function defaultFileExistsFn(path: string): Promise<boolean> {
-  return Bun.file(path).exists();
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function defaultReadFileFn(path: string): Promise<string | null> {
