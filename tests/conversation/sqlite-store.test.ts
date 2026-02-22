@@ -996,8 +996,8 @@ describe("SQLiteConversationStore — v1 to v2 migration", () => {
         .query("SELECT content, content_blocks FROM messages WHERE id = ?1")
         .get("msg-fallback") as { content: string; content_blocks: string | null };
 
-      // content column should have concatenated text from text blocks
-      expect(row.content).toBe("First part. Second part.");
+      // content column should have paragraph-separated text from text blocks
+      expect(row.content).toBe("First part.\n\nSecond part.");
       // content_blocks should have the full JSON
       expect(row.content_blocks).not.toBeNull();
 
