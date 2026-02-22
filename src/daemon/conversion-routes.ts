@@ -219,6 +219,7 @@ export function createConversionRouteHandler(
   let conversionError: string | null = null;
   let conversionStartedAt: string | null = null;
   let pendingConflict: PendingConflict | null = null;
+  let lastProgressEvent: ConversionProgressEvent | null = null;
 
   if (options.progressEmitter && options.wsRegistry) {
     const registry = options.wsRegistry;
@@ -254,6 +255,7 @@ export function createConversionRouteHandler(
           conversionError = null;
           conversionStartedAt = new Date().toISOString();
           pendingConflict = null;
+          lastProgressEvent = null;
 
           // Start conversion asynchronously — do NOT await
           conversionService
@@ -261,6 +263,9 @@ export function createConversionRouteHandler(
               selectedCategories: payload.selectedCategories,
               conflictStrategy: payload.conflictStrategy,
               dryRun: payload.dryRun,
+              onProgress: (event) => {
+                lastProgressEvent = event;
+              },
               onConflict: (_conflict) => {
                 const conflictId = crypto.randomUUID();
                 return new Promise<"overwrite" | "merge" | "skip">((resolve) => {
@@ -350,6 +355,10 @@ export function createConversionRouteHandler(
 
         if (pendingConflict !== null) {
           response.conflict = toConflictStatusPayload(pendingConflict);
+        }
+
+        if (lastProgressEvent !== null) {
+          response.progress = lastProgressEvent;
         }
 
         return Response.json(response, {

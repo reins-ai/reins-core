@@ -10,6 +10,7 @@ import {
 } from "../../../src/agents/types";
 import { IdentityFileManager } from "../../../src/agents/identity";
 import { AgentWorkspaceManager } from "../../../src/agents/workspace";
+import { ConflictDetector } from "../../../src/conversion/conflict";
 import { OpenClawDetector } from "../../../src/conversion/detector";
 import { ImportLogWriter } from "../../../src/conversion/import-log";
 import { OpenClawParser } from "../../../src/conversion/parser";
@@ -152,6 +153,14 @@ describe("Full Conversion Pipeline Integration", () => {
     // Progress tracking
     const progressEvents: ConversionProgressEvent[] = [];
 
+    // Inject a ConflictDetector that reads from a temp channels file, not
+    // ~/.reins/channels.json, so real system state doesn't cause false conflicts.
+    const conflictDetector = new ConflictDetector({
+      agentStore,
+      keychainProvider: keychain,
+      channelsFilePath: join(tempDir, "channels.json"),
+    });
+
     const service = new ConversionService({
       keychainProvider: keychain,
       agentStore,
@@ -160,6 +169,7 @@ describe("Full Conversion Pipeline Integration", () => {
       importLogWriter,
       openClawDetector: detector,
       parser,
+      conflictDetector,
     });
 
     await service.start();

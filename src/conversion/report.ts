@@ -158,6 +158,21 @@ export class ReportGenerator {
       lines.push("");
     }
 
+    // Conflicts resolved section
+    if (result.conflicts && result.conflicts.length > 0) {
+      lines.push("## Conflicts Resolved");
+      lines.push("");
+      lines.push("| Item | Category | Strategy | Outcome |");
+      lines.push("|------|----------|----------|---------|");
+      for (const resolution of result.conflicts) {
+        const category = formatCategoryName(resolution.conflict.category);
+        lines.push(
+          `| ${resolution.conflict.itemName} | ${category} | ${resolution.strategy} | ${resolution.outcome} |`,
+        );
+      }
+      lines.push("");
+    }
+
     // Unmapped data reference
     lines.push("## Unmapped Data");
     lines.push("");

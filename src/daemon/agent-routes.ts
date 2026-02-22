@@ -1,3 +1,4 @@
+import type { IdentityFileManager } from "../agents/identity";
 import type { AgentStore } from "../agents/store";
 import type { Agent, AgentIdentityFiles, ModelOverride } from "../agents/types";
 
@@ -12,6 +13,8 @@ export interface AgentRouteHandler {
 
 export interface AgentRouteHandlerOptions {
   agentStore: AgentStore;
+  /** When provided, generates SOUL.md / MEMORY.md / IDENTITY.md for newly created agents that have no identity files. */
+  identityFileManager?: IdentityFileManager;
 }
 
 type AgentUpdate = Partial<Omit<Agent, "id" | "metadata">>;
@@ -274,8 +277,32 @@ export function createAgentRouteHandler(options: AgentRouteHandlerOptions): Agen
             );
           }
 
+          let createdAgent = createResult.value;
+
+          // Generate default identity files when none were provided so every
+          // agent has a populated workspace from the moment it is created.
+          if (options.identityFileManager) {
+            const hasFiles =
+              createdAgent.identityFiles?.soul !== undefined ||
+              createdAgent.identityFiles?.memory !== undefined ||
+              createdAgent.identityFiles?.identity !== undefined;
+
+            if (!hasFiles) {
+              try {
+                const generatedFiles = await options.identityFileManager.generateIdentityFiles(createdAgent);
+                const updateResult = await agentStore.update(createdAgent.id, { identityFiles: generatedFiles });
+                if (updateResult.ok) {
+                  createdAgent = updateResult.value;
+                }
+              } catch {
+                // Non-fatal: agent was created successfully; identity file
+                // generation is best-effort and will not block the response.
+              }
+            }
+          }
+
           return Response.json(
-            { agent: createResult.value },
+            { agent: createdAgent },
             { status: 201, headers: withJsonHeaders(corsHeaders) },
           );
         } catch (error) {

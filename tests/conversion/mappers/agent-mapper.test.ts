@@ -400,9 +400,14 @@ describe("AgentMapper", () => {
       expect(listResult.ok).toBe(true);
       if (!listResult.ok) return;
       expect(listResult.value[0].identityFiles.custom["GUIDELINES.md"]).toBeDefined();
+      // No standard (soul/memory/identity) source files were provided, so
+      // the mapper generates template files as a fallback.
+      expect(listResult.value[0].identityFiles.soul).toBeDefined();
+      expect(listResult.value[0].identityFiles.memory).toBeDefined();
+      expect(listResult.value[0].identityFiles.identity).toBeDefined();
     });
 
-    it("skips identity files that do not exist at source path", async () => {
+    it("skips identity files that do not exist at source path and generates fallback templates", async () => {
       const fileCopier = makeMockFileCopier({});
 
       const mapper = new AgentMapper(
@@ -427,10 +432,14 @@ describe("AgentMapper", () => {
       const listResult = await store.list();
       expect(listResult.ok).toBe(true);
       if (!listResult.ok) return;
-      expect(listResult.value[0].identityFiles.soul).toBeUndefined();
+      // Source file did not exist, so soul was not copied.
+      // The mapper generates template identity files as a fallback.
+      expect(listResult.value[0].identityFiles.soul).toBeDefined();
+      expect(listResult.value[0].identityFiles.memory).toBeDefined();
+      expect(listResult.value[0].identityFiles.identity).toBeDefined();
     });
 
-    it("handles agent with no identity files", async () => {
+    it("generates template identity files for agents with no identity files", async () => {
       const fileCopier = makeMockFileCopier();
       const mapper = new AgentMapper(
         { agentStore: store, workspaceManager, identityManager },
@@ -449,7 +458,10 @@ describe("AgentMapper", () => {
       const listResult = await store.list();
       expect(listResult.ok).toBe(true);
       if (!listResult.ok) return;
-      expect(listResult.value[0].identityFiles).toEqual({ custom: {} });
+      // No source identity files — mapper generates SOUL.md / MEMORY.md / IDENTITY.md templates.
+      expect(listResult.value[0].identityFiles.soul).toBeDefined();
+      expect(listResult.value[0].identityFiles.memory).toBeDefined();
+      expect(listResult.value[0].identityFiles.identity).toBeDefined();
     });
   });
 

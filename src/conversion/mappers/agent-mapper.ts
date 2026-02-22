@@ -94,7 +94,7 @@ export class AgentMapper {
     const agentId = config.id ?? slugify(name);
     const workspacePath = await this.deps.workspaceManager.createWorkspace(agentId);
 
-    const identityFiles = await this.copyIdentityFiles(
+    const copiedFiles = await this.copyIdentityFiles(
       config.identityFiles,
       workspacePath,
     );
@@ -106,13 +106,29 @@ export class AgentMapper {
       role: this.extractRole(config),
       workspacePath,
       skills: config.skills ?? [],
-      identityFiles,
+      identityFiles: copiedFiles,
       metadata: {
         createdAt: now,
         updatedAt: now,
         source: "openclaw-import",
       },
     };
+
+    // If no standard identity files were obtained from the source, generate
+    // template files so every imported agent has a populated workspace.
+    const hasStandardFiles =
+      copiedFiles.soul !== undefined ||
+      copiedFiles.memory !== undefined ||
+      copiedFiles.identity !== undefined;
+
+    if (!hasStandardFiles) {
+      const generated = await this.deps.identityManager.generateIdentityFiles(agent);
+      // Merge: preserve any custom files already copied from source.
+      agent.identityFiles = {
+        ...generated,
+        custom: { ...generated.custom, ...copiedFiles.custom },
+      };
+    }
 
     if (config.modelOverride) {
       agent.modelOverride = this.parseModelOverride(config.modelOverride);
