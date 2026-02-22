@@ -13,6 +13,7 @@ export const ONBOARDING_STEPS = [
   "welcome",
   "daemon-install",
   "provider-keys",
+  "openclaw-migration",
   "model-select",
   "workspace",
   "personality",
@@ -66,6 +67,22 @@ export interface PersonalityConfig {
    * Custom system prompt modifier (only used when preset is "custom").
    */
   customPrompt?: string;
+}
+
+/**
+ * State persisted for the openclaw-migration onboarding step.
+ */
+export interface MigrationState {
+  /** Whether OpenClaw was detected during this onboarding session. */
+  detected: boolean;
+  /** Path to the detected OpenClaw installation, or null if not detected. */
+  detectedPath: string | null;
+  /** User-selected categories for conversion (all 9 if not customized). */
+  selectedCategories: string[];
+  /** Whether conversion has been started. */
+  conversionStarted: boolean;
+  /** Whether conversion completed successfully. */
+  conversionComplete: boolean;
 }
 
 /**
@@ -144,4 +161,9 @@ export interface OnboardingConfig {
    * Bot personality configuration.
    */
   personality?: PersonalityConfig;
+
+  /**
+   * State for the openclaw-migration step (only present when step ran).
+   */
+  migrationState?: MigrationState;
 }

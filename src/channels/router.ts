@@ -7,6 +7,7 @@ import type {
 import { DEFAULT_MODEL_WITH_PROVIDER } from "../config";
 import { ChannelError } from "./errors";
 import {
+  chunkDiscordMessage,
   chunkTelegramMessage,
   formatForDiscord,
   formatForTelegram,
@@ -250,8 +251,11 @@ export class ChannelRouter {
 
   /**
    * Applies platform-specific formatting and sends the message to a channel.
-   * Telegram messages are formatted as MarkdownV2 and chunked at 4096 chars.
-   * Discord messages are formatted as Discord-compatible markdown.
+   *
+   * Text is formatted for the target platform and then chunked only when it
+   * exceeds the platform's character limit. Semantic splitting (e.g. between
+   * tool-call boundaries) is handled upstream by the daemon streaming layer,
+   * not here.
    */
   private async sendToChannel(
     agentResponse: AgentResponse,
@@ -278,12 +282,16 @@ export class ChannelRouter {
 
     if (platform === "discord" && text.length > 0) {
       const formatted = formatForDiscord(text);
-      const outbound = this.toOutboundChannelMessage(
-        { ...agentResponse, text: formatted },
-        channel,
-        destinationChannelId,
-      );
-      await channel.send(outbound);
+      const chunks = chunkDiscordMessage(formatted);
+
+      for (const chunk of chunks) {
+        const outbound = this.toOutboundChannelMessage(
+          { ...agentResponse, text: chunk },
+          channel,
+          destinationChannelId,
+        );
+        await channel.send(outbound);
+      }
       return;
     }
 

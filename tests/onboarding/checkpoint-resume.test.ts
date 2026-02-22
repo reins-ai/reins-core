@@ -144,14 +144,14 @@ describe("Checkpoint Resume", () => {
       expect(resumeResult.ok).toBe(true);
       if (!resumeResult.ok) return;
 
-      // Should resume at step 5 (workspace), index 4
-      expect(resumeResult.value.currentStep).toBe("workspace");
+      // Should resume at step 5 (model-select), index 4
+      expect(resumeResult.value.currentStep).toBe("model-select");
       expect(resumeResult.value.currentStepIndex).toBe(4);
       expect(resumeResult.value.completedSteps).toEqual([
         "welcome",
         "daemon-install",
         "provider-keys",
-        "model-select",
+        "openclaw-migration",
       ]);
     });
 
@@ -378,15 +378,16 @@ describe("Checkpoint Resume", () => {
 
       await engine2.initialize();
 
-      // Complete remaining steps (3-7)
-      for (let i = 0; i < 5; i++) {
+      // Complete remaining steps (3-8)
+      for (let i = 0; i < 6; i++) {
         const result = await engine2.completeCurrentStep({ step: i + 3 });
         expect(result.ok).toBe(true);
       }
 
-      // Session 2 should only have executed steps 3-7, NOT steps 1-2
+      // Session 2 should only have executed steps 3-8, NOT steps 1-2
       expect(session2Log).toEqual([
         "provider-keys",
+        "openclaw-migration",
         "model-select",
         "workspace",
         "personality",
@@ -428,7 +429,7 @@ describe("Checkpoint Resume", () => {
       expect(session2Events).toHaveLength(1);
       expect(session2Events[0].type).toBe("stepEnter");
       if (session2Events[0].type !== "stepEnter") return;
-      expect(session2Events[0].step).toBe("model-select");
+      expect(session2Events[0].step).toBe("openclaw-migration");
     });
 
     it("can complete the full wizard across two sessions", async () => {
@@ -452,7 +453,7 @@ describe("Checkpoint Resume", () => {
 
       // Simulate kill
 
-      // --- Session 2: Complete remaining 4 steps ---
+      // --- Session 2: Complete remaining 5 steps ---
       const session2Events: OnboardingEvent[] = [];
       const checkpoint2 = new OnboardingCheckpointService({ dataRoot });
       const engine2 = new OnboardingEngine({
@@ -462,6 +463,7 @@ describe("Checkpoint Resume", () => {
       });
 
       await engine2.initialize();
+      await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
       await engine2.completeCurrentStep();
@@ -598,7 +600,7 @@ describe("Checkpoint Resume", () => {
       await engine.completeCurrentStep();
       content = await Bun.file(join(dataRoot, "onboarding.json")).json();
       expect(content.completedSteps).toHaveLength(3);
-      expect(content.currentStep).toBe("model-select");
+      expect(content.currentStep).toBe("openclaw-migration");
     });
   });
 });

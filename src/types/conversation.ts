@@ -43,16 +43,30 @@ export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlo
  * Extract plain text from message content.
  * Returns the string directly for string content, or concatenates
  * all text blocks for ContentBlock[] content.
+ *
+ * When multiple text blocks exist (e.g. text before and after tool calls),
+ * they are joined with paragraph breaks so channel delivery and display
+ * receive properly separated content.
  */
 export function getTextContent(content: string | ContentBlock[]): string {
   if (typeof content === "string") {
     return content;
   }
 
-  return content
+  const texts = content
     .filter((block): block is TextBlock => block.type === "text")
-    .map((block) => block.text)
-    .join("");
+    .map((block) => block.text);
+
+  if (texts.length <= 1) {
+    return texts[0] ?? "";
+  }
+
+  // Join separate text blocks with a paragraph break. Trim trailing
+  // whitespace from each block to avoid stacking blank lines.
+  return texts
+    .map((t) => t.trimEnd())
+    .filter((t) => t.length > 0)
+    .join("\n\n");
 }
 
 /**

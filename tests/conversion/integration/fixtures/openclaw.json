@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.3-1",
+    "lastTouchedAt": "2026-02-21T10:00:00.000Z"
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:api_key": {
+        "provider": "anthropic",
+        "mode": "api_key",
+        "key": "sk-ant-integration-test-FAKE"
+      },
+      "openai:api_key": {
+        "provider": "openai",
+        "mode": "api_key",
+        "key": "sk-integration-openai-FAKE"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "anthropic/claude-sonnet-4-5" },
+      "workspace": "/tmp/fixture-openclaw/workspace",
+      "maxConcurrent": 4
+    },
+    "named": {
+      "assistant": {
+        "id": "assistant",
+        "workspacePath": "/tmp/fixture-openclaw/workspaces/assistant",
+        "modelOverride": "anthropic/claude-sonnet-4-5",
+        "skills": ["search"]
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "type": "telegram",
+      "token": "1111111111:TELEGRAM-INTEGRATION-FAKE",
+      "chatId": "-100111111111"
+    }
+  },
+  "gateway": {
+    "port": 8080,
+    "authMode": "token",
+    "authToken": "rm-integration-gateway-FAKE"
+  },
+  "tools": {
+    "search": {
+      "provider": "brave",
+      "apiKey": "BSK-INTEGRATION-FAKE"
+    }
+  }
+}

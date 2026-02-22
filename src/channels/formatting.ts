@@ -321,6 +321,16 @@ export function chunkTelegramMessage(
   return chunks;
 }
 
+/**
+ * Split a message into paragraphs at double-newline boundaries.
+ *
+ * Each paragraph becomes a separate chat message in Telegram/Discord.
+ * Empty paragraphs (blank lines only) are dropped.
+ */
+export function splitIntoParagraphs(text: string): string[] {
+  return text.split(/\n{2,}/).map((p) => p.trim()).filter((p) => p.length > 0);
+}
+
 // ---------------------------------------------------------------------------
 // Discord Markdown
 // ---------------------------------------------------------------------------

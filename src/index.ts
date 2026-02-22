@@ -97,6 +97,8 @@ export {
   FeatureDiscoveryStep,
   ModelSelectionStep,
   type ModelSelectionStepOptions,
+  OpenClawMigrationStep,
+  type OpenClawMigrationStepOptions,
   PersonalityStep,
   type PersonalityStepOptions,
   ProviderSetupStep,
@@ -108,6 +110,7 @@ export {
 export {
   ONBOARDING_STEPS,
   type CompletedStepRecord,
+  type MigrationState,
   type OnboardingConfig,
   type OnboardingMode,
   type OnboardingStep,

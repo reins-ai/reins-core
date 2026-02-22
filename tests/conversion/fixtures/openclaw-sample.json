@@ -1,0 +1,70 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.3-1",
+    "lastTouchedAt": "2026-02-16T07:12:57.432Z"
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:manual": {
+        "provider": "anthropic",
+        "mode": "token"
+      },
+      "google:oauth": {
+        "provider": "google",
+        "mode": "oauth"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "anthropic/claude-sonnet-4-5" },
+      "workspace": "/home/testuser/.openclaw/workspace",
+      "maxConcurrent": 4
+    },
+    "named": {
+      "eleanor": {
+        "id": "eleanor",
+        "workspacePath": "/home/testuser/.openclaw/workspaces/eleanor",
+        "modelOverride": "anthropic/claude-opus-4-5",
+        "skills": ["web-search", "calendar"],
+        "identityFiles": {
+          "SOUL.md": "You are Eleanor, Chief of Staff.",
+          "IDENTITY.md": "# Eleanor\nRole: Chief of Staff"
+        }
+      },
+      "max": {
+        "id": "max",
+        "workspacePath": "/home/testuser/.openclaw/workspaces/max",
+        "modelOverride": "openai/gpt-4o",
+        "skills": ["web-search"]
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "type": "telegram",
+      "token": "1234567890:FAKE_TOKEN_FOR_TESTING",
+      "chatId": "-100123456789"
+    }
+  },
+  "skills": {
+    "web-search": {
+      "name": "web-search",
+      "description": "Search the web for information",
+      "version": "1.0.0"
+    },
+    "calendar": {
+      "name": "calendar",
+      "description": "Read and write calendar events",
+      "version": "1.0.0"
+    }
+  },
+  "gateway": {
+    "port": 8080,
+    "authMode": "token",
+    "authToken": "fake-gateway-token"
+  },
+  "unknownPlugin": {
+    "someField": "someValue"
+  }
+}

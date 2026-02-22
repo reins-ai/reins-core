@@ -158,6 +158,21 @@ import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
+import { AgentStore } from "../agents/store";
+import { AgentWorkspaceManager } from "../agents/workspace";
+import { IdentityFileManager } from "../agents/identity";
+import { createAgentRouteHandler, type AgentRouteHandler } from "./agent-routes";
+import { ConversionService } from "../conversion/service";
+import { ProgressEmitter } from "../conversion/progress";
+import { ReportGenerator } from "../conversion/report";
+import { ImportLogWriter } from "../conversion/import-log";
+import { createKeychainProvider } from "../security/keychain-provider";
+import {
+  createConversionRouteHandler,
+  isConversionWebSocketMessage,
+  CONVERSION_PROGRESS_STREAM,
+  type ConversionRouteHandler,
+} from "./conversion-routes";
 import { ANTHROPIC_CLIENT_ID, DAEMON_PORT as CONFIG_DAEMON_PORT, DEFAULT_MODEL } from "../config/defaults";
 
 interface ActiveExecution {
@@ -486,6 +501,8 @@ export interface DaemonHttpServerOptions {
   memoryRepository?: MemoryRepository;
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
   channelService?: ChannelDaemonService;
+  agentStore?: AgentStore;
+  conversionService?: ConversionService;
   skillService?: SkillDaemonService;
   browserService?: BrowserDaemonService;
   cronScheduler?: CronScheduler;
@@ -1153,6 +1170,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   };
   private channelService: ChannelDaemonService | null = null;
   private channelRouteHandler: ChannelRouteHandler | null = null;
+  private readonly agentRouteHandler: AgentRouteHandler;
   private configStore: ConfigStore | null = null;
   private environmentResolver: FileEnvironmentResolver | null = null;
   private environmentSwitchService: EnvironmentSwitchService | null = null;
@@ -1178,6 +1196,9 @@ export class DaemonHttpServer implements DaemonManagedService {
     activeCount: 0,
     metaToolRegistered: false,
   };
+  private readonly conversionService: ConversionService;
+  private readonly conversionProgressEmitter: ProgressEmitter;
+  private readonly conversionRouteHandler: ConversionRouteHandler;
 
   constructor(options: DaemonHttpServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
@@ -1243,6 +1264,26 @@ export class DaemonHttpServer implements DaemonManagedService {
         channelService: this.providedChannelService,
       });
     }
+
+    const agentStore = options.agentStore ?? new AgentStore();
+
+    this.agentRouteHandler = createAgentRouteHandler({ agentStore });
+
+    this.conversionProgressEmitter = new ProgressEmitter();
+    this.conversionService = options.conversionService ?? new ConversionService({
+      keychainProvider: createKeychainProvider(),
+      agentStore,
+      workspaceManager: new AgentWorkspaceManager(),
+      identityManager: new IdentityFileManager(),
+      importLogWriter: new ImportLogWriter(),
+    });
+
+    this.conversionRouteHandler = createConversionRouteHandler({
+      conversionService: this.conversionService,
+      reportGenerator: new ReportGenerator(),
+      progressEmitter: this.conversionProgressEmitter,
+      wsRegistry: this.wsRegistry,
+    });
   }
 
   /**
@@ -1392,6 +1433,14 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.initializeBrowserTools();
 
     try {
+      await this.conversionService.start();
+    } catch (error) {
+      log("warn", "ConversionService failed to start; conversion features unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
       const requestHandler = this.machineAuthService
         ? createAuthMiddleware({
             authService: this.machineAuthService,
@@ -1473,6 +1522,14 @@ export class DaemonHttpServer implements DaemonManagedService {
         this.channelRouteHandler = null;
       }
 
+      try {
+        await this.conversionService.stop();
+      } catch (error) {
+        log("warn", "ConversionService failed to stop cleanly", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       await this.stopEnvironmentSessionRuntime();
 
       if (this.oauthKeepalive) {
@@ -1512,7 +1569,7 @@ export class DaemonHttpServer implements DaemonManagedService {
     // CORS headers for local development
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Expose-Headers": "X-Reins-Token",
     };
@@ -1616,6 +1673,11 @@ export class DaemonHttpServer implements DaemonManagedService {
         return this.handleAgentsStatus(corsHeaders);
       }
 
+      const agentResponse = await this.agentRouteHandler.handle(url, method, request, corsHeaders);
+      if (agentResponse !== null) {
+        return agentResponse;
+      }
+
       // Schedule list endpoint
       if (url.pathname === "/api/schedule/list" && method === "GET") {
         return this.handleScheduleList(corsHeaders);
@@ -1661,6 +1723,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       const channelResponse = await this.handleChannelRequest(url, method, request, corsHeaders);
       if (channelResponse) {
         return channelResponse;
+      }
+
+      const conversionResponse = await this.conversionRouteHandler.handle(url, method, request, corsHeaders);
+      if (conversionResponse !== null) {
+        return conversionResponse;
       }
 
       // Message ingest endpoint — canonical (/api/messages) and compatibility (/messages)
@@ -1737,6 +1804,16 @@ export class DaemonHttpServer implements DaemonManagedService {
       payload = JSON.parse(text);
     } catch {
       this.sendWebSocketError(socket, "Malformed JSON payload");
+      return;
+    }
+
+    // Handle conversion progress subscription before general message parsing
+    if (isConversionWebSocketMessage(payload)) {
+      if (payload.type === "conversion.subscribe") {
+        this.wsRegistry.subscribe(socket, CONVERSION_PROGRESS_STREAM);
+      } else if (payload.type === "conversion.unsubscribe") {
+        this.wsRegistry.unsubscribe(socket, CONVERSION_PROGRESS_STREAM);
+      }
       return;
     }
 
@@ -3491,7 +3568,9 @@ export class DaemonHttpServer implements DaemonManagedService {
         },
       });
 
-      if (this.channelService) {
+      // When paragraphs were already streamed live to the channel during
+      // generation, skip the post-completion forward to avoid duplicate messages.
+      if (this.channelService && !generation.channelChunksSent) {
         try {
           await this.channelService.forwardAssistantResponse(
             context.conversationId,
@@ -3557,6 +3636,8 @@ export class DaemonHttpServer implements DaemonManagedService {
     content: string | ContentBlock[];
     finishReason?: string;
     usage?: TokenUsage;
+    /** True when paragraphs were already streamed to channels live. */
+    channelChunksSent?: boolean;
   }> {
     const useHarness = this.shouldUseHarness(options.providerId, options.modelCapabilities);
 
@@ -3601,9 +3682,46 @@ export class DaemonHttpServer implements DaemonManagedService {
     content: string | ContentBlock[];
     finishReason?: string;
     usage?: TokenUsage;
+    channelChunksSent?: boolean;
   }> {
     const loop = new AgentLoop({ signal: options.abortSignal });
     let didEmitStart = false;
+
+    // --- Channel live-streaming state ---
+    // Accumulate tokens and flush complete paragraphs (split at \n\n) to the
+    // source channel as they arrive, so Telegram/Discord users see incremental
+    // messages rather than one wall of text after the full response completes.
+    let channelTextBuffer = "";
+    let channelChunksSent = false;
+    const hasChannelService = !!this.channelService;
+
+    const flushChannelBuffer = async (): Promise<void> => {
+      if (!hasChannelService || channelTextBuffer.length === 0) {
+        return;
+      }
+
+      const trimmed = channelTextBuffer.trim();
+      channelTextBuffer = "";
+      if (trimmed.length === 0) {
+        return;
+      }
+
+      try {
+        const sent = await this.channelService!.forwardAssistantChunk(
+          options.context.conversationId,
+          trimmed,
+          options.context.assistantMessageId,
+        );
+        if (sent) {
+          channelChunksSent = true;
+        }
+      } catch (error) {
+        log("warn", "Failed to flush channel buffer", {
+          conversationId: options.context.conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
 
     for await (const event of loop.runWithProvider({
       provider: options.provider,
@@ -3646,6 +3764,11 @@ export class DaemonHttpServer implements DaemonManagedService {
             timestamp: new Date().toISOString(),
           },
         });
+
+        // Accumulate for channel delivery. The buffer is only flushed at
+        // semantic boundaries (tool_call_start, done) — not at \n\n — so
+        // each coherent text segment arrives as a single channel message.
+        channelTextBuffer += event.content;
         continue;
       }
 
@@ -3665,6 +3788,11 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       if (event.type === "tool_call_start") {
+        // Flush any accumulated text before the tool call so it reaches
+        // the channel promptly rather than being held until after the tool
+        // finishes executing.
+        await flushChannelBuffer();
+
         this.publishStreamLifecycleEvent({
           type: "stream-event",
           event: {
@@ -3716,17 +3844,25 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       if (event.type === "done") {
+        // Flush any remaining buffered text to the channel.
+        await flushChannelBuffer();
+
         return {
           content: event.content,
           finishReason: event.finishReason,
           usage: event.usage,
+          channelChunksSent,
         };
       }
     }
 
+    // Loop ended without a done event — flush anything remaining.
+    await flushChannelBuffer();
+
     return {
       content: "",
       finishReason: "stop",
+      channelChunksSent,
     };
   }
 

@@ -306,6 +306,53 @@ export class ChannelDaemonService {
     }
   }
 
+  /**
+   * Send a single paragraph/chunk of an in-progress response to the source
+   * channel. Used during live streaming so users see text as it is generated
+   * rather than waiting for the full response.
+   */
+  public async forwardAssistantChunk(
+    conversationId: string,
+    text: string,
+    assistantMessageId?: string,
+  ): Promise<boolean> {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+      return false;
+    }
+
+    const sourceChannelId = this.sourceChannelIdByConversationId.get(conversationId);
+    if (!sourceChannelId) {
+      return false;
+    }
+
+    const sourceChannel = this.channelRegistry.get(sourceChannelId);
+    if (!sourceChannel || !sourceChannel.config.enabled) {
+      return false;
+    }
+
+    try {
+      await this.conversationBridge.routeOutbound(
+        {
+          conversationId,
+          text: trimmed,
+          assistantMessageId,
+        },
+        sourceChannel,
+      );
+      this.updateDiagnostics(sourceChannel.config.id, { lastError: undefined });
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.updateDiagnostics(sourceChannel.config.id, { lastError: errorMessage });
+      log.warn("Failed to forward assistant chunk to channel", {
+        conversationId,
+        error: errorMessage,
+      });
+      return false;
+    }
+  }
+
   public async forwardAssistantError(
     conversationId: string,
     errorCode: string,

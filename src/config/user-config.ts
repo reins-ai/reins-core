@@ -37,6 +37,7 @@ export interface UserConfig {
     maxConcurrentWorkers?: number;
   };
   setupComplete: boolean;
+  activeAgentId?: string;
 }
 
 export interface UserConfigPathOptions {
@@ -173,6 +174,9 @@ function normalizeConfig(value: unknown): UserConfig {
     },
     tasks: maxConcurrentWorkers === undefined ? undefined : { maxConcurrentWorkers },
     setupComplete: value.setupComplete === true,
+    activeAgentId: typeof value.activeAgentId === "string" && value.activeAgentId.trim().length > 0
+      ? value.activeAgentId
+      : undefined,
   };
 }
 
@@ -203,6 +207,7 @@ function mergeUserConfig(existing: UserConfig | null, updates: Partial<UserConfi
     },
     tasks: nextMaxConcurrentWorkers === undefined ? undefined : { maxConcurrentWorkers: nextMaxConcurrentWorkers },
     setupComplete: updates.setupComplete ?? base.setupComplete,
+    activeAgentId: updates.activeAgentId ?? base.activeAgentId,
   };
 }
 
