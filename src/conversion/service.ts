@@ -427,7 +427,9 @@ export class ConversionService implements DaemonService {
       },
       "channel-credentials": async (mapperOptions) => {
         const mapper = new ChannelMapper(this.options.keychainProvider);
-        const channels = Object.values(context.parsedInstall.config.channels ?? {});
+        const channels = Object.entries(context.parsedInstall.config.channels ?? {}).map(
+          ([channelType, config]) => ({ ...config, type: channelType }),
+        );
         return mapper.map(channels, mapperOptions);
       },
       "skills": async (mapperOptions) => {
@@ -506,11 +508,11 @@ function buildConversionPlan(
   }
 
   if (selected.has("channel-credentials")) {
-    plan.channels = Object.entries(parsedInstall.config.channels ?? {}).map(([name, config]) => {
+    plan.channels = Object.entries(parsedInstall.config.channels ?? {}).map(([channelType, config]) => {
       const channelConfig = config as OpenClawChannelConfig & { name?: string };
       return {
-        name: typeof channelConfig.name === "string" ? channelConfig.name : name,
-        type: channelConfig.type,
+        name: typeof channelConfig.name === "string" ? channelConfig.name : channelType,
+        type: channelType,
       };
     });
   }
