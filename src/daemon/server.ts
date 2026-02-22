@@ -158,6 +158,15 @@ import { createAuthMiddleware } from "./auth-middleware";
 import { MachineAuthService } from "../security/machine-auth";
 import { ChannelDaemonService } from "./channel-service";
 import { createChannelRouteHandler, type ChannelRouteHandler } from "./channel-routes";
+import { ConversionService } from "../conversion/service";
+import { ProgressEmitter } from "../conversion/progress";
+import { ReportGenerator } from "../conversion/report";
+import {
+  createConversionRouteHandler,
+  isConversionWebSocketMessage,
+  CONVERSION_PROGRESS_STREAM,
+  type ConversionRouteHandler,
+} from "./conversion-routes";
 import { ANTHROPIC_CLIENT_ID, DAEMON_PORT as CONFIG_DAEMON_PORT, DEFAULT_MODEL } from "../config/defaults";
 
 interface ActiveExecution {
@@ -486,6 +495,7 @@ export interface DaemonHttpServerOptions {
   memoryRepository?: MemoryRepository;
   memoryCapabilitiesResolver?: MemoryCapabilitiesResolver;
   channelService?: ChannelDaemonService;
+  conversionService?: ConversionService;
   skillService?: SkillDaemonService;
   browserService?: BrowserDaemonService;
   cronScheduler?: CronScheduler;
@@ -1178,6 +1188,9 @@ export class DaemonHttpServer implements DaemonManagedService {
     activeCount: 0,
     metaToolRegistered: false,
   };
+  private readonly conversionService: ConversionService | null;
+  private readonly conversionProgressEmitter: ProgressEmitter;
+  private conversionRouteHandler: ConversionRouteHandler | null = null;
 
   constructor(options: DaemonHttpServerOptions = {}) {
     this.port = options.port ?? DEFAULT_PORT;
@@ -1241,6 +1254,18 @@ export class DaemonHttpServer implements DaemonManagedService {
       this.channelService = this.providedChannelService;
       this.channelRouteHandler = createChannelRouteHandler({
         channelService: this.providedChannelService,
+      });
+    }
+
+    this.conversionService = options.conversionService ?? null;
+    this.conversionProgressEmitter = new ProgressEmitter();
+
+    if (this.conversionService) {
+      this.conversionRouteHandler = createConversionRouteHandler({
+        conversionService: this.conversionService,
+        reportGenerator: new ReportGenerator(),
+        progressEmitter: this.conversionProgressEmitter,
+        wsRegistry: this.wsRegistry,
       });
     }
   }
@@ -1391,6 +1416,16 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.initializeSkillTools();
     this.initializeBrowserTools();
 
+    if (this.conversionService) {
+      try {
+        await this.conversionService.start();
+      } catch (error) {
+        log("warn", "ConversionService failed to start; conversion features unavailable", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     try {
       const requestHandler = this.machineAuthService
         ? createAuthMiddleware({
@@ -1471,6 +1506,16 @@ export class DaemonHttpServer implements DaemonManagedService {
       if (!this.providedChannelService) {
         this.channelService = null;
         this.channelRouteHandler = null;
+      }
+
+      if (this.conversionService) {
+        try {
+          await this.conversionService.stop();
+        } catch (error) {
+          log("warn", "ConversionService failed to stop cleanly", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       await this.stopEnvironmentSessionRuntime();
@@ -1663,6 +1708,13 @@ export class DaemonHttpServer implements DaemonManagedService {
         return channelResponse;
       }
 
+      if (this.conversionRouteHandler) {
+        const conversionResponse = await this.conversionRouteHandler.handle(url, method, request, corsHeaders);
+        if (conversionResponse !== null) {
+          return conversionResponse;
+        }
+      }
+
       // Message ingest endpoint — canonical (/api/messages) and compatibility (/messages)
       if (this.matchMessageRoute(url.pathname) && method === "POST") {
         return this.handlePostMessage(request, corsHeaders);
@@ -1737,6 +1789,16 @@ export class DaemonHttpServer implements DaemonManagedService {
       payload = JSON.parse(text);
     } catch {
       this.sendWebSocketError(socket, "Malformed JSON payload");
+      return;
+    }
+
+    // Handle conversion progress subscription before general message parsing
+    if (isConversionWebSocketMessage(payload)) {
+      if (payload.type === "conversion.subscribe") {
+        this.wsRegistry.subscribe(socket, CONVERSION_PROGRESS_STREAM);
+      } else if (payload.type === "conversion.unsubscribe") {
+        this.wsRegistry.unsubscribe(socket, CONVERSION_PROGRESS_STREAM);
+      }
       return;
     }
 
