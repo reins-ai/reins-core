@@ -6,6 +6,8 @@ export interface SectionBudget {
 export interface PromptBudgetConfig {
   PERSONALITY: SectionBudget;
   BOUNDARIES: SectionBudget;
+  AGENTS: SectionBudget;
+  RESEARCH: SectionBudget;
   USER: SectionBudget;
   KNOWLEDGE: SectionBudget;
   TOOLS: SectionBudget;
@@ -23,6 +25,12 @@ export const DEFAULT_SECTION_BUDGETS: PromptBudgetConfig = {
   BOUNDARIES: {
     maxChars: 2000,
     reservedMinimumChars: 300,
+  },
+  AGENTS: {
+    maxChars: 4000,
+  },
+  RESEARCH: {
+    maxChars: 3000,
   },
   USER: {
     maxChars: 2000,

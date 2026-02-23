@@ -7,6 +7,8 @@ export const ENVIRONMENT_DOCUMENTS = [
   "KNOWLEDGE",
   "TOOLS",
   "BOUNDARIES",
+  "AGENTS",
+  "RESEARCH",
   "MEMORY",
   "PERSONA",
 ] as const;
@@ -17,6 +19,8 @@ export const ENVIRONMENT_DOCUMENTS = [
  * rather than causing an error.
  */
 export const OPTIONAL_ENVIRONMENT_DOCUMENTS: ReadonlySet<EnvironmentDocument> = new Set([
+  "AGENTS",
+  "RESEARCH",
   "MEMORY",
   "PERSONA",
 ]);
