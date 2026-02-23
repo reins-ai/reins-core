@@ -7,8 +7,8 @@
 /** Port for the Reins daemon HTTP server. Override with REINS_DAEMON_PORT env var. */
 export const DAEMON_PORT = parseInt(process.env.REINS_DAEMON_PORT ?? "7433", 10);
 
-/** Hostname the daemon binds to by default. */
-export const DAEMON_HOST = "localhost";
+/** Hostname the daemon binds to by default. Override with REINS_DAEMON_HOST env var. */
+export const DAEMON_HOST = process.env.REINS_DAEMON_HOST ?? "0.0.0.0";
 
 /** Port for Chrome DevTools Protocol (CDP) debugging. Override with REINS_CDP_PORT env var. */
 export const CDP_PORT = parseInt(process.env.REINS_CDP_PORT ?? "9222", 10);
