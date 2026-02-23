@@ -9,10 +9,12 @@ import type {
   MarketplaceSearchResult,
   MarketplaceSkill,
   MarketplaceSkillDetail,
+  MarketplaceSkillFile,
   MarketplaceSortMode,
   MarketplaceSource,
   SearchOptions,
 } from "../types";
+import { ClawHubClient } from "./client";
 import type {
   ClawHubBrowseItem,
   ClawHubBrowseResponse,
@@ -21,7 +23,6 @@ import type {
   ClawHubSearchResponse,
   ClawHubSearchResult,
 } from "./api-types";
-import { ClawHubClient } from "./client";
 
 export interface ClawHubSourceOptions {
   client?: ClawHubClient;
@@ -143,11 +144,52 @@ export class ClawHubSource implements MarketplaceSource {
       return err(result.error);
     }
 
-    const normalized = this.normalizeSkillDetail(result.value);
-    this.detailCache.set(cacheKey, normalized, DETAIL_TTL_MS);
-    this.staleDetailCache.set(cacheKey, normalized);
+    const base = this.normalizeSkillDetail(result.value);
 
-    return ok(normalized);
+    // Enrich with version file list and SKILL.md content in parallel.
+    // Failures are non-fatal — we always return the base detail.
+    const version = base.version !== "unknown" ? base.version : undefined;
+    if (version) {
+      const [filesResult, readmeResult] = await Promise.all([
+        this.client.fetchVersionDetail(slug, version),
+        this.client.fetchFileContent(slug, version, "SKILL.md"),
+      ]);
+
+      let files: MarketplaceSkillFile[] | undefined;
+      if (filesResult.ok && Array.isArray(filesResult.value.version?.files)) {
+        files = filesResult.value.version.files.map((f) => ({
+          path: f.path,
+          size: f.size,
+          contentType: f.contentType,
+        }));
+      }
+
+      let readme: string | undefined;
+      let homepage = base.homepage;
+      if (readmeResult.ok) {
+        readme = this.stripFrontmatter(readmeResult.value);
+        if (!homepage) {
+          homepage = this.parseFrontmatterField(readmeResult.value, "homepage");
+        }
+      }
+
+      const enriched: MarketplaceSkillDetail = { ...base, files, readme, homepage };
+      this.detailCache.set(cacheKey, enriched, DETAIL_TTL_MS);
+      this.staleDetailCache.set(cacheKey, enriched);
+      return ok(enriched);
+    }
+
+    this.detailCache.set(cacheKey, base, DETAIL_TTL_MS);
+    this.staleDetailCache.set(cacheKey, base);
+    return ok(base);
+  }
+
+  /**
+   * Fetches the raw text content of a specific file in a skill version.
+   * Use this for on-demand file previewing in the UI.
+   */
+  async getFileContent(slug: string, version: string, path: string): Promise<Result<string>> {
+    return this.client.fetchFileContent(slug, version, path);
   }
 
   async download(slug: string, version: string): Promise<Result<DownloadResult>> {
@@ -254,7 +296,19 @@ export class ClawHubSource implements MarketplaceSource {
       license: undefined,
       versions: version.length > 0 ? [version] : [],
       readme: undefined,
+      stars: this.normalizeNumber(skill?.stats?.stars),
+      downloads: this.normalizeNumber(skill?.stats?.downloads),
+      currentInstalls: this.normalizeNumber(skill?.stats?.installsCurrent),
+      handle: this.normalizeDetailHandle(response),
+      files: undefined,
     };
+  }
+
+  private normalizeDetailHandle(response: ClawHubDetailResponse): string | undefined {
+    if (typeof response.owner?.handle === "string" && response.owner.handle.length > 0) {
+      return `@${response.owner.handle}`;
+    }
+    return undefined;
   }
 
   private normalizeDownload(response: ClawHubDownloadResponse): DownloadResult {
@@ -314,5 +368,31 @@ export class ClawHubSource implements MarketplaceSource {
 
   private isRateLimitedError(error: MarketplaceError): boolean {
     return error.code === MARKETPLACE_ERROR_CODES.RATE_LIMITED;
+  }
+
+  /**
+   * Strips YAML frontmatter (the `--- ... ---` block at the start of a file)
+   * and returns the remaining content trimmed.
+   */
+  private stripFrontmatter(content: string): string {
+    if (!content.startsWith("---")) {
+      return content.trim();
+    }
+    const end = content.indexOf("\n---", 3);
+    if (end === -1) {
+      return content.trim();
+    }
+    return content.slice(end + 4).trim();
+  }
+
+  /**
+   * Extracts a simple scalar value from a YAML frontmatter field.
+   * Handles the pattern `fieldName: value` on its own line.
+   */
+  private parseFrontmatterField(content: string, field: string): string | undefined {
+    const pattern = new RegExp(`^${field}:\\s*(.+)$`, "m");
+    const match = pattern.exec(content);
+    const value = match?.[1]?.trim();
+    return value && value.length > 0 ? value : undefined;
   }
 }

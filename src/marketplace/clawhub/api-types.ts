@@ -64,3 +64,24 @@ export interface ClawHubDownloadResponse {
   size: number;
   contentType: string;
 }
+
+export interface ClawHubVersionFile {
+  path: string;
+  size: number;
+  sha256: string;
+  contentType: string;
+}
+
+export interface ClawHubVersionDetailResponse {
+  skill?: {
+    slug: string;
+    displayName?: string;
+  };
+  version?: {
+    version: string;
+    createdAt?: number;
+    changelog?: string;
+    changelogSource?: string | null;
+    files?: ClawHubVersionFile[];
+  };
+}

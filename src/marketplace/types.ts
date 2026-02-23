@@ -26,6 +26,15 @@ export interface MarketplaceSkill {
 }
 
 /**
+ * A single file entry within a skill package.
+ */
+export interface MarketplaceSkillFile {
+  path: string;
+  size: number;
+  contentType: string;
+}
+
+/**
  * Full skill metadata contract for marketplace detail views.
  */
 export interface MarketplaceSkillDetail extends MarketplaceSkill {
@@ -35,6 +44,16 @@ export interface MarketplaceSkillDetail extends MarketplaceSkill {
   license?: string;
   versions: string[];
   readme?: string;
+  /** Star count on the marketplace */
+  stars?: number;
+  /** Total all-time download count */
+  downloads?: number;
+  /** Current active install count */
+  currentInstalls?: number;
+  /** Author's public handle / username */
+  handle?: string;
+  /** Files bundled in the latest version */
+  files?: MarketplaceSkillFile[];
 }
 
 /**

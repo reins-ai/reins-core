@@ -5,6 +5,7 @@ import type {
   ClawHubDetailResponse,
   ClawHubDownloadResponse,
   ClawHubSearchResponse,
+  ClawHubVersionDetailResponse,
 } from "../../../src/marketplace/clawhub/api-types";
 import type { ClawHubClient, FetchSkillsOptions, SearchSkillsOptions } from "../../../src/marketplace/clawhub/client";
 import { ClawHubSource } from "../../../src/marketplace/clawhub/source";
@@ -17,10 +18,14 @@ interface MockClientControls {
   fetchSkillsCalls: FetchSkillsOptions[];
   searchSkillsCalls: Array<{ query: string; options: SearchSkillsOptions }>;
   fetchSkillDetailCalls: string[];
+  fetchVersionDetailCalls: Array<{ slug: string; version: string }>;
+  fetchFileContentCalls: Array<{ slug: string; version: string; path: string }>;
   downloadSkillCalls: Array<{ slug: string; version: string }>;
   enqueueFetchSkills(result: Result<ClawHubBrowseResponse, MarketplaceError>): void;
   enqueueSearchSkills(result: Result<ClawHubSearchResponse, MarketplaceError>): void;
   enqueueFetchSkillDetail(result: Result<ClawHubDetailResponse, MarketplaceError>): void;
+  enqueueVersionDetail(result: Result<ClawHubVersionDetailResponse, MarketplaceError>): void;
+  enqueueFileContent(result: Result<string, MarketplaceError>): void;
   enqueueDownloadSkill(result: Result<ClawHubDownloadResponse, MarketplaceError>): void;
 }
 
@@ -32,11 +37,15 @@ function createMockClient(): MockClientControls {
   const fetchSkillsQueue: Array<Result<ClawHubBrowseResponse, MarketplaceError>> = [];
   const searchSkillsQueue: Array<Result<ClawHubSearchResponse, MarketplaceError>> = [];
   const fetchSkillDetailQueue: Array<Result<ClawHubDetailResponse, MarketplaceError>> = [];
+  const versionDetailQueue: Array<Result<ClawHubVersionDetailResponse, MarketplaceError>> = [];
+  const fileContentQueue: Array<Result<string, MarketplaceError>> = [];
   const downloadSkillQueue: Array<Result<ClawHubDownloadResponse, MarketplaceError>> = [];
 
   const fetchSkillsCalls: FetchSkillsOptions[] = [];
   const searchSkillsCalls: Array<{ query: string; options: SearchSkillsOptions }> = [];
   const fetchSkillDetailCalls: string[] = [];
+  const fetchVersionDetailCalls: Array<{ slug: string; version: string }> = [];
+  const fetchFileContentCalls: Array<{ slug: string; version: string; path: string }> = [];
   const downloadSkillCalls: Array<{ slug: string; version: string }> = [];
 
   const client: ClawHubClient = {
@@ -52,6 +61,14 @@ function createMockClient(): MockClientControls {
       fetchSkillDetailCalls.push(slug);
       return fetchSkillDetailQueue.shift() ?? err(new MarketplaceError("missing", MARKETPLACE_ERROR_CODES.NOT_FOUND));
     },
+    async fetchVersionDetail(slug: string, version: string) {
+      fetchVersionDetailCalls.push({ slug, version });
+      return versionDetailQueue.shift() ?? err(new MarketplaceError("missing", MARKETPLACE_ERROR_CODES.NOT_FOUND));
+    },
+    async fetchFileContent(slug: string, version: string, path: string) {
+      fetchFileContentCalls.push({ slug, version, path });
+      return fileContentQueue.shift() ?? err(new MarketplaceError("missing", MARKETPLACE_ERROR_CODES.NOT_FOUND));
+    },
     async downloadSkill(slug: string, version: string) {
       downloadSkillCalls.push({ slug, version });
       return downloadSkillQueue.shift() ?? err(new MarketplaceError("download failed", MARKETPLACE_ERROR_CODES.DOWNLOAD_ERROR));
@@ -66,6 +83,8 @@ function createMockClient(): MockClientControls {
     fetchSkillsCalls,
     searchSkillsCalls,
     fetchSkillDetailCalls,
+    fetchVersionDetailCalls,
+    fetchFileContentCalls,
     downloadSkillCalls,
     enqueueFetchSkills(result) {
       fetchSkillsQueue.push(result);
@@ -75,6 +94,12 @@ function createMockClient(): MockClientControls {
     },
     enqueueFetchSkillDetail(result) {
       fetchSkillDetailQueue.push(result);
+    },
+    enqueueVersionDetail(result) {
+      versionDetailQueue.push(result);
+    },
+    enqueueFileContent(result) {
+      fileContentQueue.push(result);
     },
     enqueueDownloadSkill(result) {
       downloadSkillQueue.push(result);

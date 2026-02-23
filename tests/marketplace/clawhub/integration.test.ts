@@ -52,6 +52,14 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
+/** Returns a 404 JSON response — used to stub non-fatal enrichment calls. */
+function notFoundResponse(): Response {
+  return new Response(JSON.stringify({ error: "not found" }), {
+    status: 404,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function createSource(fetchFn: typeof fetch): ClawHubSource {
   return new ClawHubSource({
     baseUrl: "https://clawhub.ai",
@@ -154,7 +162,10 @@ describe("ClawHub Integration", () => {
 
   describe("detail fetch", () => {
     it("fetches and normalizes a skill detail", async () => {
+      // detail fetch + version-detail enrichment (non-fatal 404) + SKILL.md enrichment (non-fatal 404)
       mock.enqueue(jsonResponse(mockClawHubDetailResponse));
+      mock.enqueue(notFoundResponse());
+      mock.enqueue(notFoundResponse());
 
       const result = await source.getDetail("smart-calendar-sync");
 
@@ -175,12 +186,16 @@ describe("ClawHub Integration", () => {
     });
 
     it("caches detail on second fetch for same slug", async () => {
+      // First fetch: detail + 2 enrichment calls (version-detail + SKILL.md)
       mock.enqueue(jsonResponse(mockClawHubDetailResponse));
+      mock.enqueue(notFoundResponse());
+      mock.enqueue(notFoundResponse());
 
       await source.getDetail("smart-calendar-sync");
+      // Second fetch should be served from cache — no additional HTTP calls
       await source.getDetail("smart-calendar-sync");
 
-      expect(mock.calls).toHaveLength(1);
+      expect(mock.calls).toHaveLength(3);
     });
   });
 
@@ -265,7 +280,11 @@ describe("ClawHub Integration", () => {
 
     it("returns cached detail when rate-limited after successful detail fetch", async () => {
       await withMockedNow(1_000, async (advanceTo) => {
+        // First fetch: detail + 2 enrichment calls (version-detail 404 + SKILL.md 404)
         mock.enqueue(jsonResponse(mockClawHubDetailResponse));
+        mock.enqueue(notFoundResponse());
+        mock.enqueue(notFoundResponse());
+        // Second fetch (after TTL expiry): detail request is rate-limited
         mock.enqueue(new Response("Too Many Requests", {
           status: 429,
           headers: { "retry-after": "60" },
@@ -284,7 +303,7 @@ describe("ClawHub Integration", () => {
           expect(second.value.slug).toBe("smart-calendar-sync");
         }
 
-        expect(mock.calls).toHaveLength(2);
+        expect(mock.calls).toHaveLength(4);
       });
     });
 

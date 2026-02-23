@@ -6,6 +6,7 @@ import type {
   ClawHubDetailResponse,
   ClawHubDownloadResponse,
   ClawHubSearchResponse,
+  ClawHubVersionDetailResponse,
 } from "./api-types";
 
 export interface ClawHubClientOptions {
@@ -86,6 +87,28 @@ export class ClawHubClient {
     return this.request<ClawHubDetailResponse>(`/api/v1/skills/${encodeURIComponent(slug)}`);
   }
 
+  /**
+   * Fetches the version manifest for a specific skill version, including the
+   * list of files bundled in that version.
+   * GET /api/v1/skills/:slug/versions/:version
+   */
+  async fetchVersionDetail(slug: string, version: string): Promise<Result<ClawHubVersionDetailResponse, MarketplaceError>> {
+    return this.request<ClawHubVersionDetailResponse>(
+      `/api/v1/skills/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`,
+    );
+  }
+
+  /**
+   * Fetches the raw text content of a file bundled in a skill version.
+   * GET /api/v1/skills/:slug/file?version=:version&path=:path
+   */
+  async fetchFileContent(slug: string, version: string, path: string): Promise<Result<string, MarketplaceError>> {
+    const params = new URLSearchParams();
+    params.set("version", version);
+    params.set("path", path);
+    return this.requestText(`/api/v1/skills/${encodeURIComponent(slug)}/file`, params);
+  }
+
   async downloadSkill(slug: string, version: string): Promise<Result<ClawHubDownloadResponse, MarketplaceError>> {
     const params = new URLSearchParams();
     params.set("slug", slug);
@@ -112,6 +135,29 @@ export class ClawHubClient {
       remaining: this.rateLimitInfo.remaining,
       resetAt: this.rateLimitInfo.resetAt,
     };
+  }
+
+  private async requestText(path: string, params?: URLSearchParams): Promise<Result<string, MarketplaceError>> {
+    const responseResult = await this.fetchResponse(path, params);
+    if (!responseResult.ok) {
+      return responseResult;
+    }
+
+    const response = responseResult.value;
+    if (!response.ok) {
+      return err(this.mapHttpError(response));
+    }
+
+    try {
+      const text = await response.text();
+      return ok(text);
+    } catch (cause) {
+      return err(new MarketplaceError(
+        "Marketplace returned invalid text response",
+        MARKETPLACE_ERROR_CODES.INVALID_RESPONSE,
+        cause instanceof Error ? cause : undefined,
+      ));
+    }
   }
 
   private async request<T>(path: string, params?: URLSearchParams): Promise<Result<T, MarketplaceError>> {
