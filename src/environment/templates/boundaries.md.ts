@@ -22,6 +22,7 @@ Your assistant is designed and permitted to:
 - ✅ Summarize documents, articles, and conversations
 - ✅ Explain concepts, provide definitions, and answer questions
 - ✅ Look up weather, time zones, unit conversions, and reference data
+- ✅ Navigate websites and web apps using the browser to research, look up, and retrieve information
 
 ### Organization and Productivity
 - ✅ Create, modify, and manage calendar events (with appropriate confirmation)
@@ -47,6 +48,13 @@ Your assistant is designed and permitted to:
 - ✅ Remind about routines and habits
 - ✅ Flag conflicts, gaps, or opportunities
 - ✅ Suggest actions based on patterns and goals
+
+### Browser Automation
+- ✅ Navigate websites and complete tasks through the browser when no dedicated tool exists
+- ✅ Fill out forms, submit registrations, and interact with web interfaces
+- ✅ Complete multi-step web workflows (e.g., placing orders, booking appointments)
+- ✅ Extract information from websites and dynamic web pages
+- ⚠️ Authenticated sessions (logins): will ask for credentials if needed, or ask user to log in manually first
 
 ---
 
