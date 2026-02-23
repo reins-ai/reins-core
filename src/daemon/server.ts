@@ -4,6 +4,7 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 
 import { ConversationManager, type ConversationManagerCompactionOptions } from "../conversation/manager";
@@ -95,6 +96,10 @@ import { DebugEventBuffer } from "../browser/debug-event-buffer";
 import { ElementRefRegistry } from "../browser/element-ref-registry";
 import { SnapshotEngine } from "../browser/snapshot";
 import { BROWSER_SYSTEM_PROMPT } from "../browser/system-prompt";
+import { ClawHubSource } from "../marketplace/clawhub/source";
+import { SkillInstaller } from "../marketplace/install/installer";
+import { MigrationPipeline } from "../marketplace/migration/pipeline";
+import { MigrationService } from "../marketplace/migration/migration-service";
 import type { CronScheduler } from "../cron/scheduler";
 import type { CronJobDefinition } from "../cron/types";
 
@@ -507,6 +512,13 @@ export interface DaemonHttpServerOptions {
   agentStore?: AgentStore;
   conversionService?: ConversionService;
   skillService?: SkillDaemonService;
+  createClawHubSource?: () => ClawHubSource;
+  createMigrationPipeline?: () => MigrationPipeline;
+  createSkillInstaller?: (options: {
+    source: ClawHubSource;
+    migrationPipeline: MigrationPipeline;
+    skillsDir: string;
+  }) => Pick<SkillInstaller, "install">;
   browserService?: BrowserDaemonService;
   cronScheduler?: CronScheduler;
   convexAuthToken?: string;
@@ -1162,6 +1174,7 @@ type SkillRoute =
   | { type: "detail"; name: string }
   | { type: "enable"; name: string }
   | { type: "disable"; name: string }
+  | { type: "install" }
   | { type: "scan" };
 
 /**
@@ -1207,6 +1220,13 @@ export class DaemonHttpServer implements DaemonManagedService {
   private integrationService: IntegrationService | null = null;
   private convexClient: ConvexDaemonClient | null = null;
   private readonly skillService: SkillDaemonService | null;
+  private readonly createClawHubSource: () => ClawHubSource;
+  private readonly createMigrationPipeline: () => MigrationPipeline;
+  private readonly createSkillInstaller: (options: {
+    source: ClawHubSource;
+    migrationPipeline: MigrationPipeline;
+    skillsDir: string;
+  }) => Pick<SkillInstaller, "install">;
   private readonly browserService: BrowserDaemonService | null;
   private readonly cronScheduler: CronScheduler | null;
   private readonly memoryEventSubscribers = new Set<OnMemoryEvent>();
@@ -1239,6 +1259,17 @@ export class DaemonHttpServer implements DaemonManagedService {
     this.memoryCapabilitiesResolver = options.memoryCapabilitiesResolver ?? new MemoryCapabilitiesResolver();
     this.providedChannelService = options.channelService ?? null;
     this.skillService = options.skillService ?? null;
+    this.createClawHubSource = options.createClawHubSource
+      ?? (() => new ClawHubSource());
+    this.createMigrationPipeline = options.createMigrationPipeline
+      ?? (() =>
+        new MigrationPipeline({
+          migrationService: new MigrationService({
+            chatFn: async () => "",
+          }),
+        }));
+    this.createSkillInstaller = options.createSkillInstaller
+      ?? ((installerOptions) => new SkillInstaller(installerOptions));
     this.browserService = options.browserService ?? null;
     this.cronScheduler = options.cronScheduler ?? null;
     this.configuredConvexAuthToken = normalizeOptionalToken(options.convexAuthToken);
@@ -6191,6 +6222,10 @@ export class DaemonHttpServer implements DaemonManagedService {
       return { type: "scan" };
     }
 
+    if (pathname === "/api/skills/install") {
+      return { type: "install" };
+    }
+
     const enableMatch = pathname.match(/^\/api\/skills\/([^/]+)\/enable$/);
     if (enableMatch) {
       return { type: "enable", name: decodeURIComponent(enableMatch[1]) };
@@ -6212,7 +6247,7 @@ export class DaemonHttpServer implements DaemonManagedService {
   private async handleSkillRequest(
     route: SkillRoute,
     method: string,
-    _request: Request,
+    request: Request,
     corsHeaders: Record<string, string>,
   ): Promise<Response> {
     if (this.skillService === null || this.skillService.getState() !== "running") {
@@ -6322,6 +6357,76 @@ export class DaemonHttpServer implements DaemonManagedService {
       }
 
       return Response.json({ ok: true }, { status: 200, headers: corsHeaders });
+    }
+
+    if (route.type === "install") {
+      if (method !== "POST") {
+        return Response.json(
+          { error: `Method ${method} not allowed on skills install` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      let body: unknown;
+      try {
+        body = await request.json() as unknown;
+      } catch {
+        return Response.json(
+          { error: "Invalid JSON request body" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const slug =
+        typeof (body as { slug?: unknown })?.slug === "string"
+          ? (body as { slug: string }).slug.trim()
+          : "";
+
+      if (slug.length === 0) {
+        return Response.json(
+          { error: "slug is required" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+
+      const version =
+        typeof (body as { version?: unknown })?.version === "string"
+          ? (body as { version: string }).version.trim()
+          : "";
+
+      if (registry.get(slug)) {
+        return Response.json(
+          { error: `Skill already installed: ${slug}` },
+          { status: 409, headers: corsHeaders },
+        );
+      }
+
+      const skillsDir = join(homedir(), ".reins", "skills");
+      const source = this.createClawHubSource();
+      const migrationPipeline = this.createMigrationPipeline();
+      const installer = this.createSkillInstaller({
+        source,
+        migrationPipeline,
+        skillsDir,
+      });
+
+      const installResult = await installer.install(slug, version || "latest");
+      if (!installResult.ok) {
+        return Response.json(
+          { error: installResult.error.message },
+          { status: 500, headers: corsHeaders },
+        );
+      }
+
+      await scanner.scan();
+      return Response.json(
+        {
+          ok: true,
+          name: installResult.value.slug,
+          version: installResult.value.version,
+        },
+        { status: 200, headers: corsHeaders },
+      );
     }
 
     if (method !== "POST") {
