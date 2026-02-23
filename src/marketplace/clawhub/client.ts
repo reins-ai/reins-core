@@ -166,7 +166,9 @@ export class ClawHubClient {
 
   private async fetchResponse(path: string, params?: URLSearchParams): Promise<Result<Response, MarketplaceError>> {
     const url = new URL(path, this.baseUrl);
-    if (params && params.size > 0) {
+    // Note: URLSearchParams.size is not available in Hermes (React Native's JS engine).
+    // Use toString().length instead, or unconditionally assign since empty string is harmless.
+    if (params) {
       url.search = params.toString();
     }
 
