@@ -63,6 +63,9 @@ During each heartbeat, review:
 3. **Routines**: Any routines scheduled to run now (see ROUTINES.md)
 4. **Goals**: Weekly review trigger, milestone approaching (see GOALS.md)
 5. **Patterns**: Unusual gaps, overloaded schedule, missed habits
+6. **Pending tasks**: If a task is in progress and can be advanced using available tools, take action — don't just report it
+
+**Action bias:** If something can be done autonomously and safely, do it during the heartbeat rather than waiting to be asked. Surface results, not just observations.
 
 ## Output Format
 
