@@ -40,6 +40,11 @@ export class SystemPromptBuilder {
       options.environmentDocuments,
       "BOUNDARIES",
     );
+    const agentsDocument = this.readDocumentWithBudget(options.environmentDocuments, "AGENTS");
+    const researchDocument = this.readDocumentWithBudget(
+      options.environmentDocuments,
+      "RESEARCH",
+    );
     const userDocument = this.readDocumentWithBudget(options.environmentDocuments, "USER");
     const personaDocument = options.environmentDocuments.PERSONA;
 
@@ -50,6 +55,22 @@ export class SystemPromptBuilder {
     );
     if (identitySection) {
       sections.push(identitySection);
+    }
+
+    const agentsSection = this.buildEnvironmentDocumentSection(
+      "## Operational Doctrine",
+      agentsDocument,
+    );
+    if (agentsSection) {
+      sections.push(agentsSection);
+    }
+
+    const researchSection = this.buildEnvironmentDocumentSection(
+      "## Research Protocol",
+      researchDocument,
+    );
+    if (researchSection) {
+      sections.push(researchSection);
     }
 
     const boundariesSection = this.buildEnvironmentDocumentSection(

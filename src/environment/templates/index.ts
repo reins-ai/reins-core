@@ -7,6 +7,8 @@ import { GOALS_TEMPLATE } from "./goals.md";
 import { KNOWLEDGE_TEMPLATE } from "./knowledge.md";
 import { TOOLS_TEMPLATE, STRUCTURED_EXTRACTION_EXAMPLES } from "./tools.md";
 import { BOUNDARIES_TEMPLATE } from "./boundaries.md";
+import { AGENTS_TEMPLATE } from "./agents.md";
+import { RESEARCH_TEMPLATE } from "./research.md";
 import { generateDefaultPersonaYaml } from "../persona";
 
 export const PERSONA_YAML_DEFAULT = generateDefaultPersonaYaml();
@@ -24,6 +26,8 @@ export const REQUIRED_DOCUMENTS = [
   "KNOWLEDGE.md",
   "TOOLS.md",
   "BOUNDARIES.md",
+  "AGENTS.md",
+  "RESEARCH.md",
 ] as const;
 
 export type DocumentName = (typeof REQUIRED_DOCUMENTS)[number];
@@ -41,6 +45,8 @@ export const TEMPLATES: Record<DocumentName, string> = {
   "KNOWLEDGE.md": KNOWLEDGE_TEMPLATE,
   "TOOLS.md": TOOLS_TEMPLATE,
   "BOUNDARIES.md": BOUNDARIES_TEMPLATE,
+  "AGENTS.md": AGENTS_TEMPLATE,
+  "RESEARCH.md": RESEARCH_TEMPLATE,
 };
 
 /**
@@ -102,6 +108,8 @@ export {
   TOOLS_TEMPLATE,
   STRUCTURED_EXTRACTION_EXAMPLES,
   BOUNDARIES_TEMPLATE,
+  AGENTS_TEMPLATE,
+  RESEARCH_TEMPLATE,
 };
 
 // Re-export personality generation utilities
