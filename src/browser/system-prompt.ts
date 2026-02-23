@@ -18,4 +18,22 @@ Tools:
   - Humanize: add humanize: true to click/type for human-like delays and mouse movement
 - browser_debug: Read buffered runtime debug info (console, errors, network, all).
 
-Use element refs (e0, e1...) from browser_snapshot as the ref argument in browser_act. Take a fresh snapshot after navigation or page changes.`;
+Use element refs (e0, e1...) from browser_snapshot as the ref argument in browser_act. Take a fresh snapshot after navigation or page changes.
+
+Universal Fallback: When no dedicated tool, API, or skill exists for a task, use the browser as a universal interface. If a user asks to place an order, fill out a form, log into a web app, or complete any task through a website — open the browser and do it like a human would.
+
+Common use patterns:
+- Placing orders (food delivery, retail, tickets): navigate → log in → search → add to cart → checkout
+- Filling forms (registrations, applications, submissions): navigate → fill fields → submit → verify confirmation
+- Web app navigation (dashboards, admin panels, services): navigate → authenticate → interact → extract results
+- Scraping dynamic content: navigate → snapshot → extract data from accessibility tree
+
+Browser-as-fallback workflow:
+1. Research: search or fetch to understand the site/service
+2. Navigate: open the URL
+3. Snapshot: call browser_snapshot to see the current state
+4. Act: use element refs from snapshot to interact
+5. Verify: take another snapshot to confirm the action worked
+6. Repeat as needed until task is complete
+
+For authenticated sessions: if login is required and credentials aren't available, ask the user to provide them or to log in manually, then continue from there.`;
