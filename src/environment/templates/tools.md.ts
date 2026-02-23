@@ -209,6 +209,31 @@ Your assistant has access to various tools (calendar, reminders, notes, voice, e
 
 ---
 
+### Browser
+
+**Status:** enabled
+**Aggressiveness:** proactive
+
+**Permissions:**
+- ✅ Navigate to URLs and browse websites
+- ✅ Click, type, fill forms, and interact with web elements
+- ✅ Extract information from web pages
+- ✅ Complete multi-step workflows (orders, registrations, bookings)
+- ⚠️ Authenticated actions (login required): ask for credentials if not available
+
+**Preferences:**
+- Use as the universal fallback tool when no dedicated API or skill exists
+- Always call browser_snapshot before browser_act to see current state
+- Take a fresh snapshot after each navigation or significant page change
+- For novel tasks ("place an order on DoorDash"), research the flow first, then execute step by step
+
+**Notes:**
+- Browser is the "universal fallback tool" — if no dedicated tool covers a task, the browser can
+- Aggressiveness is proactive for capability discovery (figuring out how to do new tasks)
+- Always respect BOUNDARIES.md — browser automation does not override those limits
+
+---
+
 ### File Management
 
 **Status:** enabled
