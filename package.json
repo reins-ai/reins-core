@@ -26,7 +26,9 @@
     "./utils": "./src/utils/index.ts",
     "./voice": "./src/voice/index.ts",
     "./onboarding": "./src/onboarding/index.ts",
-    "./skills": "./src/skills/index.ts"
+    "./skills": "./src/skills/index.ts",
+    "./marketplace/clawhub": "./src/marketplace/clawhub/index.ts",
+    "./marketplace/types": "./src/marketplace/types.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
