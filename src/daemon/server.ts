@@ -84,6 +84,7 @@ import {
   ScriptRunner,
   SkillTool,
   type SkillDaemonService,
+  type SkillTrustLevel,
 } from "../skills";
 import type { BrowserDaemonService } from "../browser/browser-daemon-service";
 import { BrowserTool } from "../browser/tools/browser-tool";
@@ -1139,6 +1140,30 @@ function readStringRecord(value: unknown): Record<string, string> | undefined {
   return env;
 }
 
+interface SkillSummaryResponse {
+  name: string;
+  description: string;
+  enabled: boolean;
+  trustLevel: SkillTrustLevel;
+  categories: string[];
+  hasScripts: boolean;
+  hasIntegration: boolean;
+}
+
+interface SkillDetailResponse extends SkillSummaryResponse {
+  triggers: string[];
+  scriptFiles: string[];
+  integrationStatus: "not_required" | "needs_setup" | "configured";
+  body: string;
+}
+
+type SkillRoute =
+  | { type: "list" }
+  | { type: "detail"; name: string }
+  | { type: "enable"; name: string }
+  | { type: "disable"; name: string }
+  | { type: "scan" };
+
 /**
  * Daemon HTTP server as a managed service.
  */
@@ -1785,6 +1810,11 @@ export class DaemonHttpServer implements DaemonManagedService {
 
       if (memoryRoute) {
         return this.handleMemoryRequest(memoryRoute, method, request, corsHeaders);
+      }
+
+      const skillRoute = this.matchSkillRoute(url.pathname);
+      if (skillRoute !== null) {
+        return this.handleSkillRequest(skillRoute, method, request, corsHeaders);
       }
 
       log("warn", `Not found: ${method} ${url.pathname}`);
@@ -6150,6 +6180,159 @@ export class DaemonHttpServer implements DaemonManagedService {
       log("info", "invalid JSON in request body", { error: e instanceof Error ? e.message : String(e) });
       return { ok: false, error: "Invalid JSON in request body" };
     }
+  }
+
+  private matchSkillRoute(pathname: string): SkillRoute | null {
+    if (pathname === "/api/skills") {
+      return { type: "list" };
+    }
+
+    if (pathname === "/api/skills/scan") {
+      return { type: "scan" };
+    }
+
+    const enableMatch = pathname.match(/^\/api\/skills\/([^/]+)\/enable$/);
+    if (enableMatch) {
+      return { type: "enable", name: decodeURIComponent(enableMatch[1]) };
+    }
+
+    const disableMatch = pathname.match(/^\/api\/skills\/([^/]+)\/disable$/);
+    if (disableMatch) {
+      return { type: "disable", name: decodeURIComponent(disableMatch[1]) };
+    }
+
+    const detailMatch = pathname.match(/^\/api\/skills\/([^/]+)$/);
+    if (detailMatch) {
+      return { type: "detail", name: decodeURIComponent(detailMatch[1]) };
+    }
+
+    return null;
+  }
+
+  private async handleSkillRequest(
+    route: SkillRoute,
+    method: string,
+    _request: Request,
+    corsHeaders: Record<string, string>,
+  ): Promise<Response> {
+    if (this.skillService === null || this.skillService.getState() !== "running") {
+      return Response.json(
+        { error: "Skill service is not available" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    const registry = this.skillService.getRegistry();
+    const scanner = this.skillService.getScanner();
+    if (registry === null || scanner === null) {
+      return Response.json(
+        { error: "Skill service is not ready" },
+        { status: 503, headers: corsHeaders },
+      );
+    }
+
+    if (route.type === "list") {
+      if (method !== "GET") {
+        return Response.json(
+          { error: `Method ${method} not allowed on skills collection` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      const skills: SkillSummaryResponse[] = registry.list().map((skill) => ({
+        name: skill.summary.name,
+        description: skill.summary.description,
+        enabled: skill.config.enabled,
+        trustLevel: skill.config.trustLevel,
+        categories: skill.categories,
+        hasScripts: skill.hasScripts,
+        hasIntegration: skill.hasIntegration,
+      }));
+
+      return Response.json(skills, { status: 200, headers: corsHeaders });
+    }
+
+    if (route.type === "detail") {
+      if (method !== "GET") {
+        return Response.json(
+          { error: `Method ${method} not allowed on skill resource` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      const skill = registry.get(route.name);
+      const loadedSkill = scanner.loadSkill(route.name);
+      if (!skill || !loadedSkill) {
+        return Response.json(
+          { error: `Skill not found: ${route.name}` },
+          { status: 404, headers: corsHeaders },
+        );
+      }
+
+      const response: SkillDetailResponse = {
+        name: skill.summary.name,
+        description: skill.summary.description,
+        enabled: skill.config.enabled,
+        trustLevel: skill.config.trustLevel,
+        categories: skill.categories,
+        hasScripts: skill.hasScripts,
+        hasIntegration: skill.hasIntegration,
+        triggers: skill.triggers,
+        scriptFiles: skill.scriptFiles,
+        integrationStatus: skill.hasIntegration ? "needs_setup" : "not_required",
+        body: loadedSkill.body,
+      };
+
+      return Response.json(response, { status: 200, headers: corsHeaders });
+    }
+
+    if (route.type === "enable") {
+      if (method !== "POST") {
+        return Response.json(
+          { error: `Method ${method} not allowed on skill enable` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      const enabled = registry.enable(route.name);
+      if (!enabled) {
+        return Response.json(
+          { error: `Skill not found: ${route.name}` },
+          { status: 404, headers: corsHeaders },
+        );
+      }
+
+      return Response.json({ ok: true }, { status: 200, headers: corsHeaders });
+    }
+
+    if (route.type === "disable") {
+      if (method !== "POST") {
+        return Response.json(
+          { error: `Method ${method} not allowed on skill disable` },
+          { status: 405, headers: corsHeaders },
+        );
+      }
+
+      const disabled = registry.disable(route.name);
+      if (!disabled) {
+        return Response.json(
+          { error: `Skill not found: ${route.name}` },
+          { status: 404, headers: corsHeaders },
+        );
+      }
+
+      return Response.json({ ok: true }, { status: 200, headers: corsHeaders });
+    }
+
+    if (method !== "POST") {
+      return Response.json(
+        { error: `Method ${method} not allowed on skills scan` },
+        { status: 405, headers: corsHeaders },
+      );
+    }
+
+    const report = await scanner.scan();
+    return Response.json(report, { status: 200, headers: corsHeaders });
   }
 
   /**
