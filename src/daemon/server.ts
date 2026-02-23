@@ -174,7 +174,7 @@ import {
   CONVERSION_PROGRESS_STREAM,
   type ConversionRouteHandler,
 } from "./conversion-routes";
-import { ANTHROPIC_CLIENT_ID, DAEMON_PORT as CONFIG_DAEMON_PORT, DEFAULT_MODEL } from "../config/defaults";
+import { ANTHROPIC_CLIENT_ID, DAEMON_HOST as CONFIG_DAEMON_HOST, DAEMON_PORT as CONFIG_DAEMON_PORT, DEFAULT_MODEL } from "../config/defaults";
 
 interface ActiveExecution {
   conversationId: string;
@@ -383,7 +383,7 @@ export class StreamRegistry {
 }
 
 const DEFAULT_PORT = CONFIG_DAEMON_PORT;
-const DEFAULT_HOST = "localhost";
+const DEFAULT_HOST = CONFIG_DAEMON_HOST;
 
 // Anthropic OAuth configuration (matches claude.ai OAuth flow)
 const ANTHROPIC_OAUTH_CONFIG = {
