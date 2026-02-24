@@ -12,12 +12,19 @@ describe("DEFAULT_SECTION_BUDGETS", () => {
     expect(DEFAULT_SECTION_BUDGETS.ROUTINES.maxChars).toBe(1000);
     expect(DEFAULT_SECTION_BUDGETS.GOALS.maxChars).toBe(1000);
     expect(DEFAULT_SECTION_BUDGETS.HEARTBEAT.maxChars).toBe(1000);
+    expect(DEFAULT_SECTION_BUDGETS.AGENTS.maxChars).toBe(4000);
+    expect(DEFAULT_SECTION_BUDGETS.RESEARCH.maxChars).toBe(3000);
   });
 
   it("sets reserved minimums for identity-critical sections", () => {
     expect(DEFAULT_SECTION_BUDGETS.PERSONALITY.reservedMinimumChars).toBe(500);
     expect(DEFAULT_SECTION_BUDGETS.BOUNDARIES.reservedMinimumChars).toBe(300);
     expect(DEFAULT_SECTION_BUDGETS.USER.reservedMinimumChars).toBe(200);
+  });
+
+  it("does not set reserved minimums for operational guidance sections", () => {
+    expect(DEFAULT_SECTION_BUDGETS.AGENTS.reservedMinimumChars).toBeUndefined();
+    expect(DEFAULT_SECTION_BUDGETS.RESEARCH.reservedMinimumChars).toBeUndefined();
   });
 
   it("keeps reserved minimums within max char limits", () => {

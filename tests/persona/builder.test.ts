@@ -198,6 +198,8 @@ describe("SystemPromptBuilder", () => {
     const tools = [createTool("notes.create", "Create a note")];
     const environmentDocuments: EnvironmentDocumentMap = {
       PERSONALITY: "Environment identity.",
+      AGENTS: "AGENTS operational doctrine.",
+      RESEARCH: "RESEARCH research protocol.",
       BOUNDARIES: "Environment boundaries.",
       USER: "Environment user context.",
       HEARTBEAT: "Heartbeat placeholder.",
@@ -213,6 +215,8 @@ describe("SystemPromptBuilder", () => {
     });
 
     const identityIndex = prompt.indexOf("## Identity");
+    const agentsIndex = prompt.indexOf("## Operational Doctrine");
+    const researchIndex = prompt.indexOf("## Research Protocol");
     const boundariesIndex = prompt.indexOf("## Boundaries");
     const userIndex = prompt.indexOf("## User Context");
     const dateIndex = prompt.indexOf("## Current Date and Time");
@@ -221,12 +225,93 @@ describe("SystemPromptBuilder", () => {
     const instructionsIndex = prompt.indexOf("## Additional Instructions");
 
     expect(identityIndex).toBeGreaterThanOrEqual(0);
-    expect(boundariesIndex).toBeGreaterThan(identityIndex);
+    expect(agentsIndex).toBeGreaterThan(identityIndex);
+    expect(researchIndex).toBeGreaterThan(agentsIndex);
+    expect(boundariesIndex).toBeGreaterThan(researchIndex);
     expect(userIndex).toBeGreaterThan(boundariesIndex);
     expect(dateIndex).toBeGreaterThan(userIndex);
     expect(toolsIndex).toBeGreaterThan(dateIndex);
     expect(dynamicIndex).toBeGreaterThan(toolsIndex);
     expect(instructionsIndex).toBeGreaterThan(dynamicIndex);
+  });
+
+  it("includes AGENTS section when AGENTS environment document is provided", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+
+    const prompt = builder.build({
+      persona,
+      environmentDocuments: {
+        PERSONALITY: "You are the configured persona.",
+        AGENTS: "Figure things out before asking.",
+      },
+    });
+
+    expect(prompt).toContain("## Operational Doctrine");
+    expect(prompt).toContain("Figure things out before asking.");
+  });
+
+  it("includes RESEARCH section when RESEARCH environment document is provided", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+
+    const prompt = builder.build({
+      persona,
+      environmentDocuments: {
+        PERSONALITY: "You are the configured persona.",
+        RESEARCH: "Use browser as a fallback for research.",
+      },
+    });
+
+    expect(prompt).toContain("## Research Protocol");
+    expect(prompt).toContain("Use browser as a fallback for research.");
+  });
+
+  it("omits AGENTS section when AGENTS document is empty or missing", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+
+    const promptWithoutAgents = builder.build({
+      persona,
+      environmentDocuments: {
+        PERSONALITY: "You are the configured persona.",
+      },
+    });
+    expect(promptWithoutAgents).not.toContain("## Operational Doctrine");
+
+    const promptWithEmptyAgents = builder.build({
+      persona,
+      environmentDocuments: {
+        PERSONALITY: "You are the configured persona.",
+        AGENTS: "   ",
+      },
+    });
+    expect(promptWithEmptyAgents).not.toContain("## Operational Doctrine");
+  });
+
+  it("AGENTS and RESEARCH sections appear between Identity and Boundaries", () => {
+    const builder = new SystemPromptBuilder();
+    const persona = createPersona("all");
+
+    const prompt = builder.build({
+      persona,
+      environmentDocuments: {
+        PERSONALITY: "You are the configured persona.",
+        AGENTS: "Operational doctrine content.",
+        RESEARCH: "Research protocol content.",
+        BOUNDARIES: "Do not provide medical advice.",
+      },
+    });
+
+    const identityIndex = prompt.indexOf("## Identity");
+    const agentsIndex = prompt.indexOf("## Operational Doctrine");
+    const researchIndex = prompt.indexOf("## Research Protocol");
+    const boundariesIndex = prompt.indexOf("## Boundaries");
+
+    expect(identityIndex).toBeGreaterThanOrEqual(0);
+    expect(agentsIndex).toBeGreaterThan(identityIndex);
+    expect(researchIndex).toBeGreaterThan(agentsIndex);
+    expect(boundariesIndex).toBeGreaterThan(researchIndex);
   });
 
   it("adds tool preference and boundary enforcement hints to dynamic context", () => {

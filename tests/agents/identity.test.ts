@@ -104,7 +104,7 @@ describe("IdentityFileManager", () => {
 
         const content = await Bun.file(join(workspace, "SOUL.md")).text();
         expect(content).toContain("# Eleanor — Soul Document");
-        expect(content).toContain("You are Eleanor, a specialized AI assistant");
+        expect(content).toContain("You are Eleanor, an AI agent serving as Chief of Staff");
       });
     });
 
@@ -120,6 +120,21 @@ describe("IdentityFileManager", () => {
         const content = await Bun.file(join(workspace, "SOUL.md")).text();
         expect(content).toContain("**Role:** Chief of Staff");
         expect(content).toContain("serving as Chief of Staff");
+      });
+    });
+
+    test("SOUL.md contains genuine voice directive", async () => {
+      await withTempDir(async (dir) => {
+        const workspace = join(dir, "workspace");
+        await mkdir(workspace, { recursive: true });
+
+        const manager = new IdentityFileManager();
+        const agent = makeMockAgent(workspace);
+        await manager.generateIdentityFiles(agent);
+
+        const content = await Bun.file(join(workspace, "SOUL.md")).text();
+        expect(content).toContain("Figure things out before asking");
+        expect(content).toContain("answers, not questions");
       });
     });
 
