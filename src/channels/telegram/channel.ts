@@ -237,12 +237,29 @@ export class TelegramChannel implements Channel {
     }
 
     const parseMode = message.formatting?.mode === "markdown_v2" ? "MarkdownV2" : undefined;
-    await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!, parseMode !== undefined ? { parseMode } : undefined));
+    try {
+      await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!, parseMode !== undefined ? { parseMode } : undefined));
+    } catch (sendError) {
+      const typedSendError = toError(sendError);
+      if (parseMode !== undefined && this.isMarkdownV2ParseError(typedSendError)) {
+        this.log.warn("telegram send: MarkdownV2 rejected, retrying as plain text", {
+          chatId,
+          error: typedSendError.message,
+        });
+        await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!));
+      } else {
+        throw typedSendError;
+      }
+    }
   }
 
   private isTransientError(error: Error): boolean {
     const message = error.message.toLowerCase();
     return /429|5\d{2}|etimedout|econnreset|econnrefused|network|timeout/.test(message);
+  }
+
+  private isMarkdownV2ParseError(error: Error): boolean {
+    return error.message.includes("400");
   }
 
   private async sendWithRetry(fn: () => Promise<unknown>): Promise<unknown> {
