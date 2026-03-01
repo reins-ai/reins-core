@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { ChannelError } from "../errors";
 import { createLogger } from "../../logger";
+import type { Logger } from "../../logger";
 import type {
   Channel,
   ChannelAttachment,
@@ -49,6 +50,7 @@ export interface TelegramChannelOptions {
   schedulePollFn?: (callback: () => void, delayMs: number) => PollTimerHandle;
   clearScheduledPollFn?: (timer: PollTimerHandle) => void;
   retrySendDelayFn?: (delayMs: number) => Promise<void>;
+  logger?: Logger;
   nowFn?: () => number;
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
@@ -73,6 +75,7 @@ export class TelegramChannel implements Channel {
   private readonly schedulePollFn: (callback: () => void, delayMs: number) => PollTimerHandle;
   private readonly clearScheduledPollFn: (timer: PollTimerHandle) => void;
   private readonly retrySendDelayFn: (delayMs: number) => Promise<void>;
+  private readonly log: Logger;
   private readonly nowFn: () => number;
   private readonly initialReconnectDelayMs: number;
   private readonly maxReconnectDelayMs: number;
@@ -99,6 +102,7 @@ export class TelegramChannel implements Channel {
       clearTimeout(timer);
     });
     this.retrySendDelayFn = options.retrySendDelayFn ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+    this.log = options.logger ?? log;
     this.nowFn = options.nowFn ?? (() => Date.now());
     this.initialReconnectDelayMs = options.initialReconnectDelayMs ?? INITIAL_RECONNECT_DELAY_MS;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? MAX_RECONNECT_DELAY_MS;
@@ -329,7 +333,7 @@ export class TelegramChannel implements Channel {
           await handler(enrichedMessage);
         } catch (error) {
           const handlerError = toError(error);
-          log.warn("message handler failed", {
+          this.log.warn("message handler failed", {
             updateId: update.update_id,
             handlerIndex,
             error: handlerError.message,
@@ -365,7 +369,7 @@ export class TelegramChannel implements Channel {
     if (sourceMessage.photo !== undefined && sourceMessage.photo.length > 0) {
       const largestPhoto = sourceMessage.photo[sourceMessage.photo.length - 1];
       if (largestPhoto !== undefined) {
-        log.debug("processing inbound photo attachment", {
+        this.log.debug("processing inbound photo attachment", {
           channelId: this.config.id,
           fileId: largestPhoto.file_id,
         });
@@ -379,7 +383,7 @@ export class TelegramChannel implements Channel {
     }
 
     if (sourceMessage.document !== undefined) {
-      log.debug("processing inbound document attachment", {
+      this.log.debug("processing inbound document attachment", {
         channelId: this.config.id,
         fileId: sourceMessage.document.file_id,
         mimeType: sourceMessage.document.mime_type,
@@ -407,7 +411,7 @@ export class TelegramChannel implements Channel {
       };
     }
 
-    log.info("using fallback prompt for media message without caption", {
+    this.log.info("using fallback prompt for media message without caption", {
       channelId: this.config.id,
       updateId: update.update_id,
       fallbackPrompt: fallbackText,
@@ -451,7 +455,7 @@ export class TelegramChannel implements Channel {
       return nextAttachments;
     } catch (error) {
       const resolvedError = toError(error);
-      log.warn("failed to resolve telegram file for inbound media", {
+      this.log.warn("failed to resolve telegram file for inbound media", {
         channelId: this.config.id,
         fileId,
         error: resolvedError.message,
@@ -480,7 +484,7 @@ export class TelegramChannel implements Channel {
     const base64 = Buffer.from(downloaded.data).toString("base64");
     const dataUrl = `data:${mimeType};base64,${base64}`;
 
-    log.debug("resolved telegram file to data url", {
+    this.log.debug("resolved telegram file to data url", {
       channelId: this.config.id,
       fileId,
       mimeType,
