@@ -72,7 +72,21 @@ import { OllamaEmbeddingProvider } from "../memory/embeddings/ollama-embedding-p
 import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
-import { ChannelAuthService, ChannelCredentialStorage, ChannelRegistry, ConversationBridge, FileChannelAuthStorage } from "../channels";
+import {
+  ChannelAuthService,
+  ChannelCredentialStorage,
+  ChannelRegistry,
+  ConversationBridge,
+  DiscordChannel,
+  DiscordClient,
+  FileChannelAuthStorage,
+  TelegramChannel,
+  TelegramClient,
+  type Channel,
+  type ChannelMessage,
+  type ChannelMetadataValue,
+  type ChannelPlatform,
+} from "../channels";
 import {
   ChannelCommandRegistry,
   CommandDispatcher,
@@ -89,7 +103,9 @@ import type {
   CommandConversationManager,
   CommandProviderAuthService,
   CommandProviderRegistry,
+  CommandResult,
 } from "../channels/commands";
+import type { TelegramCallbackQuery } from "../channels/telegram/types";
 import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
 import yaml from "js-yaml";
@@ -5299,6 +5315,32 @@ export class DaemonHttpServer implements DaemonManagedService {
 
           return result.value.connectionState === "ready";
         },
+        getOAuthAuthorizationUrl: async (provider) => {
+          const result = await this.authService.initiateOAuth(provider, { localCallback: false });
+          if (!result.ok) {
+            return null;
+          }
+
+          if (result.value.type !== "authorization_code") {
+            return null;
+          }
+
+          return {
+            url: result.value.authorizationUrl,
+            state: result.value.state,
+            codeVerifier: result.value.codeVerifier,
+          };
+        },
+        completeOAuthWithCode: async (provider, code, state, codeVerifier) => {
+          const result = await this.authService.completeOAuthCallback(provider, {
+            code,
+            state,
+            exchange: codeVerifier ? { codeVerifier } : undefined,
+          });
+          if (!result.ok) {
+            throw result.error;
+          }
+        },
       };
 
       const commandDispatcher = new CommandDispatcher({
@@ -5309,17 +5351,159 @@ export class DaemonHttpServer implements DaemonManagedService {
         providerAuthService: commandProviderAuthService,
       });
 
+      // Build a ChannelMessage that can carry command result text and optional
+      // inline keyboard markup back to the originating chat.
+      const buildCommandResultMessage = (
+        result: CommandResult,
+        channelMessage: ChannelMessage,
+        sourceChannel: Channel,
+      ): ChannelMessage => {
+        const chatId = channelMessage.platformData?.chat_id;
+
+        // Type the inline_keyboard structure as ChannelMetadataValue so it fits platformData.
+        let replyMarkup: ChannelMetadataValue | undefined;
+        if (result.kind === "menu") {
+          replyMarkup = {
+            inline_keyboard: result.items.map((item) => [
+              { text: item.label, callback_data: item.id },
+            ]),
+          } as ChannelMetadataValue;
+        } else if (result.kind === "confirmation") {
+          replyMarkup = {
+            inline_keyboard: [[
+              { text: "Yes", callback_data: result.confirmId },
+              { text: "No", callback_data: result.cancelId },
+            ]],
+          } as ChannelMetadataValue;
+        }
+
+        return {
+          id: crypto.randomUUID(),
+          platform: sourceChannel.config.platform,
+          channelId: channelMessage.channelId,
+          sender: { id: "bot" },
+          timestamp: new Date(),
+          text: result.text,
+          platformData: {
+            ...(chatId !== undefined ? { chat_id: chatId } : {}),
+            ...(replyMarkup !== undefined ? { reply_markup: replyMarkup } : {}),
+          },
+        };
+      };
+
       const conversationBridge = new ConversationBridge({
         conversationManager,
         channelRegistry,
         commandDispatcher,
+        onCommandResult: async (result, channelMessage, sourceChannel) => {
+          if (result.flags?.includes("deleteUserMessage")) {
+            try {
+              await sourceChannel.deleteMessage?.(channelMessage.channelId, channelMessage.id);
+            } catch {
+              // Best-effort — deletion failures must not abort the response.
+            }
+          }
+          const msg = buildCommandResultMessage(result, channelMessage, sourceChannel);
+          await sourceChannel.send(msg);
+        },
       });
+
+      // Telegram-specific channel factory: wires setMyCommands and callback_query dispatch.
+      const telegramCommands = commandRegistry.list().map((def) => ({
+        command: def.name,
+        description: def.description,
+      }));
+
+      const buildTelegramChannel = (channelId: string, token: string): TelegramChannel => {
+        const telegramClient = new TelegramClient({ token });
+        // Use null! — the callback is only ever called after construction completes.
+        let telegramChannel: TelegramChannel = null!;
+
+        const onCallbackQuery = async (query: TelegramCallbackQuery): Promise<void> => {
+          const userId = `telegram:${String(query.from.id)}`;
+          const chatId = query.message?.chat.id ?? query.from.id;
+
+          // Dismiss the loading spinner on the button — best effort.
+          try {
+            await telegramClient.answerCallbackQuery(query.id);
+          } catch {
+            // Intentionally swallowed: answer failures must not abort the flow.
+          }
+
+          const fakeMessage: ChannelMessage = {
+            id: query.id,
+            platform: "telegram" as ChannelPlatform,
+            channelId: String(chatId),
+            sender: {
+              id: String(query.from.id),
+              username: query.from.username,
+              displayName: [query.from.first_name, query.from.last_name]
+                .filter(Boolean)
+                .join(" ") || undefined,
+            },
+            timestamp: new Date(),
+          };
+
+          const result = await commandDispatcher.dispatchCallback(
+            query.data ?? "",
+            fakeMessage,
+            telegramChannel,
+            userId,
+          );
+
+          if (result !== null) {
+            if (result.flags?.includes("deleteUserMessage")) {
+              const callbackMessageId = query.message?.message_id;
+              if (callbackMessageId !== undefined) {
+                try {
+                  await telegramClient.deleteMessage(chatId, callbackMessageId);
+                } catch {
+                  // Best-effort — deletion failures must not abort the response.
+                }
+              }
+            }
+            const msg = buildCommandResultMessage(result, fakeMessage, telegramChannel);
+            await telegramChannel.send(msg);
+          }
+        };
+
+        telegramChannel = new TelegramChannel({
+          config: {
+            id: channelId,
+            platform: "telegram",
+            tokenReference: "channel:telegram",
+            enabled: true,
+          },
+          client: telegramClient,
+          commands: telegramCommands,
+          onCallbackQuery,
+        });
+
+        return telegramChannel;
+      };
 
       this.channelService = new ChannelDaemonService({
         channelRegistry,
         conversationBridge,
         credentialStorage,
         authService,
+        channelFactory: (platform, channelId, token) => {
+          if (platform === "telegram") {
+            return buildTelegramChannel(channelId, token);
+          }
+          // Discord and other platforms use the default factory.
+          const client = new DiscordClient({ token });
+          return new DiscordChannel({
+            config: {
+              id: channelId,
+              platform,
+              tokenReference: `channel:${platform}`,
+              enabled: true,
+            },
+            token,
+            client,
+          });
+        },
         onInboundAssistantPending: (context) => {
           this.scheduleProviderExecution({
             conversationId: context.conversationId,

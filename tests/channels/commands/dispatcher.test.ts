@@ -281,7 +281,8 @@ describe("CommandDispatcher", () => {
       expect(pending!.data.selectedProvider).toBe("openai");
     });
 
-    it("clears pending state after connect:anthropic (OAuth-only provider)", async () => {
+    it("sets awaiting_api_key for anthropic when getOAuthAuthorizationUrl is not available", async () => {
+      // Without getOAuthAuthorizationUrl on the service, anthropic falls through to API key flow.
       const dispatcher = makeDispatcher(makeAuthService({ ch1: ["user1"] }));
       dispatcher.setPendingState("user1", {
         command: "connect",
@@ -298,7 +299,84 @@ describe("CommandDispatcher", () => {
       );
       expect(result).not.toBeNull();
       expect(result!.success).toBe(true);
-      expect(dispatcher.getPendingState("user1")).toBeUndefined();
+      const pending = dispatcher.getPendingState("user1");
+      expect(pending).toBeDefined();
+      expect(pending!.step).toBe("awaiting_api_key");
+      expect(pending!.data.selectedProvider).toBe("anthropic");
+    });
+
+    it("sets awaiting_auth_code when getOAuthAuthorizationUrl returns a URL", async () => {
+      const authServiceWithOAuth = makeAuthService({ ch1: ["user1"] });
+      const dispatcher = makeDispatcher(authServiceWithOAuth, (registry) => {
+        // Override connect handler to use a service that supports OAuth URL generation.
+        // The real connect handler is loaded dynamically; we simulate it returning oauthPending
+        // by registering a handler that yields the expected text+oauthPending result directly.
+        registry.register({
+          name: "connect-oauth-test",
+          description: "OAuth test",
+          handler: async () => ({
+            kind: "text" as const,
+            text: "Tap the link: https://example.com/authorize",
+            success: true,
+            oauthPending: {
+              provider: "anthropic",
+              state: "state-123",
+              codeVerifier: "cv-abc",
+            },
+          }),
+        });
+      });
+
+      // Manually test the pending state logic: after a callback yields oauthPending,
+      // the dispatcher should store awaiting_auth_code state.
+      // We simulate this by calling setPendingState and checking the dispatch path.
+      // Since dispatchCallback calls handleConnectCallback (which calls startProviderFlow),
+      // we test via a direct connect callback with a dispatcher that has getOAuthAuthorizationUrl.
+
+      // Build a dispatcher with a mocked providerAuthService that has getOAuthAuthorizationUrl.
+      const registry2 = new ChannelCommandRegistry();
+      const { ChannelCommandRegistry: CmdRegistry } = await import("../../../src/channels/commands/registry");
+      const { connectHandler } = await import("../../../src/channels/commands/handlers/connect");
+      const reg2 = new CmdRegistry();
+      reg2.register({ name: "connect", description: "Connect", handler: connectHandler });
+
+      const { CommandDispatcher: CmdDispatcher } = await import("../../../src/channels/commands/dispatcher");
+      const dispatcher2 = new CmdDispatcher({
+        registry: reg2,
+        authService: authServiceWithOAuth,
+        conversationManager: mockConversationManager,
+        providerRegistry: mockProviderRegistry,
+        providerAuthService: {
+          ...mockProviderAuthService,
+          getOAuthAuthorizationUrl: async () => ({
+            url: "https://example.com/oauth/authorize?state=xyz",
+            state: "xyz",
+            codeVerifier: "cv-123",
+          }),
+        },
+      });
+      dispatcher2.setPendingState("user1", {
+        command: "connect",
+        step: "awaiting_provider_selection",
+        data: {},
+        createdAt: Date.now(),
+      });
+
+      const msg = makeMessage("", "user1");
+      const result = await dispatcher2.dispatchCallback(
+        "connect:anthropic",
+        msg,
+        makeChannel(),
+        "user1",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.success).toBe(true);
+      const pending = dispatcher2.getPendingState("user1");
+      expect(pending).toBeDefined();
+      expect(pending!.step).toBe("awaiting_auth_code");
+      expect(pending!.data.selectedProvider).toBe("anthropic");
+      expect(pending!.data.oauthState).toBe("xyz");
+      expect(pending!.data.oauthCodeVerifier).toBe("cv-123");
     });
   });
 

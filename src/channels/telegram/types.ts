@@ -194,3 +194,12 @@ export interface TelegramClientOptions {
   sleepFn?: (delayMs: number) => Promise<void>;
   nowFn?: () => number;
 }
+
+/**
+ * A bot command entry registered with the Telegram Bot API via setMyCommands.
+ * Populates the command suggestions shown when a user types "/" in a chat.
+ */
+export interface TelegramBotCommand {
+  command: string;
+  description: string;
+}

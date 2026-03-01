@@ -134,4 +134,9 @@ export interface Channel {
   sendTypingIndicator?(destinationChannelId: string): Promise<void>;
   send(message: ChannelMessage): Promise<void>;
   onMessage(handler: ChannelMessageHandler): () => void;
+  /**
+   * Delete a previously-sent message by platform IDs.
+   * Best-effort — implementations may silently ignore failures.
+   */
+  deleteMessage?(chatId: string, messageId: string): Promise<void>;
 }

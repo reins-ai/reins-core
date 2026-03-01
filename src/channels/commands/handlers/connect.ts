@@ -8,8 +8,6 @@ import type {
 } from "../types";
 import { PENDING_COMMAND_TTL_MS } from "../types";
 
-const OAUTH_ONLY_PROVIDERS = new Set(["anthropic", "google"]);
-
 const CONNECT_CALLBACK_PREFIX = "connect:";
 const CONNECT_CANCEL_CALLBACK_ID = "connect:cancel";
 
@@ -107,10 +105,17 @@ export const connectHandler: CommandHandler = async (
 
 /**
  * Start the connection flow for a selected provider.
+ *
+ * For OAuth providers, attempts to generate an authorization URL. If successful,
+ * the result carries `oauthPending` so the dispatcher can set `awaiting_auth_code`
+ * pending state and route the user's code-paste reply here.
+ *
+ * Falls back to the API key flow for non-OAuth providers or when the service
+ * does not implement `getOAuthAuthorizationUrl`.
  */
 async function startProviderFlow(
   providerName: string,
-  _context: CommandContext,
+  context: CommandContext,
 ): Promise<CommandResult> {
   const normalizedProvider = normalizeProviderName(providerName);
 
@@ -123,20 +128,36 @@ async function startProviderFlow(
     };
   }
 
-  if (OAUTH_ONLY_PROVIDERS.has(normalizedProvider)) {
-    const displayName =
-      normalizedProvider.charAt(0).toUpperCase() +
-      normalizedProvider.slice(1);
+  // Attempt OAuth URL flow when the service supports it.
+  if (context.providerAuthService.getOAuthAuthorizationUrl) {
+    let oauthResult: { url: string; state: string; codeVerifier?: string } | null = null;
+    try {
+      oauthResult = await context.providerAuthService.getOAuthAuthorizationUrl(normalizedProvider);
+    } catch (_error) {
+      // Non-fatal — fall through to API key flow.
+    }
 
-    return {
-      kind: "text",
-      text: [
-        `**${displayName}** uses OAuth authentication, which requires a browser.`,
-        "",
-        "Please connect this provider from the Reins TUI or Desktop app.",
-      ].join("\n"),
-      success: true,
-    };
+    if (oauthResult) {
+      const displayName =
+        normalizedProvider.charAt(0).toUpperCase() + normalizedProvider.slice(1);
+
+      return {
+        kind: "text",
+        text: [
+          `**${displayName}** uses OAuth. Tap the link below to authorize:`,
+          "",
+          oauthResult.url,
+          "",
+          "After authorizing, you will see a code on the page. Reply here with that code.",
+        ].join("\n"),
+        success: true,
+        oauthPending: {
+          provider: normalizedProvider,
+          state: oauthResult.state,
+          codeVerifier: oauthResult.codeVerifier,
+        },
+      };
+    }
   }
 
   return {
@@ -253,6 +274,97 @@ export async function handleConnectReply(
   return {
     kind: "text",
     text: [`Connected to **${providerName}**`, "", validationNote].join("\n"),
+    success: true,
+    flags: ["deleteUserMessage"],
+  };
+}
+
+/**
+ * Handle the OAuth authorization code pasted by the user in response to the URL
+ * sent during the `awaiting_auth_code` step.
+ *
+ * The returned result always includes `deleteUserMessage` so the pasted code is
+ * removed from channel history.
+ */
+export async function handleOAuthCodeReply(
+  replyText: string,
+  pendingState: PendingCommandState,
+  context: CommandContext,
+): Promise<CommandResult> {
+  if (isPendingStateExpired(pendingState)) {
+    return {
+      kind: "text",
+      text: "Session expired. Please run `/connect` again.",
+      success: false,
+      error: "SESSION_EXPIRED",
+      flags: ["deleteUserMessage"],
+    };
+  }
+
+  const providerName = normalizeProviderName(pendingState.data.selectedProvider ?? "");
+  if (!providerName) {
+    return {
+      kind: "text",
+      text: "Invalid state — no provider selected. Please run `/connect` again.",
+      success: false,
+      error: "INVALID_STATE",
+      flags: ["deleteUserMessage"],
+    };
+  }
+
+  if (!context.providerAuthService.completeOAuthWithCode) {
+    return {
+      kind: "text",
+      text: "OAuth code exchange is not supported in this environment.",
+      success: false,
+      error: "UNSUPPORTED",
+      flags: ["deleteUserMessage"],
+    };
+  }
+
+  const code = replyText.trim();
+  if (code.length === 0) {
+    return {
+      kind: "text",
+      text: "Authorization code cannot be empty. Please paste the code shown after authorizing.",
+      success: false,
+      error: "EMPTY_CODE",
+      flags: ["deleteUserMessage"],
+    };
+  }
+
+  try {
+    await context.providerAuthService.completeOAuthWithCode(
+      providerName,
+      code,
+      pendingState.data.oauthState,
+      pendingState.data.oauthCodeVerifier,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return {
+      kind: "text",
+      text: `Failed to complete OAuth for ${providerName}: ${message}`,
+      success: false,
+      error: "EXCHANGE_FAILED",
+      flags: ["deleteUserMessage"],
+    };
+  }
+
+  let isValid = false;
+  try {
+    isValid = await context.providerAuthService.validateConnection(providerName);
+  } catch (_error) {
+    // Non-fatal — token storage already succeeded.
+  }
+
+  const validationNote = isValid
+    ? "Connection validated."
+    : "Authorization complete. Run `/status` to verify the connection.";
+
+  return {
+    kind: "text",
+    text: [`Connected to **${providerName}** via OAuth.`, "", validationNote].join("\n"),
     success: true,
     flags: ["deleteUserMessage"],
   };

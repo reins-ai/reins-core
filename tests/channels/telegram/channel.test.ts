@@ -76,6 +76,7 @@ class MockTelegramClient implements TelegramChannelClient {
   public sendDocumentCalls: SendCall[] = [];
   public sendVoiceCalls: SendCall[] = [];
   public sendChatActionCalls: Array<{ chatId: string | number; action: string }> = [];
+  public deleteMessageCalls: Array<{ chatId: string | number; messageId: number }> = [];
 
   private readonly updatesQueue: Array<TelegramUpdate[] | Error>;
   private readonly getMeError: Error | null;
@@ -151,6 +152,19 @@ class MockTelegramClient implements TelegramChannelClient {
 
   public async sendChatAction(chatId: string | number, action: "typing"): Promise<unknown> {
     this.sendChatActionCalls.push({ chatId, action });
+    return { ok: true };
+  }
+
+  public async setMyCommands(_commands: Array<{ command: string; description: string }>): Promise<unknown> {
+    return { ok: true };
+  }
+
+  public async answerCallbackQuery(_callbackQueryId: string): Promise<unknown> {
+    return { ok: true };
+  }
+
+  public async deleteMessage(chatId: string | number, messageId: number): Promise<unknown> {
+    this.deleteMessageCalls.push({ chatId, messageId });
     return { ok: true };
   }
 }
@@ -545,5 +559,18 @@ describe("TelegramChannel", () => {
     });
 
     await expect(channel.send(createOutboundMessage())).rejects.toThrow(ChannelError);
+  });
+
+  it("deleteMessage delegates to client with numeric chat and message IDs", async () => {
+    const client = new MockTelegramClient();
+    const channel = new TelegramChannel({
+      config: createConfig(),
+      client,
+    });
+
+    await channel.deleteMessage("-1001234567890", "42");
+
+    expect(client.deleteMessageCalls).toHaveLength(1);
+    expect(client.deleteMessageCalls[0]).toEqual({ chatId: -1001234567890, messageId: 42 });
   });
 });
