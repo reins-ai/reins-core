@@ -376,6 +376,8 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
 
   private pendingSession: PendingOAuthSession | null = null;
 
+  private refreshInFlight: Promise<string> | null = null;
+
   constructor(options: AnthropicOAuthProviderOptions) {
     super(
       options.oauthConfig,
@@ -631,6 +633,49 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     if (!revokeResult.ok) {
       throw revokeResult.error;
     }
+  }
+
+  public override async getAccessToken(): Promise<string> {
+    const tokenResult = await this.retrieveTokensWithResult({ provider: this.providerType });
+    if (!tokenResult.ok) {
+      throw tokenResult.error;
+    }
+
+    const tokens = tokenResult.value;
+    if (!tokens) {
+      throw new AuthError(`No OAuth tokens found for provider ${this.providerType}. Re-authenticate this provider.`);
+    }
+
+    if (!this.flow.isExpired(tokens)) {
+      return tokens.accessToken;
+    }
+
+    if (!tokens.refreshToken) {
+      throw new AuthError(
+        `OAuth tokens expired and no refresh token is available for ${this.providerType}. Re-authenticate this provider.`,
+      );
+    }
+    const refreshToken = tokens.refreshToken;
+
+    if (this.refreshInFlight !== null) {
+      return this.refreshInFlight;
+    }
+
+    this.refreshInFlight = (async () => {
+      const refreshResult = await this.refreshWithResult({
+        provider: this.providerType,
+        refreshToken,
+      });
+      if (!refreshResult.ok) {
+        throw refreshResult.error;
+      }
+
+      return refreshResult.value.accessToken;
+    })().finally(() => {
+      this.refreshInFlight = null;
+    });
+
+    return this.refreshInFlight;
   }
 
   public async chat(request: ChatRequest): Promise<ChatResponse> {
