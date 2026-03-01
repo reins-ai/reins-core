@@ -238,18 +238,35 @@ export class TelegramChannel implements Channel {
 
     const parseMode = message.formatting?.mode === "markdown_v2" ? "MarkdownV2" : undefined;
     try {
-      await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!, parseMode !== undefined ? { parseMode } : undefined));
-    } catch (sendError) {
-      const typedSendError = toError(sendError);
-      if (parseMode !== undefined && this.isMarkdownV2ParseError(typedSendError)) {
-        this.log.warn("telegram send: MarkdownV2 rejected, retrying as plain text", {
+      try {
+        await this.sendWithRetry(() => this.client.sendMessage(
           chatId,
-          error: typedSendError.message,
-        });
-        await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!));
-      } else {
-        throw typedSendError;
+          message.text!,
+          parseMode !== undefined ? { parseMode } : undefined,
+        ));
+      } catch (sendError) {
+        const typedSendError = toError(sendError);
+        if (parseMode !== undefined && this.isMarkdownV2ParseError(typedSendError)) {
+          this.log.warn("telegram send: MarkdownV2 rejected, retrying as plain text", {
+            chatId,
+            error: typedSendError.message,
+          });
+          await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!));
+        } else {
+          throw typedSendError;
+        }
       }
+    } catch (outerError) {
+      if (parseMode === undefined) {
+        throw outerError;
+      }
+
+      const typedOuterError = toError(outerError);
+      this.log.warn("telegram send: plain text fallback failed", {
+        chatId,
+        error: typedOuterError.message,
+      });
+      await this.sendErrorFallback(chatId);
     }
   }
 
@@ -279,6 +296,19 @@ export class TelegramChannel implements Channel {
         const delay = baseDelay * Math.pow(2, attempt - 1);
         await this.retrySendDelayFn(delay);
       }
+    }
+  }
+
+  private async sendErrorFallback(chatId: number | string): Promise<void> {
+    const errorText = "⚠️ Reply failed to send. Please try again.";
+    try {
+      await this.client.sendMessage(chatId, errorText);
+    } catch (error) {
+      const fallbackError = toError(error);
+      this.log.warn("telegram send: error message fallback failed", {
+        chatId,
+        error: fallbackError.message,
+      });
     }
   }
 
