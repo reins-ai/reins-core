@@ -1245,10 +1245,14 @@ export class DaemonHttpServer implements DaemonManagedService {
       // Wire up Anthropic OAuth keepalive using the auth service as single source of truth.
       // authService.getOAuthAccessToken() updates BOTH storage paths (oauth_anthropic and
       // auth_anthropic_oauth) making it the correct function to use for keepalive refresh.
+      // refreshBufferMs: 0 — Anthropic tokens are short-lived; the zero-buffer ensures
+      // the keepalive fires at the exact expiry moment, consistent with the provider's
+      // OAuthFlowHandler(expiryBufferMs: 0) configuration.
       this.oauthKeepalive = new OAuthTokenKeepaliveService({
         provider: "anthropic",
         getOrRefreshToken: () => this.authService.getOAuthAccessToken("anthropic"),
         loadCurrentTokens: () => services.tokenStore.load("anthropic"),
+        refreshBufferMs: 0,
       });
     }
 
