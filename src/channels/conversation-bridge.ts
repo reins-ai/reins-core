@@ -36,6 +36,9 @@ export interface ConversationBridgeOptions
   ) => Promise<void>;
 }
 
+/** TTL for processed command message IDs — covers any realistic Telegram retry window. */
+const COMMAND_DEDUP_TTL_MS = 60_000;
+
 /**
  * Wraps ChannelRouter to enforce unified conversation context across channels.
  */
@@ -52,6 +55,12 @@ export class ConversationBridge {
 
   private readonly conversationByUserKey = new Map<string, string>();
   private readonly dedupeMessageIdByKey = new Map<string, string>();
+  /**
+   * Tracks recently-dispatched command message IDs to drop duplicate deliveries
+   * (e.g. Telegram long-poll retries that arrive after clearPendingState fires).
+   * Key: `platform:channelId:messageId` → expiry timestamp (ms).
+   */
+  private readonly processedCommandMessages = new Map<string, number>();
 
   constructor(options: ConversationBridgeOptions) {
     this.conversationManager = options.conversationManager;
@@ -79,6 +88,33 @@ export class ConversationBridge {
     if (this.commandDispatcher) {
       const conversationId = userKey ? this.conversationByUserKey.get(userKey) : undefined;
       if (this.commandDispatcher.isCommandMessage(channelMessage, userKey)) {
+        const commandDedupeKey = buildCommandDedupeKey(channelMessage);
+
+        // Purge expired entries periodically to avoid unbounded growth.
+        const now = Date.now();
+        for (const [k, expiry] of this.processedCommandMessages) {
+          if (expiry <= now) {
+            this.processedCommandMessages.delete(k);
+          }
+        }
+
+        if (this.processedCommandMessages.has(commandDedupeKey)) {
+          // Duplicate delivery — silently drop to prevent the message from
+          // reaching the AI after clearPendingState already fired.
+          return {
+            conversationId: conversationId ?? "command",
+            userMessageId: "command",
+            assistantMessageId: "command",
+            timestamp: new Date(),
+            source: {
+              channelId: sourceChannel.config.id,
+              platform: sourceChannel.config.platform,
+            },
+          };
+        }
+
+        this.processedCommandMessages.set(commandDedupeKey, now + COMMAND_DEDUP_TTL_MS);
+
         const result = await this.commandDispatcher.dispatch(
           channelMessage,
           sourceChannel,
@@ -225,6 +261,10 @@ function parseChannelSource(metadata: Record<string, unknown> | undefined): Chan
   }
 
   return undefined;
+}
+
+function buildCommandDedupeKey(channelMessage: ChannelMessage): string {
+  return `${channelMessage.platform}:${channelMessage.channelId}:${channelMessage.id}`;
 }
 
 function buildDedupeKey(

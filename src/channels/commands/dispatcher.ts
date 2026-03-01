@@ -55,7 +55,7 @@ export class CommandDispatcher {
     }
 
     const pending = this.getPendingState(userId);
-    if (pending && pending.step === "awaiting_api_key") {
+    if (pending && (pending.step === "awaiting_api_key" || pending.step === "awaiting_auth_code")) {
       return true;
     }
 
@@ -111,6 +111,10 @@ export class CommandDispatcher {
     if (pending && !text.startsWith("/")) {
       this.clearPendingState(userId);
       if (pending.command === "connect") {
+        if (pending.step === "awaiting_auth_code") {
+          const { handleOAuthCodeReply } = await import("./handlers/connect");
+          return handleOAuthCodeReply(text, pending, context);
+        }
         const { handleConnectReply } = await import("./handlers/connect");
         return handleConnectReply(text, pending, context);
       }
@@ -134,6 +138,20 @@ export class CommandDispatcher {
         command: "connect",
         step: "awaiting_provider_selection",
         data: {},
+        createdAt: Date.now(),
+      });
+    } else if (parsed.name === "connect" && result.kind === "text" && result.oauthPending) {
+      // Direct `/connect <provider>` for an OAuth provider — wait for code paste.
+      this.setPendingState(userId, {
+        command: "connect",
+        step: "awaiting_auth_code",
+        data: {
+          selectedProvider: result.oauthPending.provider,
+          oauthState: result.oauthPending.state,
+          ...(result.oauthPending.codeVerifier
+            ? { oauthCodeVerifier: result.oauthPending.codeVerifier }
+            : {}),
+        },
         createdAt: Date.now(),
       });
     }
@@ -202,16 +220,28 @@ export class CommandDispatcher {
       const result = await handleConnectCallback(callbackId, pending, context);
 
       if (result.kind === "text" && result.success && callbackId !== "connect:cancel") {
-        const provider = callbackId.slice("connect:".length);
-        if (!["anthropic", "google"].includes(provider)) {
+        if (result.oauthPending) {
+          // OAuth provider — wait for the user to paste the authorization code.
+          this.setPendingState(userId, {
+            command: "connect",
+            step: "awaiting_auth_code",
+            data: {
+              selectedProvider: result.oauthPending.provider,
+              oauthState: result.oauthPending.state,
+              ...(result.oauthPending.codeVerifier
+                ? { oauthCodeVerifier: result.oauthPending.codeVerifier }
+                : {}),
+            },
+            createdAt: Date.now(),
+          });
+        } else {
+          const provider = callbackId.slice("connect:".length);
           this.setPendingState(userId, {
             command: "connect",
             step: "awaiting_api_key",
             data: { selectedProvider: provider },
             createdAt: Date.now(),
           });
-        } else {
-          this.clearPendingState(userId);
         }
       } else {
         this.clearPendingState(userId);

@@ -49,6 +49,7 @@ export interface TelegramChannelClient {
   sendChatAction(chatId: string | number, action: "typing"): Promise<unknown>;
   setMyCommands(commands: Array<{ command: string; description: string }>): Promise<unknown>;
   answerCallbackQuery(callbackQueryId: string): Promise<unknown>;
+  deleteMessage(chatId: string | number, messageId: number): Promise<unknown>;
 }
 
 export interface TelegramChannelOptions {
@@ -237,6 +238,19 @@ export class TelegramChannel implements Channel {
     const parsed = Number(destinationChannelId);
     const chatId = Number.isFinite(parsed) ? parsed : destinationChannelId;
     await this.client.sendChatAction(chatId, "typing");
+  }
+
+  /**
+   * Delete a message from the chat. Converts string IDs to the numeric values
+   * Telegram's Bot API requires. Best-effort — failures are silently swallowed.
+   */
+  public async deleteMessage(chatId: string, messageId: string): Promise<void> {
+    const numericChatId = Number(chatId);
+    const numericMessageId = Number(messageId);
+    await this.client.deleteMessage(
+      Number.isFinite(numericChatId) ? numericChatId : chatId,
+      numericMessageId,
+    );
   }
 
   private async sendToChat(chatId: number | string, message: ChannelMessage): Promise<void> {

@@ -28,6 +28,15 @@ export interface CommandResultText {
   success: boolean;
   error?: string;
   flags?: CommandResultFlag[];
+  /**
+   * When set, the dispatcher transitions the pending state to `awaiting_auth_code`
+   * instead of clearing it. Carries OAuth state needed to exchange the user-pasted code.
+   */
+  oauthPending?: {
+    provider: string;
+    state: string;
+    codeVerifier?: string;
+  };
 }
 
 /**
@@ -113,6 +122,21 @@ export interface CommandProviderAuthService {
   revokeProvider(provider: string): Promise<void>;
   setApiKey(provider: string, key: string): Promise<void>;
   validateConnection(provider: string): Promise<boolean>;
+  /**
+   * Initiate an OAuth authorization code flow without a local callback server.
+   * Returns the authorization URL and state for out-of-band completion (e.g. Telegram).
+   * Returns null if the provider does not support OAuth or the flow cannot be started.
+   */
+  getOAuthAuthorizationUrl?(provider: string): Promise<{
+    url: string;
+    state: string;
+    codeVerifier?: string;
+  } | null>;
+  /**
+   * Exchange a user-pasted authorization code for tokens and persist them.
+   * `state` and `codeVerifier` are the values returned by `getOAuthAuthorizationUrl`.
+   */
+  completeOAuthWithCode?(provider: string, code: string, state?: string, codeVerifier?: string): Promise<void>;
 }
 
 /**
@@ -158,6 +182,7 @@ export interface CommandDefinition {
 export type PendingCommandStep =
   | "awaiting_provider_selection"
   | "awaiting_api_key"
+  | "awaiting_auth_code"
   | "complete";
 
 /**

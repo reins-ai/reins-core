@@ -10,6 +10,8 @@ import type {
   ChannelMessageHandler,
   ChannelStatus,
 } from "../../src/channels/types";
+import type { CommandResult } from "../../src/channels/commands/types";
+import type { CommandDispatcher } from "../../src/channels/commands/dispatcher";
 
 function createConversationManager(): ConversationManager {
   return new ConversationManager(new InMemoryConversationStore());
@@ -244,5 +246,66 @@ describe("ConversationBridge", () => {
     expect(discord.sentMessages).toHaveLength(1);
     expect(telegram.sentMessages[0]?.channelId).toBe("tg-chat");
     expect(discord.sentMessages[0]?.channelId).toBe("dc-room");
+  });
+
+  it("dispatches a command message once and deduplicates a second delivery of the same message ID", async () => {
+    const manager = createConversationManager();
+    const telegram = createMockChannel();
+
+    let dispatchCount = 0;
+    const mockDispatcher = {
+      isCommandMessage: () => true,
+      async dispatch(): Promise<CommandResult> {
+        dispatchCount += 1;
+        return { kind: "text", text: "ok" };
+      },
+    } as unknown as CommandDispatcher;
+
+    const commandResults: CommandResult[] = [];
+    const bridge = new ConversationBridge({
+      conversationManager: manager,
+      commandDispatcher: mockDispatcher,
+      onCommandResult: async (result) => {
+        commandResults.push(result);
+      },
+    });
+
+    const msg = createInboundMessage({ id: "tg-42", platform: "telegram", channelId: "chat-1" });
+
+    await bridge.routeInbound(msg, telegram);
+    await bridge.routeInbound(msg, telegram); // duplicate delivery
+
+    expect(dispatchCount).toBe(1);
+    expect(commandResults).toHaveLength(1);
+  });
+
+  it("processes two different command messages independently", async () => {
+    const manager = createConversationManager();
+    const telegram = createMockChannel();
+
+    let dispatchCount = 0;
+    const mockDispatcher = {
+      isCommandMessage: () => true,
+      async dispatch(): Promise<CommandResult> {
+        dispatchCount += 1;
+        return { kind: "text", text: "ok" };
+      },
+    } as unknown as CommandDispatcher;
+
+    const bridge = new ConversationBridge({
+      conversationManager: manager,
+      commandDispatcher: mockDispatcher,
+    });
+
+    await bridge.routeInbound(
+      createInboundMessage({ id: "tg-1", platform: "telegram", channelId: "chat-1" }),
+      telegram,
+    );
+    await bridge.routeInbound(
+      createInboundMessage({ id: "tg-2", platform: "telegram", channelId: "chat-1" }),
+      telegram,
+    );
+
+    expect(dispatchCount).toBe(2);
   });
 });

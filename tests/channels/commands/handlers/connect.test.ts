@@ -3,12 +3,14 @@ import {
   connectHandler,
   handleConnectCallback,
   handleConnectReply,
+  handleOAuthCodeReply,
   buildConnectPendingState,
 } from "../../../../src/channels/commands/handlers/connect";
 import { PENDING_COMMAND_TTL_MS } from "../../../../src/channels/commands/types";
 import type {
   CommandContext,
   CommandResultMenu,
+  CommandResultText,
 } from "../../../../src/channels/commands/types";
 
 function makeContext(
@@ -116,22 +118,58 @@ describe("connectHandler", () => {
       expect(text).toContain("Please reply with your API key");
     });
 
-    it("returns OAuth guidance for anthropic", async () => {
+    it("returns OAuth URL flow for anthropic when getOAuthAuthorizationUrl is available", async () => {
+      const ctx = makeContext({
+        providerAuthService: {
+          listProviders: async () => [],
+          revokeProvider: async () => {},
+          setApiKey: async () => {},
+          validateConnection: async () => true,
+          getOAuthAuthorizationUrl: async () => ({
+            url: "https://example.com/oauth/authorize?state=abc123",
+            state: "abc123",
+            codeVerifier: "cv-xyz",
+          }),
+        },
+      });
+      const result = await connectHandler(ctx, ["anthropic"]);
+
+      expect(result.kind).toBe("text");
+      expect(result.success).toBe(true);
+      const textResult = result as CommandResultText;
+      expect(textResult.text).toContain("https://example.com/oauth/authorize");
+      expect(textResult.text).toContain("Reply here with that code");
+      expect(textResult.oauthPending).toBeDefined();
+      expect(textResult.oauthPending!.provider).toBe("anthropic");
+      expect(textResult.oauthPending!.state).toBe("abc123");
+      expect(textResult.oauthPending!.codeVerifier).toBe("cv-xyz");
+    });
+
+    it("falls back to API key flow when getOAuthAuthorizationUrl returns null", async () => {
+      const ctx = makeContext({
+        providerAuthService: {
+          listProviders: async () => [],
+          revokeProvider: async () => {},
+          setApiKey: async () => {},
+          validateConnection: async () => true,
+          getOAuthAuthorizationUrl: async () => null,
+        },
+      });
+      const result = await connectHandler(ctx, ["anthropic"]);
+
+      expect(result.kind).toBe("text");
+      expect(result.success).toBe(true);
+      const text = (result as CommandResultText).text;
+      expect(text).toContain("Please reply with your API key");
+    });
+
+    it("falls back to API key flow when getOAuthAuthorizationUrl is not available", async () => {
       const result = await connectHandler(makeContext(), ["anthropic"]);
 
       expect(result.kind).toBe("text");
       expect(result.success).toBe(true);
-      const text = (result as { text: string }).text;
-      expect(text).toContain("OAuth authentication");
-    });
-
-    it("returns OAuth guidance for google", async () => {
-      const result = await connectHandler(makeContext(), ["google"]);
-
-      expect(result.kind).toBe("text");
-      expect(result.success).toBe(true);
-      const text = (result as { text: string }).text;
-      expect(text).toContain("OAuth authentication");
+      const text = (result as CommandResultText).text;
+      expect(text).toContain("Please reply with your API key");
     });
   });
 });
@@ -164,18 +202,28 @@ describe("handleConnectCallback", () => {
     expect(text).toContain("Please reply with your API key");
   });
 
-  it("returns OAuth guidance for anthropic callback", async () => {
+  it("returns OAuth URL flow for anthropic callback when getOAuthAuthorizationUrl is available", async () => {
+    const ctx = makeContext({
+      providerAuthService: {
+        listProviders: async () => [],
+        revokeProvider: async () => {},
+        setApiKey: async () => {},
+        validateConnection: async () => true,
+        getOAuthAuthorizationUrl: async () => ({
+          url: "https://example.com/oauth/authorize?state=abc",
+          state: "abc",
+        }),
+      },
+    });
     const state = buildConnectPendingState("awaiting_provider_selection", {});
-    const result = await handleConnectCallback(
-      "connect:anthropic",
-      state,
-      makeContext(),
-    );
+    const result = await handleConnectCallback("connect:anthropic", state, ctx);
 
     expect(result.kind).toBe("text");
     expect(result.success).toBe(true);
-    const text = (result as { text: string }).text;
-    expect(text).toContain("OAuth authentication");
+    const textResult = result as CommandResultText;
+    expect(textResult.text).toContain("https://example.com/oauth/authorize");
+    expect(textResult.oauthPending).toBeDefined();
+    expect(textResult.oauthPending!.provider).toBe("anthropic");
   });
 
   it("returns SESSION_EXPIRED for expired state", async () => {
@@ -289,6 +337,114 @@ describe("handleConnectReply", () => {
     expect(result.flags).toContain("deleteUserMessage");
     const text = (result as { text: string }).text;
     expect(text).toContain("Key stored");
+  });
+});
+
+describe("handleOAuthCodeReply", () => {
+  it("returns SESSION_EXPIRED for expired state", async () => {
+    const state = buildConnectPendingState("awaiting_auth_code", {
+      selectedProvider: "anthropic",
+      oauthState: "state-abc",
+    });
+    state.createdAt = Date.now() - (PENDING_COMMAND_TTL_MS + 1000);
+
+    const result = await handleOAuthCodeReply("code-xyz", state, makeContext());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("SESSION_EXPIRED");
+    expect(result.flags).toContain("deleteUserMessage");
+  });
+
+  it("returns INVALID_STATE when no provider in state data", async () => {
+    const state = buildConnectPendingState("awaiting_auth_code", {});
+
+    const result = await handleOAuthCodeReply("code-xyz", state, makeContext());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("INVALID_STATE");
+    expect(result.flags).toContain("deleteUserMessage");
+  });
+
+  it("returns UNSUPPORTED when completeOAuthWithCode is not available", async () => {
+    const state = buildConnectPendingState("awaiting_auth_code", {
+      selectedProvider: "anthropic",
+      oauthState: "state-abc",
+    });
+
+    const result = await handleOAuthCodeReply("code-xyz", state, makeContext());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("UNSUPPORTED");
+    expect(result.flags).toContain("deleteUserMessage");
+  });
+
+  it("returns EMPTY_CODE for empty code input", async () => {
+    const ctx = makeContext({
+      providerAuthService: {
+        listProviders: async () => [],
+        revokeProvider: async () => {},
+        setApiKey: async () => {},
+        validateConnection: async () => true,
+        completeOAuthWithCode: async () => {},
+      },
+    });
+    const state = buildConnectPendingState("awaiting_auth_code", {
+      selectedProvider: "anthropic",
+      oauthState: "state-abc",
+    });
+
+    const result = await handleOAuthCodeReply("  ", state, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("EMPTY_CODE");
+    expect(result.flags).toContain("deleteUserMessage");
+  });
+
+  it("returns EXCHANGE_FAILED when completeOAuthWithCode throws", async () => {
+    const ctx = makeContext({
+      providerAuthService: {
+        listProviders: async () => [],
+        revokeProvider: async () => {},
+        setApiKey: async () => {},
+        validateConnection: async () => true,
+        completeOAuthWithCode: async () => { throw new Error("Exchange failed"); },
+      },
+    });
+    const state = buildConnectPendingState("awaiting_auth_code", {
+      selectedProvider: "anthropic",
+      oauthState: "state-abc",
+    });
+
+    const result = await handleOAuthCodeReply("code-xyz", state, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("EXCHANGE_FAILED");
+    expect(result.flags).toContain("deleteUserMessage");
+  });
+
+  it("returns success with deleteUserMessage on successful exchange", async () => {
+    const ctx = makeContext({
+      providerAuthService: {
+        listProviders: async () => [],
+        revokeProvider: async () => {},
+        setApiKey: async () => {},
+        validateConnection: async () => true,
+        completeOAuthWithCode: async () => {},
+      },
+    });
+    const state = buildConnectPendingState("awaiting_auth_code", {
+      selectedProvider: "anthropic",
+      oauthState: "state-abc",
+      oauthCodeVerifier: "cv-xyz",
+    });
+
+    const result = await handleOAuthCodeReply("valid-code", state, ctx);
+
+    expect(result.kind).toBe("text");
+    expect(result.success).toBe(true);
+    expect(result.flags).toContain("deleteUserMessage");
+    const text = (result as CommandResultText).text;
+    expect(text).toContain("Connected to **anthropic** via OAuth");
   });
 });
 

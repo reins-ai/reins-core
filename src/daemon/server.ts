@@ -5315,6 +5315,32 @@ export class DaemonHttpServer implements DaemonManagedService {
 
           return result.value.connectionState === "ready";
         },
+        getOAuthAuthorizationUrl: async (provider) => {
+          const result = await this.authService.initiateOAuth(provider, { localCallback: false });
+          if (!result.ok) {
+            return null;
+          }
+
+          if (result.value.type !== "authorization_code") {
+            return null;
+          }
+
+          return {
+            url: result.value.authorizationUrl,
+            state: result.value.state,
+            codeVerifier: result.value.codeVerifier,
+          };
+        },
+        completeOAuthWithCode: async (provider, code, state, codeVerifier) => {
+          const result = await this.authService.completeOAuthCallback(provider, {
+            code,
+            state,
+            exchange: codeVerifier ? { codeVerifier } : undefined,
+          });
+          if (!result.ok) {
+            throw result.error;
+          }
+        },
       };
 
       const commandDispatcher = new CommandDispatcher({
@@ -5370,6 +5396,13 @@ export class DaemonHttpServer implements DaemonManagedService {
         channelRegistry,
         commandDispatcher,
         onCommandResult: async (result, channelMessage, sourceChannel) => {
+          if (result.flags?.includes("deleteUserMessage")) {
+            try {
+              await sourceChannel.deleteMessage?.(channelMessage.channelId, channelMessage.id);
+            } catch {
+              // Best-effort — deletion failures must not abort the response.
+            }
+          }
           const msg = buildCommandResultMessage(result, channelMessage, sourceChannel);
           await sourceChannel.send(msg);
         },
@@ -5419,6 +5452,16 @@ export class DaemonHttpServer implements DaemonManagedService {
           );
 
           if (result !== null) {
+            if (result.flags?.includes("deleteUserMessage")) {
+              const callbackMessageId = query.message?.message_id;
+              if (callbackMessageId !== undefined) {
+                try {
+                  await telegramClient.deleteMessage(chatId, callbackMessageId);
+                } catch {
+                  // Best-effort — deletion failures must not abort the response.
+                }
+              }
+            }
             const msg = buildCommandResultMessage(result, fakeMessage, telegramChannel);
             await telegramChannel.send(msg);
           }
