@@ -11,7 +11,13 @@ import type {
   ChannelStatus,
 } from "../types";
 import { normalizeTelegramMessage } from "./normalize";
-import type { TelegramFile, TelegramMessage, TelegramUpdate } from "./types";
+import type {
+  TelegramCallbackQuery,
+  TelegramFile,
+  TelegramInlineKeyboardMarkup,
+  TelegramMessage,
+  TelegramUpdate,
+} from "./types";
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -41,6 +47,8 @@ export interface TelegramChannelClient {
   sendDocument(chatId: string | number, document: string, options?: Record<string, unknown>): Promise<unknown>;
   sendVoice(chatId: string | number, voice: string, options?: Record<string, unknown>): Promise<unknown>;
   sendChatAction(chatId: string | number, action: "typing"): Promise<unknown>;
+  setMyCommands(commands: Array<{ command: string; description: string }>): Promise<unknown>;
+  answerCallbackQuery(callbackQueryId: string): Promise<unknown>;
 }
 
 export interface TelegramChannelOptions {
@@ -54,6 +62,17 @@ export interface TelegramChannelOptions {
   nowFn?: () => number;
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
+  /**
+   * Bot commands registered with Telegram via setMyCommands on connect.
+   * Populates the "/" suggestion menu shown to users.
+   */
+  commands?: Array<{ command: string; description: string }>;
+  /**
+   * Handler invoked for each incoming callback_query update (inline keyboard press).
+   * When provided, button presses from interactive command menus are routed here
+   * instead of being silently dropped.
+   */
+  onCallbackQuery?: (query: TelegramCallbackQuery) => Promise<void>;
 }
 
 function toError(error: unknown): Error {
@@ -79,6 +98,9 @@ export class TelegramChannel implements Channel {
   private readonly nowFn: () => number;
   private readonly initialReconnectDelayMs: number;
   private readonly maxReconnectDelayMs: number;
+
+  private readonly commands: Array<{ command: string; description: string }>;
+  private readonly onCallbackQuery?: (query: TelegramCallbackQuery) => Promise<void>;
 
   private readonly handlers = new Set<ChannelMessageHandler>();
 
@@ -106,6 +128,8 @@ export class TelegramChannel implements Channel {
     this.nowFn = options.nowFn ?? (() => Date.now());
     this.initialReconnectDelayMs = options.initialReconnectDelayMs ?? INITIAL_RECONNECT_DELAY_MS;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? MAX_RECONNECT_DELAY_MS;
+    this.commands = options.commands ?? [];
+    this.onCallbackQuery = options.onCallbackQuery;
   }
 
   /**
@@ -143,6 +167,19 @@ export class TelegramChannel implements Channel {
       const connectError = toError(error);
       this.updateStatus("error", connectError.message);
       throw new ChannelError(`Failed to connect Telegram channel ${this.config.id}: ${connectError.message}`);
+    }
+
+    // Register bot commands so they appear in Telegram's "/" suggestion menu.
+    // Best-effort: a failure here does not prevent the channel from operating.
+    if (this.commands.length > 0) {
+      try {
+        await this.client.setMyCommands(this.commands);
+      } catch (error) {
+        this.log.warn("telegram connect: failed to register bot commands", {
+          channelId: this.config.id,
+          error: toError(error).message,
+        });
+      }
     }
 
     this.reconnectAttempts = 0;
@@ -237,12 +274,25 @@ export class TelegramChannel implements Channel {
     }
 
     const parseMode = message.formatting?.mode === "markdown_v2" ? "MarkdownV2" : undefined;
+    const replyMarkup = message.platformData?.reply_markup as TelegramInlineKeyboardMarkup | undefined;
+
+    const buildOptions = (withParseMode: boolean): Record<string, unknown> | undefined => {
+      const opts: Record<string, unknown> = {};
+      if (withParseMode && parseMode !== undefined) {
+        opts.parseMode = parseMode;
+      }
+      if (replyMarkup !== undefined) {
+        opts.replyMarkup = replyMarkup;
+      }
+      return Object.keys(opts).length > 0 ? opts : undefined;
+    };
+
     try {
       try {
         await this.sendWithRetry(() => this.client.sendMessage(
           chatId,
           message.text!,
-          parseMode !== undefined ? { parseMode } : undefined,
+          buildOptions(true),
         ));
       } catch (sendError) {
         const typedSendError = toError(sendError);
@@ -251,7 +301,7 @@ export class TelegramChannel implements Channel {
             chatId,
             error: typedSendError.message,
           });
-          await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!));
+          await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!, buildOptions(false)));
         } else {
           throw typedSendError;
         }
@@ -365,6 +415,25 @@ export class TelegramChannel implements Channel {
       this.lastUpdateId = this.lastUpdateId === null
         ? update.update_id
         : Math.max(this.lastUpdateId, update.update_id);
+
+      // Inline keyboard button presses arrive as callback_query updates.
+      // Route these to the command callback handler if one is registered.
+      if (update.callback_query !== undefined) {
+        if (this.onCallbackQuery) {
+          try {
+            await this.onCallbackQuery(update.callback_query);
+          } catch (error) {
+            const cbError = toError(error);
+            this.log.warn("callback query handler failed", {
+              updateId: update.update_id,
+              callbackQueryId: update.callback_query.id,
+              error: cbError.message,
+            });
+            this.statusState.lastError = `Callback query handler failed: ${cbError.message}`;
+          }
+        }
+        continue;
+      }
 
       const normalizedMessage = this.normalizeMessageFn(update);
       if (normalizedMessage === null) {

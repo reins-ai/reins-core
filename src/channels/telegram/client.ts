@@ -2,6 +2,7 @@ import { ChannelError } from "../errors";
 import type {
   TelegramApiError,
   TelegramApiResponse,
+  TelegramBotCommand,
   TelegramChatAction,
   TelegramClientOptions,
   TelegramFile,
@@ -306,6 +307,15 @@ export class TelegramClient {
       chat_id: chatId,
       action,
     });
+  }
+
+  /**
+   * Register the bot's command list with Telegram.
+   * These commands appear as suggestions when a user types "/" in a chat.
+   * Call once after a successful connection.
+   */
+  public async setMyCommands(commands: TelegramBotCommand[]): Promise<boolean> {
+    return this.request<boolean>("setMyCommands", { commands });
   }
 
   /**
