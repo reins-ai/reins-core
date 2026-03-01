@@ -6,6 +6,8 @@ import {
   type ChannelRouterOptions,
   type RouteInboundResult,
 } from "./router";
+import { CommandDispatcher } from "./commands/dispatcher";
+import type { CommandResult } from "./commands/types";
 import type { Channel, ChannelMessage } from "./types";
 
 interface ConversationBridgeConversationManager {
@@ -26,6 +28,12 @@ export interface ConversationBridgeOptions
   extends Omit<ChannelRouterOptions, "conversationManager"> {
   conversationManager: ConversationBridgeConversationManager;
   userKeyResolver?: (channelMessage: ChannelMessage) => string | undefined;
+  commandDispatcher?: CommandDispatcher;
+  onCommandResult?: (
+    result: CommandResult,
+    channelMessage: ChannelMessage,
+    sourceChannel: Channel,
+  ) => Promise<void>;
 }
 
 /**
@@ -35,6 +43,12 @@ export class ConversationBridge {
   private readonly conversationManager: ConversationBridgeConversationManager;
   private readonly router: ChannelRouter;
   private readonly userKeyResolver: (channelMessage: ChannelMessage) => string | undefined;
+  private readonly commandDispatcher?: CommandDispatcher;
+  private readonly onCommandResult?: (
+    result: CommandResult,
+    channelMessage: ChannelMessage,
+    sourceChannel: Channel,
+  ) => Promise<void>;
 
   private readonly conversationByUserKey = new Map<string, string>();
   private readonly dedupeMessageIdByKey = new Map<string, string>();
@@ -42,6 +56,8 @@ export class ConversationBridge {
   constructor(options: ConversationBridgeOptions) {
     this.conversationManager = options.conversationManager;
     this.userKeyResolver = options.userKeyResolver ?? defaultUserKeyResolver;
+    this.commandDispatcher = options.commandDispatcher;
+    this.onCommandResult = options.onCommandResult;
     this.router = new ChannelRouter({
       ...options,
       conversationManager: {
@@ -58,7 +74,34 @@ export class ConversationBridge {
     channelMessage: ChannelMessage,
     sourceChannel: Channel,
   ): Promise<RouteInboundResult> {
-    const userKey = this.userKeyResolver(channelMessage);
+    const userKey = this.userKeyResolver(channelMessage) ?? channelMessage.sender.id;
+
+    if (this.commandDispatcher) {
+      const conversationId = userKey ? this.conversationByUserKey.get(userKey) : undefined;
+      if (this.commandDispatcher.isCommandMessage(channelMessage, userKey)) {
+        const result = await this.commandDispatcher.dispatch(
+          channelMessage,
+          sourceChannel,
+          userKey,
+          conversationId,
+        );
+        if (result !== null && this.onCommandResult) {
+          await this.onCommandResult(result, channelMessage, sourceChannel);
+        }
+
+        return {
+          conversationId: conversationId ?? "command",
+          userMessageId: "command",
+          assistantMessageId: "command",
+          timestamp: new Date(),
+          source: {
+            channelId: sourceChannel.config.id,
+            platform: sourceChannel.config.platform,
+          },
+        };
+      }
+    }
+
     const mappedConversationId =
       userKey && !channelMessage.conversationId
         ? this.conversationByUserKey.get(userKey)
