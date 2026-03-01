@@ -73,6 +73,23 @@ import { EnvironmentContextProvider } from "../persona/environment-context";
 import { SystemPromptBuilder } from "../persona/builder";
 import { PersonaRegistry } from "../persona/registry";
 import { ChannelAuthService, ChannelCredentialStorage, ChannelRegistry, ConversationBridge, FileChannelAuthStorage } from "../channels";
+import {
+  ChannelCommandRegistry,
+  CommandDispatcher,
+  clearHandler,
+  connectHandler,
+  createHelpHandler,
+  disconnectHandler,
+  modelHandler,
+  newHandler,
+  providersHandler,
+  statusHandler,
+} from "../channels/commands";
+import type {
+  CommandConversationManager,
+  CommandProviderAuthService,
+  CommandProviderRegistry,
+} from "../channels/commands";
 import { ConvexDaemonClient, createConvexDaemonClientFromEnv } from "../convex";
 import { IntegrationService, INTEGRATION_META_TOOL_DEFINITION } from "../integrations";
 import yaml from "js-yaml";
@@ -5156,17 +5173,147 @@ export class DaemonHttpServer implements DaemonManagedService {
         return;
       }
 
+      const conversationManager = this.conversationManager;
+      const providerRegistry = this.providerRegistry;
+
       const channelRegistry = new ChannelRegistry();
       const credentialStorage = new ChannelCredentialStorage({
         store: this.credentialStore,
       });
-      const conversationBridge = new ConversationBridge({
-        conversationManager: this.conversationManager,
-        channelRegistry,
-      });
-
       const authStorage = new FileChannelAuthStorage();
       const authService = new ChannelAuthService(authStorage);
+
+      const commandRegistry = new ChannelCommandRegistry();
+      commandRegistry.register({
+        name: "help",
+        description: "List available commands and usage guidance.",
+        handler: createHelpHandler(commandRegistry),
+      });
+      commandRegistry.register({
+        name: "status",
+        description: "Show current model, provider, and conversation state.",
+        handler: statusHandler,
+      });
+      commandRegistry.register({
+        name: "model",
+        description: "Show or switch the active model.",
+        handler: modelHandler,
+      });
+      commandRegistry.register({
+        name: "new",
+        description: "Start a new conversation.",
+        handler: newHandler,
+      });
+      commandRegistry.register({
+        name: "clear",
+        description: "Clear the current conversation and start fresh.",
+        handler: clearHandler,
+      });
+      commandRegistry.register({
+        name: "connect",
+        description: "Connect a provider for this channel session.",
+        handler: connectHandler,
+      });
+      commandRegistry.register({
+        name: "disconnect",
+        description: "Disconnect a provider and revoke credentials.",
+        handler: disconnectHandler,
+      });
+      commandRegistry.register({
+        name: "providers",
+        description: "List providers and their connection status.",
+        handler: providersHandler,
+      });
+
+      const commandConversationManager: CommandConversationManager = {
+        create: async (options) => {
+          const conversation = await conversationManager.create({
+            title: options.title,
+            model: options.model ?? DEFAULT_MODEL,
+            provider: options.provider ?? "anthropic",
+          });
+
+          return { id: conversation.id };
+        },
+        delete: async (conversationId) => {
+          await conversationManager.delete(conversationId);
+        },
+        list: async (options) => {
+          const conversations = await conversationManager.list({
+            limit: options?.limit,
+          });
+
+          return conversations.map((conversation) => ({
+            id: conversation.id,
+            title: conversation.title,
+          }));
+        },
+      };
+
+      const commandProviderRegistry: CommandProviderRegistry = {
+        list: () => {
+          if (!providerRegistry) {
+            return [];
+          }
+
+          return providerRegistry.listUserConfigurableCapabilities().map((entry) => ({
+            id: entry.providerId,
+            name: providerRegistry.get(entry.providerId)?.config.name ?? entry.providerId,
+            requiresAuth: entry.capabilities.requiresAuth,
+            authModes: [...entry.capabilities.authModes],
+          }));
+        },
+      };
+
+      const commandProviderAuthService: CommandProviderAuthService = {
+        listProviders: async () => {
+          const result = await this.authService.listProviders();
+          if (!result.ok) {
+            throw result.error;
+          }
+
+          return result.value.map((status) => ({
+            provider: status.provider,
+            configured: status.configured,
+            connectionState: status.connectionState,
+            authModes: [...status.authModes],
+          }));
+        },
+        revokeProvider: async (provider) => {
+          const result = await this.authService.revokeProvider(provider);
+          if (!result.ok) {
+            throw result.error;
+          }
+        },
+        setApiKey: async (provider, key) => {
+          const result = await this.authService.setApiKey(provider, key);
+          if (!result.ok) {
+            throw result.error;
+          }
+        },
+        validateConnection: async (provider) => {
+          const result = await this.authService.getProviderAuthStatus(provider);
+          if (!result.ok) {
+            throw result.error;
+          }
+
+          return result.value.connectionState === "ready";
+        },
+      };
+
+      const commandDispatcher = new CommandDispatcher({
+        registry: commandRegistry,
+        authService,
+        conversationManager: commandConversationManager,
+        providerRegistry: commandProviderRegistry,
+        providerAuthService: commandProviderAuthService,
+      });
+
+      const conversationBridge = new ConversationBridge({
+        conversationManager,
+        channelRegistry,
+        commandDispatcher,
+      });
 
       this.channelService = new ChannelDaemonService({
         channelRegistry,

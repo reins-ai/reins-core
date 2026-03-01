@@ -257,6 +257,10 @@ export class TelegramClient {
       payload.reply_to_message_id = options.replyToMessageId;
     }
 
+    if (options.replyMarkup !== undefined) {
+      payload.reply_markup = options.replyMarkup;
+    }
+
     return this.request<TelegramMessage>("sendMessage", payload);
   }
 
@@ -301,6 +305,48 @@ export class TelegramClient {
     return this.request<boolean>("sendChatAction", {
       chat_id: chatId,
       action,
+    });
+  }
+
+  /**
+   * Answer a callback query from an inline keyboard button press.
+   * This dismisses the loading indicator on the button.
+   *
+   * @param callbackQueryId - The callback_query.id from the update.
+   * @param text            - Optional notification text shown to the user.
+   * @param showAlert       - Show as alert instead of toast notification.
+   */
+  public async answerCallbackQuery(
+    callbackQueryId: string,
+    text?: string,
+    showAlert?: boolean,
+  ): Promise<boolean> {
+    const payload: Record<string, unknown> = {
+      callback_query_id: callbackQueryId,
+    };
+    if (text !== undefined) {
+      payload.text = text;
+    }
+    if (showAlert !== undefined) {
+      payload.show_alert = showAlert;
+    }
+    return this.request<boolean>("answerCallbackQuery", payload);
+  }
+
+  /**
+   * Delete a message from a chat.
+   * Used to remove sensitive messages (e.g. API key replies) after capture.
+   *
+   * @param chatId    - Chat ID to delete from.
+   * @param messageId - Message ID to delete.
+   */
+  public async deleteMessage(
+    chatId: string | number,
+    messageId: number,
+  ): Promise<boolean> {
+    return this.request<boolean>("deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId,
     });
   }
 

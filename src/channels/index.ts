@@ -14,3 +14,4 @@ export * from "./telegram";
 export * from "./transcription";
 export * from "./types";
 export * from "./voice";
+export * from "./commands";

@@ -113,6 +113,41 @@ export interface TelegramUpdate {
   edited_message?: TelegramMessage;
   channel_post?: TelegramMessage;
   edited_channel_post?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+}
+
+/**
+ * Inline keyboard button for interactive menus.
+ */
+export interface TelegramInlineKeyboardButton {
+  text: string;
+  callback_data?: string;
+  url?: string;
+}
+
+/**
+ * A row of inline keyboard buttons.
+ */
+export type TelegramInlineKeyboardRow = TelegramInlineKeyboardButton[];
+
+/**
+ * Inline keyboard markup for interactive message buttons.
+ */
+export interface TelegramInlineKeyboardMarkup {
+  inline_keyboard: TelegramInlineKeyboardRow[];
+}
+
+/**
+ * Telegram callback query from an inline keyboard button press.
+ */
+export interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  inline_message_id?: string;
+  chat_instance: string;
+  data?: string;
+  game_short_name?: string;
 }
 
 export interface TelegramGetUpdatesOptions {
@@ -126,6 +161,7 @@ export interface TelegramSendMessageOptions {
   disableWebPagePreview?: boolean;
   disableNotification?: boolean;
   replyToMessageId?: number;
+  replyMarkup?: TelegramInlineKeyboardMarkup;
 }
 
 export interface TelegramSendMediaOptions {
