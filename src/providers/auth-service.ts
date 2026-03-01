@@ -301,8 +301,9 @@ function validateApiKey(provider: string, key: string): Result<string, AuthError
   return ok(trimmed);
 }
 
-function isOAuthTokenExpired(tokens: OAuthTokens): boolean {
-  return Date.now() >= tokens.expiresAt.getTime() - OAUTH_REFRESH_BUFFER_MS;
+function isOAuthTokenExpired(tokens: OAuthTokens, bufferMs?: number): boolean {
+  const buffer = bufferMs ?? OAUTH_REFRESH_BUFFER_MS;
+  return Date.now() >= tokens.expiresAt.getTime() - buffer;
 }
 
 export interface ProviderAuthServiceOptions {
@@ -742,7 +743,8 @@ export class ProviderAuthService implements AuthService {
       );
     }
 
-    if (!isOAuthTokenExpired(tokens)) {
+    const bufferMs = normalizedProvider === "anthropic" ? 0 : undefined;
+    if (!isOAuthTokenExpired(tokens, bufferMs)) {
       return ok(tokens.accessToken);
     }
 
@@ -1282,9 +1284,10 @@ export class ProviderAuthService implements AuthService {
       return ok(null);
     }
 
+    const bufferMs = provider === "anthropic" ? 0 : undefined;
     return ok({
       expiresAt: tokens.expiresAt,
-      expired: isOAuthTokenExpired(tokens),
+      expired: isOAuthTokenExpired(tokens, bufferMs),
     });
   }
 
