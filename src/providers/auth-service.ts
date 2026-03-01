@@ -301,8 +301,9 @@ function validateApiKey(provider: string, key: string): Result<string, AuthError
   return ok(trimmed);
 }
 
-function isOAuthTokenExpired(tokens: OAuthTokens): boolean {
-  return Date.now() >= tokens.expiresAt.getTime() - OAUTH_REFRESH_BUFFER_MS;
+function isOAuthTokenExpired(tokens: OAuthTokens, bufferMs?: number): boolean {
+  const buffer = bufferMs ?? OAUTH_REFRESH_BUFFER_MS;
+  return Date.now() >= tokens.expiresAt.getTime() - buffer;
 }
 
 export interface ProviderAuthServiceOptions {
@@ -423,7 +424,7 @@ class CredentialStoreOAuthStrategy implements OAuthStrategy {
 
   public async storeTokens(context: OAuthStoreContext): Promise<Result<void, AuthError>> {
     const result = await this.credentialStore.set({
-      id: `auth_${context.provider}_oauth`,
+      id: `oauth_${context.provider}`,
       provider: context.provider,
       type: "oauth",
       accountId: "default",
@@ -438,22 +439,39 @@ class CredentialStoreOAuthStrategy implements OAuthStrategy {
   }
 
   public async retrieveTokens(context: AuthStrategyContext): Promise<Result<OAuthTokens | null, AuthError>> {
-    const result = await this.credentialStore.get({
-      id: `auth_${context.provider}_oauth`,
+    const primaryResult = await this.credentialStore.get({
+      id: `oauth_${context.provider}`,
       provider: context.provider,
       type: "oauth",
       accountId: "default",
     });
 
-    if (!result.ok) {
-      return err(new AuthError(`Unable to get OAuth credential for provider ${context.provider}`, result.error));
+    if (!primaryResult.ok) {
+      return err(new AuthError(`Unable to get OAuth credential for provider ${context.provider}`, primaryResult.error));
     }
 
-    if (!result.value) {
+    let record = primaryResult.value;
+
+    if (!record) {
+      const legacyResult = await this.credentialStore.get({
+        id: `auth_${context.provider}_oauth`,
+        provider: context.provider,
+        type: "oauth",
+        accountId: "default",
+      });
+
+      if (!legacyResult.ok) {
+        return err(new AuthError(`Unable to get OAuth credential for provider ${context.provider}`, legacyResult.error));
+      }
+
+      record = legacyResult.value;
+    }
+
+    if (!record) {
       return ok(null);
     }
 
-    const payloadResult = await this.credentialStore.decryptPayload<unknown>(result.value);
+    const payloadResult = await this.credentialStore.decryptPayload<unknown>(record);
     if (!payloadResult.ok) {
       return err(new AuthError(`Unable to read OAuth credential for provider ${context.provider}`, payloadResult.error));
     }
@@ -467,9 +485,17 @@ class CredentialStoreOAuthStrategy implements OAuthStrategy {
   }
 
   public async revoke(context: AuthStrategyContext): Promise<Result<void, AuthError>> {
-    const result = await this.credentialStore.revoke(`auth_${context.provider}_oauth`);
-    if (!result.ok) {
-      return err(new AuthError(`Unable to revoke OAuth credential for provider ${context.provider}`, result.error));
+    const primaryResult = await this.credentialStore.revoke(`oauth_${context.provider}`);
+    if (!primaryResult.ok) {
+      return err(new AuthError(`Unable to revoke OAuth credential for provider ${context.provider}`, primaryResult.error));
+    }
+
+    const legacyResult = await this.credentialStore.revoke(`auth_${context.provider}_oauth`);
+    if (!legacyResult.ok) {
+      log.debug("failed to revoke legacy OAuth credential key", {
+        provider: context.provider,
+        error: legacyResult.error instanceof Error ? legacyResult.error.message : String(legacyResult.error),
+      });
     }
 
     return ok(undefined);
@@ -742,7 +768,8 @@ export class ProviderAuthService implements AuthService {
       );
     }
 
-    if (!isOAuthTokenExpired(tokens)) {
+    const bufferMs = normalizedProvider === "anthropic" ? 0 : undefined;
+    if (!isOAuthTokenExpired(tokens, bufferMs)) {
       return ok(tokens.accessToken);
     }
 
@@ -1282,9 +1309,10 @@ export class ProviderAuthService implements AuthService {
       return ok(null);
     }
 
+    const bufferMs = provider === "anthropic" ? 0 : undefined;
     return ok({
       expiresAt: tokens.expiresAt,
-      expired: isOAuthTokenExpired(tokens),
+      expired: isOAuthTokenExpired(tokens, bufferMs),
     });
   }
 

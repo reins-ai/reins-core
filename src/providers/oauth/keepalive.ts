@@ -21,7 +21,7 @@ export interface OAuthKeepaliveOptions {
    * Called to get/refresh the access token. Must update all underlying storage
    * (both oauth_<provider> and auth_<provider>_oauth keys).
    * The keepalive fires this at the moment the token is considered expired by the
-   * 5-minute buffer check, so the implementation should perform a real refresh.
+   * buffer check, so the implementation should perform a real refresh.
    */
   getOrRefreshToken: () => Promise<Result<string, AuthError>>;
   /**
@@ -31,9 +31,10 @@ export interface OAuthKeepaliveOptions {
   loadCurrentTokens: () => Promise<OAuthTokens | null>;
   /**
    * How early before token expiry to trigger the proactive refresh.
-   * Must match the buffer used by isOAuthTokenExpired() so the timer fires
+   * Must match the buffer used by the provider's expiry check so the timer fires
    * exactly when getOrRefreshToken() will perform a refresh.
-   * Default: 5 minutes (matching EXPIRY_BUFFER_MS in auth-service.ts and flow.ts).
+   * Default: 5 minutes. Set to 0 for Anthropic (short-lived tokens, zero-buffer
+   * expiry check via OAuthFlowHandler).
    */
   refreshBufferMs?: number;
   /** Override for testing. Default: Date.now */
@@ -46,8 +47,12 @@ export interface OAuthKeepaliveOptions {
  * Proactively refreshes an OAuth access token before it expires.
  *
  * Schedule: fires at (expiresAt − refreshBufferMs), which is exactly the moment
- * the 5-minute buffer check considers the token expired. This ensures the token
+ * the provider's expiry check considers the token expired. This ensures the token
  * refresh call will actually perform a refresh (not return the cached token).
+ * For Anthropic, refreshBufferMs is 0 (tokens are short-lived, no pre-expiry buffer).
+ *
+ * Token source: loadCurrentTokens reads from the unified `oauth_${provider}` credential
+ * key via CredentialBackedOAuthTokenStore, so it always sees freshly-refreshed tokens.
  *
  * On failure: retries with exponential backoff (1m → 2m → 5m → 10m → 30m).
  * On success: reads the new expiresAt and schedules the next cycle.

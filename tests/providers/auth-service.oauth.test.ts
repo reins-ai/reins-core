@@ -129,7 +129,7 @@ describe("ProviderAuthService OAuth orchestration", () => {
   });
 
   it("refreshes expired OAuth tokens before returning access token", async () => {
-    let storedTokens = makeTokens({ expiresAt: new Date(Date.now() + 60 * 1000) });
+    let storedTokens = makeTokens({ expiresAt: new Date(Date.now() - 1000) });
     const refreshedTokens = makeTokens({
       accessToken: "oauth-access-refreshed",
       refreshToken: "oauth-refresh-refreshed",
@@ -191,7 +191,7 @@ describe("ProviderAuthService OAuth orchestration", () => {
         return ok(undefined);
       },
       async retrieveTokens() {
-        return ok(makeTokens({ expiresAt: new Date(Date.now() + 30 * 1000) }));
+        return ok(makeTokens({ expiresAt: new Date(Date.now() - 1000) }));
       },
       async revoke() {
         return ok(undefined);

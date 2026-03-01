@@ -376,8 +376,14 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
 
   private pendingSession: PendingOAuthSession | null = null;
 
+  private refreshInFlight: Promise<string> | null = null;
+
   constructor(options: AnthropicOAuthProviderOptions) {
-    super(options.oauthConfig, options.tokenStore, options.flow ?? new OAuthFlowHandler(options.oauthConfig));
+    super(
+      options.oauthConfig,
+      options.tokenStore,
+      options.flow ?? new OAuthFlowHandler(options.oauthConfig, { expiryBufferMs: 0 }),
+    );
 
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.metadata = {
@@ -499,6 +505,14 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     }
   }
 
+  /**
+   * Refreshes OAuth tokens and persists them via `persistOAuthTokens()`.
+   *
+   * Both `CredentialBackedOAuthTokenStore` and `CredentialStoreOAuthStrategy` use the
+   * same `oauth_${provider}` credential key. A single write through `persistOAuthTokens()`
+   * is sufficient — no dual-write needed. `CredentialStoreOAuthStrategy.retrieveTokens()`
+   * reads from `oauth_${provider}` first, so it always sees freshly-refreshed tokens.
+   */
   public async refreshWithResult(context: OAuthRefreshContext): Promise<Result<OAuthTokens, AuthError>> {
     if (context.provider !== this.providerType) {
       return err(new AuthError(`OAuth strategy for ${this.providerType} cannot refresh tokens for ${context.provider}`));
@@ -512,6 +526,10 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     try {
       const tokens = await this.flow.refreshTokens(refreshToken);
       await persistOAuthTokens(this.tokenStore, this.providerType, tokens);
+      log.debug("refreshed OAuth tokens persisted to unified store", {
+        provider: this.providerType,
+        expiresAt: tokens.expiresAt.toISOString(),
+      });
       return ok(tokens);
     } catch (error) {
       return err(
@@ -627,6 +645,51 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     if (!revokeResult.ok) {
       throw revokeResult.error;
     }
+  }
+
+  public override async getAccessToken(): Promise<string> {
+    const tokenResult = await this.retrieveTokensWithResult({ provider: this.providerType });
+    if (!tokenResult.ok) {
+      throw tokenResult.error;
+    }
+
+    const tokens = tokenResult.value;
+    if (!tokens) {
+      throw new AuthError(`No OAuth tokens found for provider ${this.providerType}. Re-authenticate this provider.`);
+    }
+
+    if (!this.flow.isExpired(tokens)) {
+      return tokens.accessToken;
+    }
+
+    if (!tokens.refreshToken) {
+      throw new AuthError(
+        `OAuth tokens expired and no refresh token is available for ${this.providerType}. Re-authenticate this provider.`,
+      );
+    }
+    const refreshToken = tokens.refreshToken;
+
+    if (this.refreshInFlight !== null) {
+      log.debug("joining in-flight OAuth token refresh", { provider: this.providerType });
+      return this.refreshInFlight;
+    }
+
+    log.debug("initiating OAuth token refresh", { provider: this.providerType });
+    this.refreshInFlight = (async () => {
+      const refreshResult = await this.refreshWithResult({
+        provider: this.providerType,
+        refreshToken,
+      });
+      if (!refreshResult.ok) {
+        throw refreshResult.error;
+      }
+
+      return refreshResult.value.accessToken;
+    })().finally(() => {
+      this.refreshInFlight = null;
+    });
+
+    return this.refreshInFlight;
   }
 
   public async chat(request: ChatRequest): Promise<ChatResponse> {
