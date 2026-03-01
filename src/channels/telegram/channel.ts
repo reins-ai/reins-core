@@ -322,11 +322,18 @@ export class TelegramChannel implements Channel {
 
       const enrichedMessage = await this.enrichInboundMedia(update, normalizedMessage);
 
-      for (const handler of this.handlers) {
+      const handlers = Array.from(this.handlers);
+      for (let handlerIndex = 0; handlerIndex < handlers.length; handlerIndex += 1) {
+        const handler = handlers[handlerIndex]!;
         try {
           await handler(enrichedMessage);
         } catch (error) {
           const handlerError = toError(error);
+          log.warn("message handler failed", {
+            updateId: update.update_id,
+            handlerIndex,
+            error: handlerError.message,
+          });
           this.statusState.lastError = `Message handler failed: ${handlerError.message}`;
         }
       }
