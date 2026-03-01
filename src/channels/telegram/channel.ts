@@ -14,6 +14,9 @@ import type { TelegramFile, TelegramMessage, TelegramUpdate } from "./types";
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const MAX_SEND_RETRIES = 3;
+const INITIAL_SEND_RETRY_DELAY_MS = 500;
+const RATE_LIMIT_RETRY_DELAY_MS = 2_000;
 
 type PollTimerHandle = ReturnType<typeof setTimeout>;
 
@@ -45,6 +48,7 @@ export interface TelegramChannelOptions {
   normalizeMessageFn?: (update: TelegramUpdate) => ChannelMessage | null;
   schedulePollFn?: (callback: () => void, delayMs: number) => PollTimerHandle;
   clearScheduledPollFn?: (timer: PollTimerHandle) => void;
+  retrySendDelayFn?: (delayMs: number) => Promise<void>;
   nowFn?: () => number;
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
@@ -68,6 +72,7 @@ export class TelegramChannel implements Channel {
   private readonly normalizeMessageFn: (update: TelegramUpdate) => ChannelMessage | null;
   private readonly schedulePollFn: (callback: () => void, delayMs: number) => PollTimerHandle;
   private readonly clearScheduledPollFn: (timer: PollTimerHandle) => void;
+  private readonly retrySendDelayFn: (delayMs: number) => Promise<void>;
   private readonly nowFn: () => number;
   private readonly initialReconnectDelayMs: number;
   private readonly maxReconnectDelayMs: number;
@@ -93,6 +98,7 @@ export class TelegramChannel implements Channel {
     this.clearScheduledPollFn = options.clearScheduledPollFn ?? ((timer) => {
       clearTimeout(timer);
     });
+    this.retrySendDelayFn = options.retrySendDelayFn ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     this.nowFn = options.nowFn ?? (() => Date.now());
     this.initialReconnectDelayMs = options.initialReconnectDelayMs ?? INITIAL_RECONNECT_DELAY_MS;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? MAX_RECONNECT_DELAY_MS;
@@ -194,7 +200,7 @@ export class TelegramChannel implements Channel {
 
   private async sendToChat(chatId: number | string, message: ChannelMessage): Promise<void> {
     if (message.voice?.platformData?.file_id !== undefined) {
-      await this.client.sendVoice(chatId, String(message.voice.platformData.file_id));
+      await this.sendWithRetry(() => this.client.sendVoice(chatId, String(message.voice!.platformData!.file_id)));
       return;
     }
 
@@ -210,15 +216,15 @@ export class TelegramChannel implements Channel {
       }
 
       if (attachment.type === "image") {
-        await this.client.sendPhoto(chatId, fileRef, {
+        await this.sendWithRetry(() => this.client.sendPhoto(chatId, fileRef, {
           caption: message.text,
-        });
+        }));
         return;
       }
 
-      await this.client.sendDocument(chatId, fileRef, {
+      await this.sendWithRetry(() => this.client.sendDocument(chatId, fileRef, {
         caption: message.text,
-      });
+      }));
       return;
     }
 
@@ -227,7 +233,32 @@ export class TelegramChannel implements Channel {
     }
 
     const parseMode = message.formatting?.mode === "markdown_v2" ? "MarkdownV2" : undefined;
-    await this.client.sendMessage(chatId, message.text, parseMode !== undefined ? { parseMode } : undefined);
+    await this.sendWithRetry(() => this.client.sendMessage(chatId, message.text!, parseMode !== undefined ? { parseMode } : undefined));
+  }
+
+  private isTransientError(error: Error): boolean {
+    const message = error.message.toLowerCase();
+    return /429|5\d{2}|etimedout|econnreset|econnrefused|network|timeout/.test(message);
+  }
+
+  private async sendWithRetry(fn: () => Promise<unknown>): Promise<unknown> {
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await fn();
+      } catch (error) {
+        const sendError = toError(error);
+        attempt += 1;
+        if (!this.isTransientError(sendError) || attempt >= MAX_SEND_RETRIES) {
+          throw sendError;
+        }
+        const baseDelay = sendError.message.includes("429")
+          ? RATE_LIMIT_RETRY_DELAY_MS
+          : INITIAL_SEND_RETRY_DELAY_MS;
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        await this.retrySendDelayFn(delay);
+      }
+    }
   }
 
   private scheduleNextPoll(delayMs: number): void {
