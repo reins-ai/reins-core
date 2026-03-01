@@ -505,6 +505,14 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     }
   }
 
+  /**
+   * Refreshes OAuth tokens and persists them via `persistOAuthTokens()`.
+   *
+   * Both `CredentialBackedOAuthTokenStore` and `CredentialStoreOAuthStrategy` use the
+   * same `oauth_${provider}` credential key. A single write through `persistOAuthTokens()`
+   * is sufficient — no dual-write needed. `CredentialStoreOAuthStrategy.retrieveTokens()`
+   * reads from `oauth_${provider}` first, so it always sees freshly-refreshed tokens.
+   */
   public async refreshWithResult(context: OAuthRefreshContext): Promise<Result<OAuthTokens, AuthError>> {
     if (context.provider !== this.providerType) {
       return err(new AuthError(`OAuth strategy for ${this.providerType} cannot refresh tokens for ${context.provider}`));
@@ -518,6 +526,10 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     try {
       const tokens = await this.flow.refreshTokens(refreshToken);
       await persistOAuthTokens(this.tokenStore, this.providerType, tokens);
+      log.debug("refreshed OAuth tokens persisted to unified store", {
+        provider: this.providerType,
+        expiresAt: tokens.expiresAt.toISOString(),
+      });
       return ok(tokens);
     } catch (error) {
       return err(
@@ -658,9 +670,11 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
     const refreshToken = tokens.refreshToken;
 
     if (this.refreshInFlight !== null) {
+      log.debug("joining in-flight OAuth token refresh", { provider: this.providerType });
       return this.refreshInFlight;
     }
 
+    log.debug("initiating OAuth token refresh", { provider: this.providerType });
     this.refreshInFlight = (async () => {
       const refreshResult = await this.refreshWithResult({
         provider: this.providerType,
