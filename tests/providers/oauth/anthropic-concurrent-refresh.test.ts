@@ -149,6 +149,47 @@ describe("AnthropicOAuthProvider concurrent refresh deduplication", () => {
     }
   });
 
+  it("after reactive refresh, unified store has fresh tokens", async () => {
+    globalThis.fetch = async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      return new Response(
+        JSON.stringify({
+          access_token: "fresh-access-after-refresh",
+          refresh_token: "fresh-refresh-after-refresh",
+          expires_in: 600,
+          scope: "messages:read messages:write",
+          token_type: "Bearer",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+
+    const store = new InMemoryOAuthTokenStore();
+    await seedExpiredToken(store);
+
+    const provider = new AnthropicOAuthProvider({
+      oauthConfig,
+      tokenStore: store,
+      baseUrl: "https://api.anthropic.test",
+    });
+
+    // Trigger a reactive refresh via getAccessToken()
+    const token = await provider.getAccessToken();
+    expect(token).toBe("fresh-access-after-refresh");
+
+    // Verify the unified store (oauth_anthropic key) contains the refreshed tokens
+    const storedTokens = await store.load("anthropic");
+    expect(storedTokens).not.toBeNull();
+    expect(storedTokens!.accessToken).toBe("fresh-access-after-refresh");
+    expect(storedTokens!.refreshToken).toBe("fresh-refresh-after-refresh");
+
+    // Verify the stored token is not expired (expires_in=600s from now)
+    const now = Date.now();
+    expect(storedTokens!.expiresAt.getTime()).toBeGreaterThan(now);
+    expect(storedTokens!.expiresAt.getTime()).toBeLessThanOrEqual(now + 600_000 + 1000);
+  });
+
   it("after failed refresh, subsequent call can retry", async () => {
     let callCount = 0;
 
