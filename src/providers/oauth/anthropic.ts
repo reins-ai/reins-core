@@ -377,7 +377,11 @@ export class AnthropicOAuthProvider extends OAuthProvider implements Provider, O
   private pendingSession: PendingOAuthSession | null = null;
 
   constructor(options: AnthropicOAuthProviderOptions) {
-    super(options.oauthConfig, options.tokenStore, options.flow ?? new OAuthFlowHandler(options.oauthConfig));
+    super(
+      options.oauthConfig,
+      options.tokenStore,
+      options.flow ?? new OAuthFlowHandler(options.oauthConfig, { expiryBufferMs: 0 }),
+    );
 
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.metadata = {

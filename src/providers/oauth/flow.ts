@@ -106,7 +106,14 @@ function toOAuthTokenResponse(value: unknown): OAuthTokenResponse {
 }
 
 export class OAuthFlowHandler {
-  constructor(private readonly config: OAuthConfig) {}
+  private readonly expiryBufferMs: number;
+
+  constructor(
+    private readonly config: OAuthConfig,
+    options?: { expiryBufferMs?: number },
+  ) {
+    this.expiryBufferMs = options?.expiryBufferMs ?? EXPIRY_BUFFER_MS;
+  }
 
   private static parseCallbackParametersFromSearchParams(
     params: URLSearchParams,
@@ -329,7 +336,7 @@ export class OAuthFlowHandler {
   }
 
   public isExpired(tokens: OAuthTokens): boolean {
-    const expiresWithBuffer = tokens.expiresAt.getTime() - EXPIRY_BUFFER_MS;
+    const expiresWithBuffer = tokens.expiresAt.getTime() - this.expiryBufferMs;
     return Date.now() >= expiresWithBuffer;
   }
 
