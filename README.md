@@ -93,6 +93,8 @@ Conversation-driven tools that let the assistant interact with the user's data:
 
 The `ToolRegistry` discovers tools, and the `ToolExecutor` runs them with proper context injection, abort signal support, and error handling.
 
+For an optional tool integration, see the [Parallel Search MCP example](examples/parallel-search/README.md), which runs keyless web search and page fetching through the registry and executor.
+
 ### Plugin System
 
 Full plugin lifecycle with security sandboxing:
